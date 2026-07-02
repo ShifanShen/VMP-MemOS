@@ -103,6 +103,8 @@ class LongMemEvalSample(LongMemEvalRawModel):
             data["haystack_dates"] = [None] * len(data.get("haystack_sessions") or [])
         if "answer" not in data or data.get("answer") in (None, "", []):
             data["answer"] = "I don't know"
+        else:
+            data["answer"] = _normalize_answer(data["answer"])
         if "question_type" not in data or data.get("question_type") in (None, ""):
             data["question_type"] = "unknown"
         return data
@@ -173,6 +175,18 @@ class LongMemEvalSample(LongMemEvalRawModel):
                 "不知道",
             }
         )
+
+
+def _normalize_answer(value: object) -> object:
+    """Convert JSON scalar answers to the textual form used by QA metrics."""
+
+    if isinstance(value, list):
+        return [_normalize_answer(item) for item in value]
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return value
 
 
 class LongMemEvalDatasetStats(SchemaModel):

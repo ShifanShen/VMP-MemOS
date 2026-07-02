@@ -52,6 +52,22 @@ def test_load_and_convert_longmemeval_sample(tmp_path) -> None:
     assert benchmark_sample.gold_memory_ids == ["s_new"]
 
 
+def test_load_normalizes_numeric_answer_to_text(tmp_path) -> None:
+    record = _sample_record()
+    record["answer"] = 3
+    answer_list_record = _sample_record()
+    answer_list_record["question_id"] = "q2"
+    answer_list_record["answer"] = [3, "three"]
+    path = tmp_path / "longmemeval_numeric_answer.json"
+    path.write_text(json.dumps([record, answer_list_record]), encoding="utf-8")
+
+    samples = load_longmemeval(path)
+
+    assert samples[0].answer == "3"
+    assert sample_to_benchmark_sample(samples[0]).gold_answer == "3"
+    assert samples[1].answer == ["3", "three"]
+
+
 def _sample_record() -> dict:
     return {
         "question_id": "q1",
