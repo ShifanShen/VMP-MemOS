@@ -1,0 +1,10 @@
+provider: vllm
+base_url: http://127.0.0.1:8000/v1
+model: Qwen/Qwen2.5-7B-Instruct
+api_key_env: VMP_LLM_API_KEY
+timeout_seconds: 120
+max_retries: 2
+retry_sleep_seconds: 1
+max_tokens: 512
+temperature: 0.2
+top_p: 0.95

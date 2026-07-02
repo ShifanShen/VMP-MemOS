@@ -1,0 +1,13 @@
+dataset_path: data/benchmarks/memory_policy_toy.jsonl
+output_dir: outputs/runs
+report_dir: outputs/reports
+policy_model_path: outputs/models/learned_policy.json
+baselines:
+  - no_memory
+  - full_context
+  - summary_memory
+  - naive_vector_rag
+  - vector_rag_recency
+  - vector_rag_importance
+  - vmp_rule
+top_k: 3

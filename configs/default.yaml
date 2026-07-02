@@ -1,0 +1,90 @@
+project:
+  name: vmp-memos
+  schema_version: 1
+  random_seed: 42
+
+paths:
+  workspace: memory_workspace
+  data: data
+  outputs: outputs
+  operation_log: memory_workspace/logs/operations.jsonl
+  retrieval_log: memory_workspace/logs/retrievals.jsonl
+  evaluation_log: memory_workspace/logs/evaluations.jsonl
+
+workspace:
+  index_file: INDEX.md
+  memory_file: MEMORY.md
+  directories:
+    - memories
+    - projects
+    - skills
+    - episodes
+    - resources
+    - archive
+    - versions
+    - vector
+    - cache
+    - logs
+
+file_backend:
+  active_directory: memories
+  archive_directory: archive
+  versions_directory: versions
+  index_file: INDEX.md
+  frontmatter_schema_version: 1
+
+vector_backend:
+  database_path: memory_workspace/vector/memories.sqlite3
+  embedding_cache_path: memory_workspace/cache/embeddings.sqlite3
+  retrieval_method: cosine
+
+hybrid_backend:
+  source_of_truth: file
+  retrieval_index: vector
+  hydrate_search_results: true
+  reindex_on_startup: false
+
+logging:
+  level: INFO
+  jsonl: true
+
+embedding:
+  provider: sentence_transformer
+  model_name: sentence-transformers/all-MiniLM-L6-v2
+  device: auto
+  model_cache_dir: null
+  normalize_embeddings: true
+  batch_size: 32
+
+llm:
+  provider: vllm
+  base_url: http://127.0.0.1:8000/v1
+  model: Qwen/Qwen2.5-7B-Instruct
+  api_key_env: VMP_LLM_API_KEY
+  timeout_seconds: 120
+  max_retries: 2
+  retry_sleep_seconds: 1
+  max_tokens: 512
+  temperature: 0.2
+  top_p: 0.95
+
+policy:
+  feature_version: v1
+  write_threshold: 0.65
+  retrieve_threshold: 0.05
+  update_threshold: 0.65
+  update_similarity_threshold: 0.70
+  update_contradiction_threshold: 0.45
+  merge_threshold: 0.75
+  archive_threshold: 0.80
+  compress_threshold: 0.65
+
+policy_features:
+  token_budget: 2048
+  access_count_saturation: 20
+  half_life_days:
+    semantic: 120
+    episodic: 14
+    procedural: 240
+    reflective: 120
+    resource: 60
