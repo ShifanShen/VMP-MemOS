@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from pathlib import Path
 
 from vmp_memos.llm import (
@@ -18,8 +19,15 @@ from vmp_memos.longmemeval.qa_runner import (
     run_longmemeval_qa,
 )
 
+LOGGER = logging.getLogger("vmp_memos.run_longmemeval_qa")
+
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--retrieval-run", type=Path, required=True)
     parser.add_argument("--methods", default=None)
@@ -51,6 +59,13 @@ def main() -> int:
     )
     client_updates["generation"] = generation
     client_config = client_config.model_copy(update=client_updates)
+    LOGGER.info(
+        "Starting QA run: retrieval_run=%s model=%s base_url=%s resume=%s",
+        args.retrieval_run,
+        client_config.model,
+        client_config.base_url,
+        args.resume,
+    )
 
     reader = LongMemEvalReader(
         VLLMClient(client_config),

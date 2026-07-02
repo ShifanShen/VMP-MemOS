@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -19,9 +20,15 @@ from vmp_memos.longmemeval.retrieval_runner import run_longmemeval_retrieval
 DEFAULT_METHODS = (
     "empty,bm25,naive_vector,vector_recency,vector_importance,vmp_rule"
 )
+LOGGER = logging.getLogger("vmp_memos.run_longmemeval_retrieval")
 
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--methods", default=DEFAULT_METHODS)
@@ -121,6 +128,12 @@ def main() -> int:
     args = parser.parse_args()
 
     methods = [method.strip() for method in args.methods.split(",") if method.strip()]
+    LOGGER.info(
+        "Starting retrieval run: run_id=%s split=%s methods=%s",
+        args.run_id or "auto",
+        args.split or "all",
+        ",".join(methods),
+    )
     normalized_methods = {
         method.casefold().replace("-", "_") for method in methods
     }
@@ -159,6 +172,12 @@ def main() -> int:
             )
             if args.embedding_cache_db is not None
             else base_embedder
+        )
+        LOGGER.info(
+            "Embedding configured: model=%s batch_size=%d cache_db=%s",
+            args.embedding_model,
+            args.embedding_batch_size,
+            args.embedding_cache_db or "disabled",
         )
 
     config = LongMemEvalRunConfig(

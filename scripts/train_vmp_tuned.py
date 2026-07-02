@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from pathlib import Path
 
 from vmp_memos.embeddings import (
@@ -14,8 +15,15 @@ from vmp_memos.embeddings import (
 )
 from vmp_memos.longmemeval.tuning import train_vmp_tuned
 
+LOGGER = logging.getLogger("vmp_memos.train_vmp_tuned")
+
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--split-manifest", type=Path, required=True)
@@ -51,6 +59,13 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    LOGGER.info(
+        "Starting tuning: data=%s split=%s trials=%d device=%s",
+        args.data,
+        args.split_manifest,
+        args.trials,
+        args.embedding_device,
+    )
     embedder = None
     if not args.no_embeddings:
         base_embedder = SentenceTransformerEmbedder(
@@ -67,6 +82,12 @@ def main() -> int:
             if args.embedding_cache_db is not None
             else base_embedder
         )
+        LOGGER.info(
+            "Embedding configured: model=%s batch_size=%d cache_db=%s",
+            args.embedding_model,
+            args.embedding_batch_size,
+            args.embedding_cache_db or "disabled",
+        )
     try:
         result = train_vmp_tuned(
             args.data,
@@ -82,6 +103,12 @@ def main() -> int:
         if embedder is not None:
             embedder.release()
 
+    LOGGER.info(
+        "Tuning finished: examples=%d skipped=%d best_objective=%.6f",
+        result.candidate_examples,
+        result.skipped_examples,
+        result.model.best_objective,
+    )
     model_path = result.model.save(args.output)
     report_path = args.report.expanduser().resolve()
     report_path.parent.mkdir(parents=True, exist_ok=True)

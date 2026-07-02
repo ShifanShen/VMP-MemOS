@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import random
 import tempfile
 from pathlib import Path
+from time import perf_counter
 
 from pydantic import Field, JsonValue
 
@@ -25,6 +27,8 @@ from vmp_memos.longmemeval.schema import LongMemEvalSample
 from vmp_memos.longmemeval.splits import load_split_samples, sha256_file, sha256_json
 from vmp_memos.schemas import PolicyFeatures
 from vmp_memos.schemas.base import NonEmptyStr, NonNegativeInt, SchemaModel
+
+LOGGER = logging.getLogger(__name__)
 
 DEFAULT_OBJECTIVE_WEIGHTS: dict[str, float] = {
     "recall_at_5": 1.0,
@@ -104,6 +108,7 @@ def train_vmp_tuned(
         raise ValueError("qa_top_k and token_budget must be positive")
 
     samples, manifest = load_split_samples(data_path, split_manifest_path, "dev")
+    LOGGER.info("Loaded %d Dev samples; building reusable feature rows.", len(samples))
     examples, skipped = build_vmp_tuning_examples(
         samples,
         embedder=embedder,
@@ -118,6 +123,7 @@ def train_vmp_tuned(
     best_parameters: tuple[dict[str, float], float] | None = None
     best_metrics: dict[str, float] | None = None
     best_key: tuple[float, float, float, float, str] | None = None
+    search_started = perf_counter()
     for index, (weights, threshold) in enumerate(trial_parameters):
         metrics = evaluate_vmp_parameters(
             examples,
@@ -153,6 +159,16 @@ def train_vmp_tuned(
             best_key = key
             best_parameters = (weights, threshold)
             best_metrics = metrics
+        completed = index + 1
+        if completed == 1 or completed % 8 == 0 or completed == len(trial_parameters):
+            LOGGER.info(
+                "Parameter search %d/%d: objective=%.6f best=%.6f elapsed=%.1fs",
+                completed,
+                len(trial_parameters),
+                objective,
+                best_key[0],
+                perf_counter() - search_started,
+            )
 
     if best_parameters is None or best_metrics is None or best_key is None:
         raise RuntimeError("VMP-Tuned search produced no model")
@@ -213,13 +229,30 @@ def build_vmp_tuning_examples(
     examples: list[VMPTuningExample] = []
     skipped = 0
     adapter = VMPRuleAdapter(embedder=embedder)
+    build_started = perf_counter()
+    total_samples = len(samples)
     try:
         with tempfile.TemporaryDirectory(prefix="vmp_tuning_") as workspace:
             workspace_root = Path(workspace)
             for sample_index, sample in enumerate(samples):
+                completed = sample_index + 1
                 if sample.is_abstention or not sample.answer_session_ids:
                     skipped += 1
+                    LOGGER.info(
+                        "Dev feature progress %d/%d: skipped question_id=%s",
+                        completed,
+                        total_samples,
+                        sample.question_id,
+                    )
                     continue
+                sample_started = perf_counter()
+                LOGGER.info(
+                    "Dev feature progress %d/%d: embedding question_id=%s sessions=%d",
+                    completed,
+                    total_samples,
+                    sample.question_id,
+                    sample.session_count,
+                )
                 adapter.reset(workspace_root / f"sample_{sample_index:04d}")
                 for events in sample_to_session_events(sample):
                     adapter.ingest_session(events)
@@ -253,6 +286,14 @@ def build_vmp_tuning_examples(
                         memory_count=adapter.memory_count,
                         memory_tokens=adapter.total_tokens,
                     )
+                )
+                LOGGER.info(
+                    "Dev feature progress %d/%d: completed candidates=%d sample=%.1fs total=%.1fs",
+                    completed,
+                    total_samples,
+                    len(candidates),
+                    perf_counter() - sample_started,
+                    perf_counter() - build_started,
                 )
     finally:
         adapter.close()

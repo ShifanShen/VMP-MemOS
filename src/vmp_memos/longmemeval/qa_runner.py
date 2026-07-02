@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +21,8 @@ from vmp_memos.schemas.base import (
     NonNegativeInt,
     SchemaModel,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 class LongMemEvalQARunConfig(SchemaModel):
@@ -106,6 +109,11 @@ def run_longmemeval_qa(
         raise ValueError("top_k must be at least 1")
     if config.top_k != reader.config.top_k:
         raise ValueError("QA config top_k must equal reader config top_k")
+    LOGGER.info(
+        "Resolved %d QA methods: %s",
+        len(methods),
+        ",".join(methods),
+    )
 
     qa_dir = retrieval_run / "qa"
     hypothesis_dir = retrieval_run / "hypotheses"
@@ -124,6 +132,7 @@ def run_longmemeval_qa(
     observed_readers: set[tuple[str, str]] = set()
     try:
         for method in methods:
+            method_started = perf_counter()
             retrieval_records = _load_retrieval_records(
                 retrieval_run / method / "retrieval.jsonl",
                 limit=config.limit,
@@ -133,12 +142,24 @@ def run_longmemeval_qa(
             existing_ids = {record.question_id for record in existing}
             if len(existing_ids) != len(existing):
                 raise ValueError(f"Duplicate question_id in existing QA file: {qa_path}")
+            pending_count = sum(
+                record.question_id not in existing_ids
+                for record in retrieval_records
+            )
+            LOGGER.info(
+                "QA method %s started: total=%d existing=%d pending=%d",
+                method,
+                len(retrieval_records),
+                len(existing),
+                pending_count,
+            )
             observed_readers.update(
                 (record.reader_provider, record.reader_model) for record in existing
             )
             _validate_one_reader(observed_readers)
 
             with qa_path.open("a", encoding="utf-8", newline="\n") as stream:
+                completed_pending = 0
                 for retrieval_record in retrieval_records:
                     if retrieval_record.question_id in existing_ids:
                         continue
@@ -157,6 +178,22 @@ def run_longmemeval_qa(
                     stream.flush()
                     existing.append(qa_record)
                     existing_ids.add(qa_record.question_id)
+                    completed_pending += 1
+                    if (
+                        completed_pending == 1
+                        or completed_pending % 10 == 0
+                        or completed_pending == pending_count
+                    ):
+                        LOGGER.info(
+                            "QA method %s progress %d/%d: question_id=%s "
+                            "reader_latency=%.1fms elapsed=%.1fs",
+                            method,
+                            completed_pending,
+                            pending_count,
+                            qa_record.question_id,
+                            qa_record.reader_latency_ms,
+                            perf_counter() - method_started,
+                        )
 
             ordered = _order_records(existing, retrieval_records)
             _write_hypotheses(
@@ -168,6 +205,13 @@ def run_longmemeval_qa(
             _write_json(
                 qa_dir / f"{method}.summary.json",
                 summary.model_dump(mode="json"),
+            )
+            LOGGER.info(
+                "QA method %s completed in %.1fs: questions=%d exact_match=%.4f",
+                method,
+                perf_counter() - method_started,
+                summary.processed_questions,
+                float(summary.metrics.get("normalized_exact_match", 0.0)),
             )
     except Exception as exc:
         manifest.update(

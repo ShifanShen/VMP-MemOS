@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import platform
 import re
 from collections import defaultdict
@@ -41,6 +42,7 @@ from vmp_memos.schemas.base import (
 )
 
 _SAFE_PATH_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
+LOGGER = logging.getLogger(__name__)
 
 
 class RetrievalSampleRecord(SchemaModel):
@@ -111,6 +113,12 @@ def run_longmemeval_retrieval(
     started_at = datetime.now(UTC)
     wall_started = perf_counter()
     samples, split_manifest = _load_run_samples(config)
+    LOGGER.info(
+        "Loaded %d retrieval samples for %d methods: %s",
+        len(samples),
+        len(methods),
+        ",".join(methods),
+    )
     _validate_vmp_tuned_provenance(
         config,
         split_manifest=split_manifest,
@@ -133,6 +141,8 @@ def run_longmemeval_retrieval(
     summaries: dict[str, RetrievalMethodSummary] = {}
     try:
         for method in methods:
+            method_started = perf_counter()
+            LOGGER.info("Method %s started (%d samples).", method, len(samples))
             records = _run_method(
                 method,
                 samples=samples,
@@ -146,6 +156,14 @@ def run_longmemeval_retrieval(
             summary = summarize_method(method, records)
             summaries[method] = summary
             _write_json(method_dir / "summary.json", summary.model_dump(mode="json"))
+            LOGGER.info(
+                "Method %s completed in %.1fs: evaluated=%d skipped=%d recall@5=%.4f",
+                method,
+                perf_counter() - method_started,
+                summary.evaluated_questions,
+                summary.skipped_questions,
+                float(summary.metrics.get("recall_at_5", 0.0)),
+            )
     except Exception as exc:
         manifest.update(
             {
@@ -255,8 +273,19 @@ def _run_method(
     method_dir = run_dir / method
     workspace_root = method_dir / "workspaces"
     records: list[RetrievalSampleRecord] = []
+    method_started = perf_counter()
+    sample_count = len(samples)
     try:
-        for sample in samples:
+        for sample_index, sample in enumerate(samples, start=1):
+            if sample_index == 1 or sample_index % 10 == 0 or sample_index == sample_count:
+                LOGGER.info(
+                    "Method %s progress %d/%d: question_id=%s elapsed=%.1fs",
+                    method,
+                    sample_index,
+                    sample_count,
+                    sample.question_id,
+                    perf_counter() - method_started,
+                )
             adapter.reset(workspace_root / _safe_component(sample.question_id))
             if config.ingestion_granularity == "session":
                 for events in sample_to_session_events(sample):
