@@ -14,12 +14,12 @@ _COLUMNS = (
     "method",
     "ablation_type",
     "disabled_component",
-    "recall_at_5",
-    "delta_recall_at_5",
+    "recall_all@5",
+    "delta_recall_all@5",
     "mrr",
     "delta_mrr",
-    "ndcg_at_5",
-    "delta_ndcg_at_5",
+    "ndcg_any@5",
+    "delta_ndcg_any@5",
     "mean_retrieved_tokens",
     "delta_mean_retrieved_tokens",
     "normalized_exact_match",
@@ -96,12 +96,12 @@ def _row(
         "method": "VMP-full" if target_type == "full" else method,
         "ablation_type": target_type,
         "disabled_component": target_name,
-        "recall_at_5": _metric(retrieval.metrics, "recall_at_5"),
+        "recall_all@5": _metric(retrieval.metrics, "recall_all@5"),
         "mrr": _metric(retrieval.metrics, "mrr"),
-        "ndcg_at_5": _metric(retrieval.metrics, "ndcg_at_5"),
+        "ndcg_any@5": _metric(retrieval.metrics, "ndcg_any@5"),
         "mean_retrieved_tokens": retrieval.mean_retrieved_tokens,
     }
-    for metric in ("recall_at_5", "mrr", "ndcg_at_5"):
+    for metric in ("recall_all@5", "mrr", "ndcg_any@5"):
         row[f"delta_{metric}"] = _metric(retrieval.metrics, metric) - _metric(
             reference.metrics,
             metric,

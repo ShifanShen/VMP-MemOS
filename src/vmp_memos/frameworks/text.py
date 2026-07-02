@@ -9,6 +9,11 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 
 _TOKEN_PATTERN = re.compile(r"[\w-]+", flags=re.UNICODE)
+_LONGMEMEVAL_DATE_PATTERN = re.compile(
+    r"^(?P<date>\d{4}/\d{1,2}/\d{1,2})\s+"
+    r"\([A-Za-z]{3}\)\s+"
+    r"(?P<time>\d{1,2}:\d{2}(?::\d{2})?)$"
+)
 
 
 def terms(text: str) -> list[str]:
@@ -118,6 +123,13 @@ def parse_date(value: str | None) -> datetime | None:
     normalized = value.strip()
     if not normalized:
         return None
+    longmemeval_match = _LONGMEMEVAL_DATE_PATTERN.fullmatch(normalized)
+    if longmemeval_match is not None:
+        normalized = (
+            longmemeval_match.group("date").replace("/", "-")
+            + "T"
+            + longmemeval_match.group("time")
+        )
     for candidate in (
         normalized,
         normalized.replace("Z", "+00:00"),

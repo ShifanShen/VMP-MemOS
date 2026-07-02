@@ -124,7 +124,7 @@ def test_ablation_run_exports_delta_table_from_test_split(tmp_path) -> None:
     csv_text = outputs["ablation_csv"].read_text(encoding="utf-8")
     assert "VMP-full" in csv_text
     assert "vmp_tuned__no_update_operation" in csv_text
-    assert "delta_recall_at_5" in csv_text
+    assert "delta_recall_all@5" in csv_text
     assert outputs["ablation_markdown"].exists()
     assert outputs["ablation_latex"].exists()
 
@@ -149,7 +149,7 @@ def _retrieve(
         question_date=sample.question_date,
         metadata={
             "question_id": sample.question_id,
-            "question_type": sample.question_type,
+            "question_type": "single_session_user",
         },
     )
     adapter.close()

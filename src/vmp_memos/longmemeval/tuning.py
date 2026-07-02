@@ -25,13 +25,14 @@ from vmp_memos.frameworks.vmp_tuned import (
 from vmp_memos.longmemeval.converter import sample_to_session_events
 from vmp_memos.longmemeval.schema import LongMemEvalSample
 from vmp_memos.longmemeval.splits import load_split_samples, sha256_file, sha256_json
+from vmp_memos.longmemeval.validation import validate_longmemeval_dates
 from vmp_memos.schemas import PolicyFeatures
 from vmp_memos.schemas.base import NonEmptyStr, NonNegativeInt, SchemaModel
 
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_OBJECTIVE_WEIGHTS: dict[str, float] = {
-    "recall_at_5": 1.0,
+    "recall_all@5": 1.0,
     "mrr": 0.5,
     "normalized_token_cost": -0.05,
     "memory_growth": -0.05,
@@ -108,6 +109,7 @@ def train_vmp_tuned(
         raise ValueError("qa_top_k and token_budget must be positive")
 
     samples, manifest = load_split_samples(data_path, split_manifest_path, "dev")
+    date_validation = validate_longmemeval_dates(samples)
     LOGGER.info("Loaded %d Dev samples; building reusable feature rows.", len(samples))
     examples, skipped = build_vmp_tuning_examples(
         samples,
@@ -141,7 +143,7 @@ def train_vmp_tuned(
         parameter_hash = sha256_json({"weights": weights, "threshold": threshold})
         key = (
             objective,
-            metrics["recall_at_5"],
+            metrics["recall_all@5"],
             metrics["mrr"],
             -metrics["normalized_token_cost"],
             parameter_hash,
@@ -152,7 +154,9 @@ def train_vmp_tuned(
                 "objective": objective,
                 "retrieve_threshold": threshold,
                 "parameter_sha256": parameter_hash,
-                "metrics": metrics,
+                "metrics": {
+                    name: float(value) for name, value in metrics.items()
+                },
             }
         )
         if best_key is None or key > best_key:
@@ -194,6 +198,11 @@ def train_vmp_tuned(
             "qa_top_k": qa_top_k,
             "token_budget": token_budget,
             "search": "seeded_uniform_random_with_rule_baseline",
+            "feature_semantics_version": "2",
+            "retrieval_objective_metric": "recall_all@5",
+            "abstention_rule": "question_id_suffix_abs",
+            "date_format": "longmemeval_timestamp_or_iso8601",
+            "date_validation": date_validation,
             "test_labels_used": False,
             "operation_policy": (
                 "update-aware scoring, superseded-evidence archive, "
@@ -335,7 +344,6 @@ def evaluate_vmp_parameters(
                     )
                     for candidate in example.candidates
                 ],
-                question_type=example.question_type,
                 model=search_model,
             )
         )
@@ -382,7 +390,7 @@ def evaluate_vmp_parameters(
 
     retrieval_metrics = aggregate_retrieval_metrics(metric_rows)
     return {
-        "recall_at_5": retrieval_metrics["recall_at_5"],
+        "recall_all@5": retrieval_metrics["recall_all@5"],
         "mrr": retrieval_metrics["mrr"],
         "normalized_token_cost": _mean(token_costs),
         "memory_growth": _mean(memory_growth),

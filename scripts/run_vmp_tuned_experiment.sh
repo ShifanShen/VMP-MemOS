@@ -10,6 +10,7 @@ EMBEDDING_MODEL="${EMBEDDING_MODEL:-BAAI/bge-m3}"
 EMBEDDING_DEVICE="${EMBEDDING_DEVICE:-cuda}"
 EMBEDDING_CACHE_DIR="${EMBEDDING_CACHE_DIR:-${HOME}/.cache/huggingface}"
 EMBEDDING_CACHE_DB="${EMBEDDING_CACHE_DB:-outputs/longmemeval/cache/bge_m3.sqlite3}"
+EMBEDDING_BATCH_SIZE="${EMBEDDING_BATCH_SIZE:-1}"
 RUN_ID="${RUN_ID:-lme_test_vmp_tuned_$(date -u +%Y%m%dT%H%M%SZ)}"
 METHODS="${METHODS:-empty,bm25,naive_vector,vector_recency,vector_importance,vmp_rule,vmp_tuned}"
 VMP_LLM_BASE_URL="${VMP_LLM_BASE_URL:-http://127.0.0.1:8000/v1}"
@@ -17,6 +18,7 @@ VMP_LLM_MODEL="${VMP_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
 RUN_QA="${RUN_QA:-0}"
 LOG_DIR="${LOG_DIR:-outputs/longmemeval/logs}"
 LOG_PATH="${LOG_PATH:-${LOG_DIR}/${RUN_ID}.log}"
+TABLE_DIR="${TABLE_DIR:-outputs/longmemeval/tables/${RUN_ID}}"
 
 cd "${PROJECT_ROOT}"
 mkdir -p "${LOG_DIR}"
@@ -38,7 +40,9 @@ trap on_exit EXIT
 
 log_stage "Starting VMP-Tuned experiment."
 log_stage "run_id=${RUN_ID} data=${DATA_PATH} model=${EMBEDDING_MODEL} device=${EMBEDDING_DEVICE}"
+log_stage "embedding_batch_size=${EMBEDDING_BATCH_SIZE} prewarm_embeddings=true"
 log_stage "methods=${METHODS} run_qa=${RUN_QA} log=${LOG_PATH}"
+log_stage "table_dir=${TABLE_DIR}"
 
 log_stage "Phase 1/4: creating deterministic LongMemEval split."
 python scripts/create_longmemeval_split.py \
@@ -58,6 +62,7 @@ python scripts/train_vmp_tuned.py \
   --embedding-device "${EMBEDDING_DEVICE}" \
   --embedding-cache-dir "${EMBEDDING_CACHE_DIR}" \
   --embedding-cache-db "${EMBEDDING_CACHE_DB}" \
+  --embedding-batch-size "${EMBEDDING_BATCH_SIZE}" \
   --trials 64 \
   --tuning-seed 2025 \
   --retrieval-depth 10 \
@@ -76,6 +81,8 @@ python scripts/run_longmemeval_retrieval.py \
   --embedding-device "${EMBEDDING_DEVICE}" \
   --embedding-cache-dir "${EMBEDDING_CACHE_DIR}" \
   --embedding-cache-db "${EMBEDDING_CACHE_DB}" \
+  --embedding-batch-size "${EMBEDDING_BATCH_SIZE}" \
+  --prewarm-embeddings \
   --run-id "${RUN_ID}"
 
 if [[ "${RUN_QA}" == "1" ]]; then
@@ -97,7 +104,8 @@ fi
 
 log_stage "Exporting paper tables."
 python scripts/export_longmemeval_tables.py \
-  --retrieval-run "outputs/longmemeval/runs/${RUN_ID}"
+  --retrieval-run "outputs/longmemeval/runs/${RUN_ID}" \
+  --output-dir "${TABLE_DIR}"
 
 echo "Completed VMP-Tuned test run: outputs/longmemeval/runs/${RUN_ID}"
 if [[ "${RUN_QA}" != "1" ]]; then

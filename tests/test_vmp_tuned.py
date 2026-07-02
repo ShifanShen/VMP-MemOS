@@ -63,6 +63,38 @@ def test_vmp_tuned_trains_on_dev_and_runs_only_on_test(tmp_path) -> None:
         run_longmemeval_retrieval(dev_config, run_id="must_not_run")
 
 
+def test_vmp_tuned_rejects_models_with_obsolete_feature_semantics(tmp_path) -> None:
+    payload = {
+        "schema_version": "1.1",
+        "weights": {
+            name: 0.0
+            for name in (
+                "semantic_relevance",
+                "importance",
+                "scope_match",
+                "confidence",
+                "success_contribution",
+                "recency",
+                "contradiction",
+                "redundancy",
+                "token_cost",
+                "staleness",
+                "update_signal",
+                "action_signal",
+            )
+        },
+        "split_id": "old",
+        "split_manifest_sha256": "old",
+        "dataset_sha256": "old",
+        "best_objective": 0.0,
+    }
+    model_path = tmp_path / "old_model.json"
+    model_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="schema is obsolete"):
+        VMPTunedModel.load(model_path)
+
+
 def _record(index: int) -> dict:
     old_session = f"q{index}_old"
     new_session = f"q{index}_new"

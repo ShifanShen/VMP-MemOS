@@ -46,7 +46,7 @@ def main() -> int:
         default=None,
         help="Optional persistent SQLite cache shared with retrieval runs.",
     )
-    parser.add_argument("--embedding-batch-size", type=int, default=32)
+    parser.add_argument("--embedding-batch-size", type=int, default=1)
     parser.add_argument("--trials", type=int, default=64)
     parser.add_argument("--tuning-seed", type=int, default=2025)
     parser.add_argument("--retrieval-depth", type=int, default=10)

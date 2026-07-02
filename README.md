@@ -31,7 +31,7 @@ VMP-MemOS 是一个面向长期 LLM Agent 的可解释 Memory Policy Layer。项
 - LongMemEval 消融：在同一冻结模型上运行 7 个 feature ablation 和 3 个 operation ablation，导出 retrieval/QA delta 表；
 - Cost analysis：离线聚合 ingestion/retrieval/reader 延迟、token、active memory、storage 和每个正确答案成本；
 - Case export：从 test 主实验与消融 run 中确定性导出四类可审计论文案例；
-- LongMemEval retrieval runner：统一 BGE-M3 embedding、session/turn ingestion、Recall@1/3/5/10、Precision@5、MRR、NDCG@5、延迟与存储统计；
+- LongMemEval retrieval runner：统一 BGE-M3 embedding、session/turn ingestion、官方 Recall-All/Any@5/10 与 NDCG、补充 fractional recall / MRR、延迟与存储统计；
 - LongMemEval QA runner：统一 vLLM reader、固定 prompt、断点续跑、本地 QA metrics 和官方兼容 hypothesis；
 - retrieval 论文表格导出：CSV、Markdown、LaTeX；
 - 官方 Mem0 OSS adapter：固定 `mem0ai==2.0.10`，统一 vLLM/BGE-M3，支持 evidence provenance、workspace reset 和 smoke 凭证；
@@ -285,10 +285,13 @@ python scripts/run_longmemeval_retrieval.py \
   --embedding-model BAAI/bge-m3 \
   --embedding-device cuda \
   --embedding-cache-dir /path/to/huggingface-cache \
+  --embedding-cache-db outputs/longmemeval/cache/bge_m3.sqlite3 \
+  --embedding-batch-size 1 \
+  --prewarm-embeddings \
   --run-id lme_s_bge_m3_main
 ```
 
-`--top-k 5` 是后续 QA 使用的 evidence 数量；`--retrieval-depth 10` 会额外保存前 10 条结果，以便合法计算 Recall@10。每个 run 会输出：
+`--top-k 5` 是后续 QA 使用的 evidence 数量；`--retrieval-depth 10` 会额外保存前 10 条结果，以便计算官方 Recall-All/Any@10。4090D 默认使用 `--embedding-batch-size 1`，避免 BGE-M3 对长 session 编码时 OOM。持久缓存会在计时前统一预热，并把 batch size、缓存路径、预热耗时、hit/miss/generated 写入 manifest，保证方法顺序不会污染 latency。每个 run 会输出：
 
 ```text
 outputs/longmemeval/runs/{run_id}/manifest.json
@@ -324,6 +327,8 @@ python scripts/train_vmp_tuned.py \
   --embedding-model BAAI/bge-m3 \
   --embedding-device cuda \
   --embedding-cache-dir "${HOME}/.cache/huggingface" \
+  --embedding-cache-db outputs/longmemeval/cache/bge_m3.sqlite3 \
+  --embedding-batch-size 1 \
   --trials 64 \
   --tuning-seed 2025
 ```
@@ -344,6 +349,9 @@ python scripts/run_longmemeval_retrieval.py \
   --embedding-model BAAI/bge-m3 \
   --embedding-device cuda \
   --embedding-cache-dir "${HOME}/.cache/huggingface" \
+  --embedding-cache-db outputs/longmemeval/cache/bge_m3.sqlite3 \
+  --embedding-batch-size 1 \
+  --prewarm-embeddings \
   --run-id lme_test_vmp_tuned_seed42
 ```
 
@@ -355,16 +363,26 @@ RUN_ID=lme_test_vmp_tuned_seed42 \
 bash scripts/run_vmp_tuned_experiment.sh
 ```
 
+脚本将表格写入 `outputs/longmemeval/tables/{RUN_ID}/`，避免新 run
+覆盖旧实验表格；控制台和 Python 日志同时保存在
+`outputs/longmemeval/logs/{RUN_ID}.log`。
+
 脚本默认不启动或调用 vLLM，避免单卡上 vLLM 预分配显存后 BGE-M3 无法加载。
 retrieval 完成后再启动 vLLM 并执行下文 QA 命令。若你已为两者留出足够显存，
 可以设置 `RUN_QA=1` 让脚本继续执行 QA。
+
+runner 会拒绝任何非空但无法解析的日期。官方 LongMemEval
+`YYYY/MM/DD (Day) HH:MM` 与 ISO-8601 都受支持；`question_id` 以 `_abs`
+结尾的 30 条题目按官方定义视为 abstention：retrieval 默认跳过，QA 单独计算
+abstention accuracy。
 
 ### LongMemEval 消融实验
 
 消融实验严格复用前一步生成的 split manifest、BGE-M3 和冻结
 `vmp_tuned_seed42.json`，不会为任何消融变体重新调参。
-本阶段将模型 schema 升级为 `1.1` 以记录 operation policy；拉取新代码后应先
-重新执行 `run_vmp_tuned_experiment.sh`，旧 `1.0` 工件会被明确拒绝。变体包括：
+本阶段将模型 schema 升级为 `1.2`，记录修正后的日期语义、官方
+`recall_all@5` 调参目标与 operation policy；拉取新代码后应先重新执行
+`run_vmp_tuned_experiment.sh`，旧 `1.0/1.1` 工件会被明确拒绝。变体包括：
 
 ```text
 VMP-full
@@ -411,7 +429,7 @@ python scripts/export_longmemeval_ablation.py \
   --retrieval-run outputs/longmemeval/runs/lme_test_ablation_seed42
 ```
 
-输出 `table4_ablation.{csv,md,tex}`，包含 Recall@5、MRR、NDCG@5、
+输出 `table4_ablation.{csv,md,tex}`，包含官方 Recall-All@5、MRR、NDCG@5、
 retrieved tokens、Normalized EM、Token F1 及其相对 VMP-full 的差值。
 
 ### Cost and Efficiency

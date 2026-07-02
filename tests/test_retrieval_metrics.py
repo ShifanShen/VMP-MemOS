@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from vmp_memos.evaluation import (
@@ -21,11 +23,28 @@ def test_compute_retrieval_metrics_handles_multiple_gold_sessions() -> None:
         ["gold_a", "gold_b"],
     )
 
-    assert metrics["recall_at_1"] == 0.0
-    assert metrics["recall_at_3"] == 1.0
-    assert metrics["precision_at_5"] == pytest.approx(0.4)
+    assert metrics["recall_any@1"] == 0.0
+    assert metrics["recall_all@1"] == 0.0
+    assert metrics["recall_any@3"] == 1.0
+    assert metrics["recall_all@3"] == 1.0
+    assert metrics["fractional_recall@3"] == 1.0
+    assert metrics["precision@5"] == pytest.approx(0.4)
     assert metrics["mrr"] == pytest.approx(0.5)
-    assert 0.0 < metrics["ndcg_at_5"] < 1.0
+    assert metrics["ndcg_any@5"] == pytest.approx(
+        (1.0 + 1.0 / math.log2(3)) / 2.0
+    )
+    assert 0.0 < metrics["standard_ndcg@5"] < 1.0
+
+
+def test_official_recall_all_requires_every_gold_session() -> None:
+    metrics = compute_retrieval_metrics(
+        ["gold_a", "noise", "noise_2"],
+        ["gold_a", "gold_b"],
+    )
+
+    assert metrics["recall_any@5"] == 1.0
+    assert metrics["recall_all@5"] == 0.0
+    assert metrics["fractional_recall@5"] == 0.5
 
 
 def test_aggregate_retrieval_metrics_macro_averages_rows() -> None:

@@ -15,7 +15,7 @@ from time import perf_counter
 
 from pydantic import Field, JsonValue
 
-from vmp_memos.embeddings import BaseEmbedder
+from vmp_memos.embeddings import BaseEmbedder, CachedEmbedder
 from vmp_memos.evaluation import (
     aggregate_retrieval_metrics,
     compute_retrieval_metrics,
@@ -26,7 +26,11 @@ from vmp_memos.frameworks import (
     RetrievedMemory,
     adapter_for_name,
 )
-from vmp_memos.longmemeval.converter import sample_to_events, sample_to_session_events
+from vmp_memos.longmemeval.converter import (
+    sample_to_events,
+    sample_to_session_events,
+    session_to_text,
+)
 from vmp_memos.longmemeval.loader import load_longmemeval
 from vmp_memos.longmemeval.schema import LongMemEvalRunConfig, LongMemEvalSample
 from vmp_memos.longmemeval.splits import (
@@ -34,6 +38,7 @@ from vmp_memos.longmemeval.splits import (
     load_split_samples,
     sha256_file,
 )
+from vmp_memos.longmemeval.validation import validate_longmemeval_dates
 from vmp_memos.schemas.base import (
     NonEmptyStr,
     NonNegativeFloat,
@@ -80,6 +85,11 @@ class RetrievalMethodSummary(SchemaModel):
     mean_storage_size_bytes: NonNegativeFloat = 0.0
     mean_ingest_latency_ms: NonNegativeFloat = 0.0
     mean_retrieval_latency_ms: NonNegativeFloat = 0.0
+    embedding_cache_requests: NonNegativeInt = 0
+    embedding_cache_hits: NonNegativeInt = 0
+    embedding_cache_misses: NonNegativeInt = 0
+    embedding_cache_generated: NonNegativeInt = 0
+    embedding_cache_hit_rate: NonNegativeFloat = 0.0
 
 
 class RetrievalRunResult(SchemaModel):
@@ -113,6 +123,7 @@ def run_longmemeval_retrieval(
     started_at = datetime.now(UTC)
     wall_started = perf_counter()
     samples, split_manifest = _load_run_samples(config)
+    date_validation = validate_longmemeval_dates(samples)
     LOGGER.info(
         "Loaded %d retrieval samples for %d methods: %s",
         len(samples),
@@ -136,10 +147,18 @@ def run_longmemeval_retrieval(
         started_at=started_at,
         split_manifest=split_manifest,
     )
+    manifest["date_validation"] = date_validation
     _write_json(manifest_path, manifest)
 
     summaries: dict[str, RetrievalMethodSummary] = {}
     try:
+        manifest["embedding_prewarm"] = _prewarm_embeddings(
+            samples,
+            embedder=embedder,
+            ingestion_granularity=config.ingestion_granularity,
+            enabled=config.prewarm_embeddings,
+        )
+        _write_json(manifest_path, manifest)
         for method in methods:
             method_started = perf_counter()
             LOGGER.info("Method %s started (%d samples).", method, len(samples))
@@ -157,12 +176,12 @@ def run_longmemeval_retrieval(
             summaries[method] = summary
             _write_json(method_dir / "summary.json", summary.model_dump(mode="json"))
             LOGGER.info(
-                "Method %s completed in %.1fs: evaluated=%d skipped=%d recall@5=%.4f",
+                "Method %s completed in %.1fs: evaluated=%d skipped=%d recall_all@5=%.4f",
                 method,
                 perf_counter() - method_started,
                 summary.evaluated_questions,
                 summary.skipped_questions,
-                float(summary.metrics.get("recall_at_5", 0.0)),
+                float(summary.metrics.get("recall_all@5", 0.0)),
             )
     except Exception as exc:
         manifest.update(
@@ -213,6 +232,22 @@ def summarize_method(
         by_type_rows[record.question_type].append(
             {name: float(value) for name, value in record.metrics.items()}
         )
+    cache_requests = sum(
+        int(_numeric_stat(record, "embedding_cache_requests"))
+        for record in records
+    )
+    cache_hits = sum(
+        int(_numeric_stat(record, "embedding_cache_hits"))
+        for record in records
+    )
+    cache_misses = sum(
+        int(_numeric_stat(record, "embedding_cache_misses"))
+        for record in records
+    )
+    cache_generated = sum(
+        int(_numeric_stat(record, "embedding_cache_generated"))
+        for record in records
+    )
     return RetrievalMethodSummary(
         method=method,
         processed_questions=len(records),
@@ -240,6 +275,13 @@ def summarize_method(
         ),
         mean_retrieval_latency_ms=_mean(
             [_numeric_stat(record, "total_retrieval_latency_ms") for record in records]
+        ),
+        embedding_cache_requests=cache_requests,
+        embedding_cache_hits=cache_hits,
+        embedding_cache_misses=cache_misses,
+        embedding_cache_generated=cache_generated,
+        embedding_cache_hit_rate=(
+            cache_hits / cache_requests if cache_requests else 0.0
         ),
     )
 
@@ -286,6 +328,7 @@ def _run_method(
                     sample.question_id,
                     perf_counter() - method_started,
                 )
+            cache_before = _cache_stats(embedder)
             adapter.reset(workspace_root / _safe_component(sample.question_id))
             if config.ingestion_granularity == "session":
                 for events in sample_to_session_events(sample):
@@ -304,12 +347,16 @@ def _run_method(
                     "token_budget": _token_budget(config.metadata),
                 },
             )
+            adapter_stats = adapter.stats()
+            adapter_stats.update(
+                _cache_stats_delta(cache_before, _cache_stats(embedder))
+            )
             records.append(
                 _sample_record(
                     sample,
                     method=method,
                     retrieved=retrieved,
-                    adapter_stats=adapter.stats(),
+                    adapter_stats=adapter_stats,
                     skip_abstention=config.skip_abstention_for_retrieval,
                 )
             )
@@ -398,6 +445,7 @@ def _build_manifest(
             else None
         ),
         "embedding_identifier": embedder.identifier if embedder else None,
+        "embedding_runtime": _embedding_runtime_metadata(embedder),
         "official_framework_runtime": (
             framework_runtime.public_metadata()
             if framework_runtime is not None
@@ -522,7 +570,11 @@ def _validate_vmp_tuned_provenance(
     )
     if not uses_vmp_tuned:
         return
-    if split_manifest is None or config.split_name is None:
+    if (
+        split_manifest is None
+        or config.split_name is None
+        or config.split_manifest_path is None
+    ):
         raise ValueError("vmp_tuned evaluation requires a checked split manifest")
     if config.vmp_tuned_model_path is None:
         raise ValueError("vmp_tuned_model_path is required")
@@ -546,3 +598,102 @@ def _validate_vmp_tuned_provenance(
             "VMP-Tuned embedding differs from evaluation embedding: "
             f"expected {model.embedding_identifier!r}, got {actual_embedding!r}"
         )
+
+
+def _prewarm_embeddings(
+    samples: list[LongMemEvalSample],
+    *,
+    embedder: BaseEmbedder | None,
+    ingestion_granularity: str,
+    enabled: bool,
+) -> dict[str, JsonValue]:
+    if not enabled:
+        return {"enabled": False, "performed": False, "reason": "disabled"}
+    if not isinstance(embedder, CachedEmbedder):
+        return {
+            "enabled": True,
+            "performed": False,
+            "reason": "persistent_cache_required",
+        }
+
+    started = perf_counter()
+    before_stats = embedder.cache_stats()
+    entries_before = embedder.cache.count(embedder.identifier)
+    total = len(samples)
+    for index, sample in enumerate(samples, start=1):
+        if ingestion_granularity == "session":
+            texts = [
+                session_to_text(events)
+                for events in sample_to_session_events(sample)
+            ]
+        else:
+            texts = [str(event.content) for event in sample_to_events(sample)]
+        texts.append(sample.question)
+        embedder.embed(texts)
+        if index == 1 or index % 10 == 0 or index == total:
+            LOGGER.info(
+                "Embedding prewarm progress %d/%d: question_id=%s elapsed=%.1fs",
+                index,
+                total,
+                sample.question_id,
+                perf_counter() - started,
+            )
+    delta = _raw_cache_stats_delta(before_stats, embedder.cache_stats())
+    return {
+        "enabled": True,
+        "performed": True,
+        "duration_seconds": perf_counter() - started,
+        "cache_entries_before": entries_before,
+        "cache_entries_after": embedder.cache.count(embedder.identifier),
+        **delta,
+    }
+
+
+def _cache_stats(embedder: BaseEmbedder | None) -> dict[str, int]:
+    if not isinstance(embedder, CachedEmbedder):
+        return {"requests": 0, "hits": 0, "misses": 0, "generated": 0}
+    return embedder.cache_stats()
+
+
+def _cache_stats_delta(
+    before: dict[str, int],
+    after: dict[str, int],
+) -> dict[str, int]:
+    return {
+        f"embedding_cache_{name}": value
+        for name, value in _raw_cache_stats_delta(before, after).items()
+    }
+
+
+def _raw_cache_stats_delta(
+    before: dict[str, int],
+    after: dict[str, int],
+) -> dict[str, int]:
+    return {
+        name: max(0, after[name] - before[name])
+        for name in ("requests", "hits", "misses", "generated")
+    }
+
+
+def _embedding_runtime_metadata(
+    embedder: BaseEmbedder | None,
+) -> dict[str, JsonValue] | None:
+    if embedder is None:
+        return None
+    base = embedder.embedder if isinstance(embedder, CachedEmbedder) else embedder
+    batch_size = getattr(base, "batch_size", None)
+    return {
+        "identifier": embedder.identifier,
+        "batch_size": batch_size if isinstance(batch_size, int) else None,
+        "persistent_cache": isinstance(embedder, CachedEmbedder),
+        "cache_path": (
+            str(embedder.cache.path)
+            if isinstance(embedder, CachedEmbedder)
+            else None
+        ),
+        "cache_entries_at_start": (
+            embedder.cache.count(embedder.identifier)
+            if isinstance(embedder, CachedEmbedder)
+            else None
+        ),
+    }

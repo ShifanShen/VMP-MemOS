@@ -9,7 +9,9 @@ EMBEDDING_MODEL="${EMBEDDING_MODEL:-BAAI/bge-m3}"
 EMBEDDING_DEVICE="${EMBEDDING_DEVICE:-cuda}"
 EMBEDDING_CACHE_DIR="${EMBEDDING_CACHE_DIR:-${HOME}/.cache/huggingface}"
 EMBEDDING_CACHE_DB="${EMBEDDING_CACHE_DB:-outputs/longmemeval/cache/bge_m3.sqlite3}"
+EMBEDDING_BATCH_SIZE="${EMBEDDING_BATCH_SIZE:-1}"
 RUN_ID="${RUN_ID:-lme_test_ablation_$(date -u +%Y%m%dT%H%M%SZ)}"
+TABLE_DIR="${TABLE_DIR:-outputs/longmemeval/tables/${RUN_ID}}"
 RUN_QA="${RUN_QA:-0}"
 VMP_LLM_BASE_URL="${VMP_LLM_BASE_URL:-http://127.0.0.1:8000/v1}"
 VMP_LLM_MODEL="${VMP_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
@@ -53,6 +55,8 @@ python scripts/run_longmemeval_retrieval.py \
   --embedding-device "${EMBEDDING_DEVICE}" \
   --embedding-cache-dir "${EMBEDDING_CACHE_DIR}" \
   --embedding-cache-db "${EMBEDDING_CACHE_DB}" \
+  --embedding-batch-size "${EMBEDDING_BATCH_SIZE}" \
+  --prewarm-embeddings \
   --run-id "${RUN_ID}"
 
 if [[ "${RUN_QA}" == "1" ]]; then
@@ -68,7 +72,8 @@ if [[ "${RUN_QA}" == "1" ]]; then
 fi
 
 python scripts/export_longmemeval_ablation.py \
-  --retrieval-run "outputs/longmemeval/runs/${RUN_ID}"
+  --retrieval-run "outputs/longmemeval/runs/${RUN_ID}" \
+  --output-dir "${TABLE_DIR}"
 
 echo "Completed LongMemEval ablation run: outputs/longmemeval/runs/${RUN_ID}"
 if [[ "${RUN_QA}" != "1" ]]; then

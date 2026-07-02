@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -300,8 +301,8 @@ def _select_knowledge_update(
         if "update" not in vmp_record.question_type.casefold():
             continue
         vmp_correct = _qa_correct(qa_vmp.get(question_id))
-        vmp_recall = _metric(vmp_record, "recall_at_5")
-        vector_recall = _metric(vector[question_id], "recall_at_5")
+        vmp_recall = _metric(vmp_record, "recall_all@5")
+        vector_recall = _metric(vector[question_id], "recall_all@5")
         if vmp_correct is False or vmp_recall <= vector_recall:
             continue
         candidates.append(
@@ -354,7 +355,7 @@ def _select_stale_vector(
                 (
                     float(vector_stale - vmp_stale),
                     qa_advantage,
-                    _metric(vmp[question_id], "recall_at_5"),
+                    _metric(vmp[question_id], "recall_all@5"),
                 ),
                 question_id,
             )
@@ -393,7 +394,7 @@ def _select_vmp_error(
     candidates: list[tuple[tuple[float, float, float], str]] = []
     for question_id, record in vmp.items():
         qa_correct = _qa_correct(qa_vmp.get(question_id))
-        recall = _metric(record, "recall_at_5")
+        recall = _metric(record, "recall_all@5")
         if qa_correct is not False and (record.evaluation_skipped or recall >= 1.0):
             continue
         candidates.append(
@@ -410,7 +411,7 @@ def _select_vmp_error(
 
 
 def _best_candidate(
-    candidates: list[tuple[tuple[float, ...], str]],
+    candidates: Sequence[tuple[tuple[float, ...], str]],
     case_name: str,
 ) -> str:
     if not candidates:
@@ -516,8 +517,10 @@ def _analysis_lines(
     first, second = views[methods[0]], views[methods[1]]
     if case_id == "case1_knowledge_update":
         return [
-            f"{second.method} Recall@5={second.retrieval_metrics.get('recall_at_5', 0):.3f}; "
-            f"{first.method} Recall@5={first.retrieval_metrics.get('recall_at_5', 0):.3f}.",
+            f"{second.method} Recall-All@5="
+            f"{second.retrieval_metrics.get('recall_all@5', 0):.3f}; "
+            f"{first.method} Recall-All@5="
+            f"{first.retrieval_metrics.get('recall_all@5', 0):.3f}.",
             "The VMP policy ranks newer update-bearing evidence using recency and "
             "contradiction-aware signals.",
         ]
@@ -536,7 +539,7 @@ def _analysis_lines(
         ]
     return [
         f"VMP local correctness={second.locally_correct}; "
-        f"Recall@5={second.retrieval_metrics.get('recall_at_5', 0):.3f}.",
+        f"Recall-All@5={second.retrieval_metrics.get('recall_all@5', 0):.3f}.",
         "This failure is retained to bound the method's claims and support error analysis.",
     ]
 
@@ -619,9 +622,12 @@ def _validate_compatible_runs(
         raise ValueError("retrieval and ablation runs use different splits")
     main_model = main.get("vmp_tuned_model")
     ablation_model = ablation.get("vmp_tuned_model")
-    if isinstance(main_model, dict) and isinstance(ablation_model, dict):
-        if main_model.get("sha256") != ablation_model.get("sha256"):
-            raise ValueError("retrieval and ablation runs use different VMP models")
+    if (
+        isinstance(main_model, dict)
+        and isinstance(ablation_model, dict)
+        and main_model.get("sha256") != ablation_model.get("sha256")
+    ):
+        raise ValueError("retrieval and ablation runs use different VMP models")
 
 
 def _manifest_methods(manifest: dict[str, object]) -> list[str]:

@@ -30,7 +30,7 @@ class SQLiteEmbeddingCache:
 
     @staticmethod
     def cache_key(namespace: str, text: str) -> str:
-        payload = f"{namespace}\0{text}".encode("utf-8")
+        payload = f"{namespace}\0{text}".encode()
         return hashlib.sha256(payload).hexdigest()
 
     def get(self, namespace: str, text: str) -> list[float] | None:
@@ -134,6 +134,10 @@ class CachedEmbedder(BaseEmbedder):
         self.embedder = embedder
         self.cache = cache
         self._observed_dimension: int | None = embedder.dimension
+        self._cache_requests = 0
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._generated = 0
 
     @property
     def identifier(self) -> str:
@@ -148,14 +152,17 @@ class CachedEmbedder(BaseEmbedder):
         if not normalized_texts:
             return []
 
+        self._cache_requests += len(normalized_texts)
         results: list[list[float] | None] = [None] * len(normalized_texts)
         missing_texts: list[str] = []
         missing_positions: dict[str, list[int]] = {}
         for index, text in enumerate(normalized_texts):
             cached = self.cache.get(self.identifier, text)
             if cached is not None:
+                self._cache_hits += 1
                 results[index] = self._observe(cached)
                 continue
+            self._cache_misses += 1
             if text not in missing_positions:
                 missing_texts.append(text)
                 missing_positions[text] = []
@@ -163,6 +170,7 @@ class CachedEmbedder(BaseEmbedder):
 
         if missing_texts:
             generated = self.embedder.embed(missing_texts)
+            self._generated += len(generated)
             if len(generated) != len(missing_texts):
                 raise EmbeddingError(
                     f"Embedder returned {len(generated)} vectors for "
@@ -177,6 +185,16 @@ class CachedEmbedder(BaseEmbedder):
         if any(vector is None for vector in results):
             raise EmbeddingError("Embedding cache failed to resolve every input")
         return [vector for vector in results if vector is not None]
+
+    def cache_stats(self) -> dict[str, int]:
+        """Return cumulative cache request and generation counters."""
+
+        return {
+            "requests": self._cache_requests,
+            "hits": self._cache_hits,
+            "misses": self._cache_misses,
+            "generated": self._generated,
+        }
 
     def release(self) -> None:
         """Release resources held by the wrapped embedder."""

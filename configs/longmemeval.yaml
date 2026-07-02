@@ -61,13 +61,14 @@ retrieval:
   top_k: 5
   retrieval_depth: 10
   skip_abstention_for_retrieval: true
+  prewarm_embeddings: true
 
 embedding:
   provider: sentence_transformers
   model: BAAI/bge-m3
   device: cuda
   normalize_embeddings: true
-  batch_size: 32
+  batch_size: 1
   result_cache_db: outputs/longmemeval/cache/bge_m3.sqlite3
 
 reader:

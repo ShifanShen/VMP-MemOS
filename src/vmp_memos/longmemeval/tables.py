@@ -16,31 +16,39 @@ from vmp_memos.longmemeval.retrieval_runner import (
 _OVERALL_COLUMNS = (
     "method",
     "evaluated_questions",
-    "recall_at_1",
-    "recall_at_3",
-    "recall_at_5",
-    "recall_at_10",
-    "precision_at_5",
+    "recall_all@5",
+    "recall_all@10",
+    "recall_any@5",
+    "recall_any@10",
+    "ndcg_any@5",
+    "ndcg_any@10",
+    "fractional_recall@5",
+    "precision@5",
     "mrr",
-    "ndcg_at_5",
+    "standard_ndcg@5",
     "mean_retrieved_tokens",
     "mean_ingest_latency_ms",
     "mean_retrieval_latency_ms",
     "mean_memory_count",
     "mean_storage_size_bytes",
+    "embedding_cache_hit_rate",
+    "embedding_cache_misses",
 )
 
 _BY_TYPE_COLUMNS = (
     "method",
     "question_type",
     "evaluated_questions",
-    "recall_at_1",
-    "recall_at_3",
-    "recall_at_5",
-    "recall_at_10",
-    "precision_at_5",
+    "recall_all@5",
+    "recall_all@10",
+    "recall_any@5",
+    "recall_any@10",
+    "ndcg_any@5",
+    "ndcg_any@10",
+    "fractional_recall@5",
+    "precision@5",
     "mrr",
-    "ndcg_at_5",
+    "standard_ndcg@5",
 )
 
 
@@ -102,6 +110,8 @@ def _overall_row(run_dir: Path, method: str) -> dict[str, object]:
         "mean_retrieval_latency_ms": summary.mean_retrieval_latency_ms,
         "mean_memory_count": summary.mean_memory_count,
         "mean_storage_size_bytes": summary.mean_storage_size_bytes,
+        "embedding_cache_hit_rate": summary.embedding_cache_hit_rate,
+        "embedding_cache_misses": summary.embedding_cache_misses,
     }
     row.update(summary.metrics)
     return row

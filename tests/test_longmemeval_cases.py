@@ -177,7 +177,7 @@ def _retrieval(
             if memory.source_session_id is not None
         ],
         retrieved_memories=memories,
-        metrics={"recall_at_5": recall, "mrr": recall},
+        metrics={"recall_all@5": recall, "mrr": recall},
         retrieved_tokens=sum(memory.token_count for memory in memories),
         adapter_stats={
             "memory_count": memory_count,

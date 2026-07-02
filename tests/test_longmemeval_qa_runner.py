@@ -66,7 +66,7 @@ def test_qa_runner_writes_metrics_hypotheses_and_resumes(tmp_path) -> None:
     hypotheses = _read_jsonl(retrieval_run / "hypotheses" / "bm25.jsonl")
     assert hypotheses == [
         {"question_id": "q1", "hypothesis": "swimming"},
-        {"question_id": "q2", "hypothesis": "I don't know"},
+        {"question_id": "q2_abs", "hypothesis": "I don't know"},
     ]
 
     resumed = config.model_copy(update={"resume": True})
@@ -85,7 +85,7 @@ def test_retrieval_table_export_writes_all_formats(tmp_path) -> None:
     assert len(outputs) == 6
     assert all(path.exists() for path in outputs.values())
     csv_text = outputs["table1_retrieval_overall_csv"].read_text(encoding="utf-8")
-    assert "recall_at_5" in csv_text
+    assert "recall_all@5" in csv_text
     assert "bm25" in csv_text
 
 
@@ -134,16 +134,15 @@ def _answerable_record() -> dict:
 
 def _abstention_record() -> dict:
     return {
-        "question_id": "q2",
+        "question_id": "q2_abs",
         "question_type": "single_session_user",
         "question": "What is Taylor's favorite color?",
-        "answer": "I don't know",
+        "answer": "The information provided is not enough.",
         "question_date": "2024-02-01",
         "haystack_session_ids": ["s_other"],
         "haystack_dates": ["2024-01-01"],
         "haystack_sessions": [
             [{"role": "user", "content": "Taylor discussed weekend plans."}]
         ],
-        "answer_session_ids": [],
-        "has_answer": False,
+        "answer_session_ids": ["s_other"],
     }

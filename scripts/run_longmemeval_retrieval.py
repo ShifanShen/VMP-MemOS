@@ -37,7 +37,7 @@ def main() -> int:
         "--retrieval-depth",
         type=int,
         default=10,
-        help="Depth saved and evaluated; must be >= --top-k for Recall@10.",
+        help="Depth saved and evaluated; must be >= --top-k for official Recall@10.",
     )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--run-id", default=None)
@@ -59,7 +59,13 @@ def main() -> int:
         default=None,
         help="Optional persistent SQLite cache for repeated text embeddings.",
     )
-    parser.add_argument("--embedding-batch-size", type=int, default=32)
+    parser.add_argument("--embedding-batch-size", type=int, default=1)
+    parser.add_argument(
+        "--prewarm-embeddings",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Prewarm a persistent cache before timing methods.",
+    )
     parser.add_argument("--embedding-dimension", type=int, default=1024)
     parser.add_argument(
         "--vllm-base-url",
@@ -189,6 +195,7 @@ def main() -> int:
         output_dir=args.output_dir,
         ingestion_granularity=args.ingestion_granularity,
         skip_abstention_for_retrieval=not args.include_abstention_retrieval_metrics,
+        prewarm_embeddings=args.prewarm_embeddings,
         split_manifest_path=args.split_manifest,
         split_name=args.split,
         vmp_tuned_model_path=args.vmp_tuned_model,
@@ -200,6 +207,8 @@ def main() -> int:
                 if args.embedding_cache_db is not None
                 else None
             ),
+            "embedding_batch_size": args.embedding_batch_size,
+            "prewarm_embeddings": args.prewarm_embeddings,
             "lexical_smoke_only": args.no_embeddings,
         },
     )

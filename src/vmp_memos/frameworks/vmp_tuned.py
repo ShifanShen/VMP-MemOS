@@ -81,7 +81,7 @@ class VMPTunedAblation(SchemaModel):
     disabled_operations: list[NonEmptyStr] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def validate_targets(self) -> "VMPTunedAblation":
+    def validate_targets(self) -> VMPTunedAblation:
         unknown_features = set(self.disabled_features) - _ALLOWED_ABLATION_FEATURES
         unknown_operations = set(self.disabled_operations) - _ALLOWED_ABLATION_OPERATIONS
         if unknown_features or unknown_operations:
@@ -100,7 +100,7 @@ class VMPTunedAblation(SchemaModel):
 class VMPTunedModel(SchemaModel):
     """Portable ranking artifact with explicit training provenance."""
 
-    schema_version: NonEmptyStr = "1.1"
+    schema_version: NonEmptyStr = "1.2"
     model_type: NonEmptyStr = "vmp_tuned_linear_ranker"
     weights: dict[NonEmptyStr, FiniteFloat]
     intercept: FiniteFloat = 0.0
@@ -119,10 +119,10 @@ class VMPTunedModel(SchemaModel):
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def validate_frozen_dev_model(self) -> "VMPTunedModel":
+    def validate_frozen_dev_model(self) -> VMPTunedModel:
         """Require a complete model trained on dev, never on test."""
 
-        if self.schema_version != "1.1":
+        if self.schema_version != "1.2":
             raise ValueError(
                 "VMP-Tuned model schema is obsolete; retrain the frozen dev model"
             )
@@ -164,7 +164,7 @@ class VMPTunedModel(SchemaModel):
         return output_path
 
     @classmethod
-    def load(cls, path: str | Path) -> "VMPTunedModel":
+    def load(cls, path: str | Path) -> VMPTunedModel:
         """Load a frozen VMP-Tuned artifact."""
 
         model_path = Path(path).expanduser().resolve()
@@ -224,7 +224,6 @@ class VMPTunedAdapter(VMPRuleAdapter):
                         (chunk.content, chunk.source_date, features)
                         for chunk, features in rows
                     ],
-                    question_type=str(metadata.get("question_type", "")),
                     model=self.model,
                     disabled_features=self.ablation.disabled_features,
                     disabled_operations=self.ablation.disabled_operations,
@@ -353,17 +352,13 @@ def ablation_for_method(name: str) -> VMPTunedAblation:
 def superseded_candidate_indices(
     candidates: Sequence[tuple[str, str | None, PolicyFeatures]],
     *,
-    question_type: str,
     model: VMPTunedModel,
     disabled_features: Sequence[str] = (),
     disabled_operations: Sequence[str] = (),
 ) -> list[int]:
-    """Find older evidence superseded by a newer update-bearing session."""
+    """Find older evidence superseded by newer update-bearing content."""
 
-    if (
-        "update" not in question_type.casefold()
-        or "update" in disabled_operations
-    ):
+    if "update" in disabled_operations:
         return []
     archived: list[int] = []
     for index, (content, source_date, _) in enumerate(candidates):

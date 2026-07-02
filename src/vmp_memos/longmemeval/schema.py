@@ -110,7 +110,7 @@ class LongMemEvalSample(LongMemEvalRawModel):
         return data
 
     @model_validator(mode="after")
-    def validate_parallel_session_fields(self) -> "LongMemEvalSample":
+    def validate_parallel_session_fields(self) -> LongMemEvalSample:
         """Ensure session ids, dates, and sessions can be zipped safely."""
 
         session_count = len(self.haystack_sessions)
@@ -158,6 +158,8 @@ class LongMemEvalSample(LongMemEvalRawModel):
     def is_abstention(self) -> bool:
         """Return whether the sample is an abstention / no-answer case."""
 
+        if self.question_id.casefold().endswith("_abs"):
+            return True
         if self.has_answer is False:
             return True
         if self.answer_session_ids:
@@ -216,13 +218,14 @@ class LongMemEvalRunConfig(SchemaModel):
     output_dir: Path = Path("outputs/longmemeval")
     ingestion_granularity: NonEmptyStr = "session"
     skip_abstention_for_retrieval: bool = True
+    prewarm_embeddings: bool = True
     split_manifest_path: Path | None = None
     split_name: str | None = None
     vmp_tuned_model_path: Path | None = None
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def validate_run_config(self) -> "LongMemEvalRunConfig":
+    def validate_run_config(self) -> LongMemEvalRunConfig:
         """Keep CLI-created configs honest."""
 
         if self.top_k < 1:
@@ -230,7 +233,9 @@ class LongMemEvalRunConfig(SchemaModel):
         if self.retrieval_depth < self.top_k:
             raise ValueError("retrieval_depth must be greater than or equal to top_k")
         if self.retrieval_depth < 10:
-            raise ValueError("retrieval_depth must be at least 10 for Recall@10")
+            raise ValueError(
+                "retrieval_depth must be at least 10 for official Recall@10"
+            )
         if self.ingestion_granularity not in {"session", "turn"}:
             raise ValueError("ingestion_granularity must be 'session' or 'turn'")
         if bool(self.split_manifest_path) != bool(self.split_name):

@@ -378,10 +378,12 @@ src/vmp_memos/longmemeval/retrieval_runner.py
 主指标：
 
 ```text
-Session Recall@1 / @3 / @5 / @10
+Official Session Recall-All@5 / @10
+Official Session Recall-Any@5 / @10
+Supplementary Fractional Recall@1 / @3 / @5 / @10
 Session Precision@5
 Session MRR
-Session NDCG@5
+Official Session NDCG@5 / @10
 Retrieved Tokens
 Retrieval Latency
 Memory Count
@@ -393,6 +395,7 @@ abstention 处理：
 ```text
 Retrieval metrics 默认跳过 abstention questions。
 QA metrics 单独计算 abstention accuracy。
+官方 `_abs` question_id 是 abstention 的权威判定；全量 500 题中应有 30 条。
 ```
 
 ### P5：表格导出
@@ -495,7 +498,7 @@ VMP-Tuned 只在 dev 上调参，在 test 上报告。
 
 ```text
 Objective =
-SessionRecall@5
+Official Session Recall-All@5
 + 0.5 * MRR
 - 0.05 * NormalizedTokenCost
 - 0.05 * MemoryGrowth

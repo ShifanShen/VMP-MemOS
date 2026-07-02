@@ -68,6 +68,20 @@ def test_load_normalizes_numeric_answer_to_text(tmp_path) -> None:
     assert samples[1].answer == ["3", "three"]
 
 
+def test_official_abs_suffix_marks_abstention_with_evidence_sessions(tmp_path) -> None:
+    record = _sample_record()
+    record["question_id"] = "q1_abs"
+    record.pop("has_answer")
+    record["answer"] = "The information provided is not enough."
+    path = tmp_path / "longmemeval_abstention.json"
+    path.write_text(json.dumps([record]), encoding="utf-8")
+
+    sample = load_longmemeval(path)[0]
+
+    assert sample.answer_session_ids == ["s_new"]
+    assert sample.is_abstention is True
+
+
 def _sample_record() -> dict:
     return {
         "question_id": "q1",

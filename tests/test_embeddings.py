@@ -8,8 +8,8 @@ from vmp_memos.embeddings import (
     BaseEmbedder,
     CachedEmbedder,
     EmbeddingDimensionError,
-    SQLiteEmbeddingCache,
     SentenceTransformerEmbedder,
+    SQLiteEmbeddingCache,
 )
 
 
@@ -51,11 +51,18 @@ def test_sqlite_embedding_cache_batches_misses_and_persists_hits(tmp_path) -> No
     assert vectors[0] == vectors[1]
     assert embedder.calls == ["agent memory", "java backend"]
     assert cache.count(embedder.identifier) == 2
+    assert cached.cache_stats() == {
+        "requests": 3,
+        "hits": 0,
+        "misses": 3,
+        "generated": 2,
+    }
 
     second_embedder = CountingEmbedder()
     second_cached = CachedEmbedder(second_embedder, cache)
     assert second_cached.embed(["agent memory"]) == [vectors[0]]
     assert second_embedder.calls == []
+    assert second_cached.cache_stats()["hits"] == 1
 
 
 def test_cached_embedder_rejects_dimension_changes(tmp_path) -> None:
