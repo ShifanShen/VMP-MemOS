@@ -6,15 +6,22 @@ dataset:
 
 tuning:
   training_split: dev
-  model_path: outputs/longmemeval/models/vmp_tuned_seed42.json
-  search_report: outputs/longmemeval/models/vmp_tuned_seed42_search.json
+  model_path: outputs/longmemeval/models/vmp_v3_seed42.json
+  search_report: outputs/longmemeval/models/vmp_v3_seed42_search.json
   split_seed: 42
   tuning_seed: 2025
-  trials: 64
+  trials: 512
+  min_dev_recall_all_at_5: 0.90
+  min_dev_delta_vs_dense: 0.02
+  ranking_pipeline:
+    candidate_generation: dense_bm25_hybrid
+    candidate_pool_size: 20
+    policy_rerank: bounded
+    lifecycle: non_destructive
 
 ablation:
   reference_method: vmp_tuned
-  frozen_model: outputs/longmemeval/models/vmp_tuned_seed42.json
+  frozen_model: outputs/longmemeval/models/vmp_v3_seed42.json
   split_role: test
   methods:
     - vmp_tuned__no_recency

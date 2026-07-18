@@ -11,6 +11,7 @@ from vmp_memos.longmemeval import LongMemEvalRunConfig
 from vmp_memos.longmemeval.retrieval_runner import run_longmemeval_retrieval
 from vmp_memos.longmemeval.splits import create_longmemeval_split
 from vmp_memos.longmemeval.tuning import train_vmp_tuned
+from vmp_memos.schemas import PolicyFeatures
 
 
 def test_vmp_tuned_trains_on_dev_and_runs_only_on_test(tmp_path) -> None:
@@ -93,6 +94,92 @@ def test_vmp_tuned_rejects_models_with_obsolete_feature_semantics(tmp_path) -> N
 
     with pytest.raises(ValueError, match="schema is obsolete"):
         VMPTunedModel.load(model_path)
+
+
+def test_vmp_v3_safe_trial_is_dense_only_and_model_records_safety_bounds(
+    tmp_path,
+) -> None:
+    data_path = tmp_path / "longmemeval.json"
+    data_path.write_text(
+        json.dumps([_record(index) for index in range(4)]),
+        encoding="utf-8",
+    )
+    split = create_longmemeval_split(data_path, dev_size=2, test_size=2, seed=42)
+    split_path = split.save(tmp_path / "split.json")
+
+    tuning = train_vmp_tuned(
+        data_path,
+        split_path,
+        embedder=None,
+        trials=1,
+        tuning_seed=7,
+    )
+
+    assert tuning.model.schema_version == "1.3"
+    assert tuning.model.semantic_anchor_weight == 1.0
+    assert tuning.model.lexical_anchor_weight == 0.0
+    assert tuning.model.policy_adjustment_limit == 0.0
+    assert tuning.model.retrieve_threshold == 0.0
+    assert tuning.model.metadata["ranking_pipeline"] == (
+        "hybrid_candidate_generation -> bounded_policy_rerank -> "
+        "non_destructive_lifecycle"
+    )
+
+
+def test_vmp_v3_policy_delta_is_bounded_independently_of_lifecycle() -> None:
+    model = VMPTunedModel(
+        weights={
+            name: 1.0
+            for name in (
+                "semantic_relevance",
+                "importance",
+                "scope_match",
+                "confidence",
+                "success_contribution",
+                "recency",
+                "contradiction",
+                "redundancy",
+                "token_cost",
+                "staleness",
+                "update_signal",
+                "action_signal",
+            )
+        },
+        policy_adjustment_limit=0.05,
+        archive_score_penalty=0.03,
+        split_id="split",
+        split_manifest_sha256="manifest",
+        dataset_sha256="dataset",
+        best_objective=0.0,
+    )
+    features = PolicyFeatures(
+        semantic_relevance=1.0,
+        importance=1.0,
+        confidence=1.0,
+        recency=1.0,
+        contradiction=1.0,
+        redundancy=1.0,
+        token_cost=1.0,
+        staleness=1.0,
+        actionability=1.0,
+    )
+
+    delta = model.policy_delta(features, temporal_intent=True)
+    active = model.score(
+        features,
+        anchor_score=0.5,
+        temporal_intent=True,
+    )
+    superseded = model.score(
+        features,
+        anchor_score=0.5,
+        temporal_intent=True,
+        lifecycle_status="superseded",
+    )
+
+    assert 0.0 <= delta <= 0.05
+    assert active == pytest.approx(0.5 + delta)
+    assert superseded == pytest.approx(active - 0.03)
 
 
 def _record(index: int) -> dict:

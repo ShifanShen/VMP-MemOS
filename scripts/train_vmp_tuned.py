@@ -30,12 +30,12 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("outputs/longmemeval/models/vmp_tuned_seed42.json"),
+        default=Path("outputs/longmemeval/models/vmp_v3_seed42.json"),
     )
     parser.add_argument(
         "--report",
         type=Path,
-        default=Path("outputs/longmemeval/models/vmp_tuned_seed42_search.json"),
+        default=Path("outputs/longmemeval/models/vmp_v3_seed42_search.json"),
     )
     parser.add_argument("--embedding-model", default="BAAI/bge-m3")
     parser.add_argument("--embedding-device", default="cuda")
@@ -47,7 +47,7 @@ def main() -> int:
         help="Optional persistent SQLite cache shared with retrieval runs.",
     )
     parser.add_argument("--embedding-batch-size", type=int, default=1)
-    parser.add_argument("--trials", type=int, default=64)
+    parser.add_argument("--trials", type=int, default=512)
     parser.add_argument("--tuning-seed", type=int, default=2025)
     parser.add_argument("--retrieval-depth", type=int, default=10)
     parser.add_argument("--qa-top-k", type=int, default=5)
@@ -122,6 +122,12 @@ def main() -> int:
                 "training_split": result.model.training_split,
                 "best_objective": result.model.best_objective,
                 "dev_metrics": result.model.dev_metrics,
+                "semantic_anchor_weight": result.model.semantic_anchor_weight,
+                "lexical_anchor_weight": result.model.lexical_anchor_weight,
+                "policy_adjustment_limit": result.model.policy_adjustment_limit,
+                "dev_delta_vs_dense": result.model.metadata.get(
+                    "dev_recall_all_at_5_delta_vs_dense"
+                ),
                 "trials": result.trials_evaluated,
                 "test_labels_used": False,
             },

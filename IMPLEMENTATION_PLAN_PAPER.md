@@ -483,6 +483,20 @@ End-to-End Latency
 
 必须先做固定 dev/test split，避免调参污染测试集。
 
+当前实现采用 VMP-v3 安全链路：
+
+```text
+Dense + BM25 hybrid candidate generation
+-> dense safety baseline
+-> temporal-intent gated policy features
+-> bounded policy reranking
+-> non-destructive lifecycle annotations
+```
+
+调参的第一个 trial 固定为纯 dense，最终选择首先最大化官方
+`Recall-All@5`。`ARCHIVE/MERGE` 在 retrieval 阶段不得删除 source session；
+只有 Dev `Recall-All@5 >= 0.90` 且相对 dense 至少提升 0.02，才能运行 Test。
+
 推荐：
 
 ```text

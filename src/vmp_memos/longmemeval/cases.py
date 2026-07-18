@@ -200,7 +200,7 @@ def export_longmemeval_cases(
         ),
         _build_case(
             "case3_archive_suppression",
-            "VMP archive suppresses superseded evidence",
+            "VMP softly reranks superseded evidence",
             case3_id,
             source_run=ablation_dir,
             records={
@@ -209,8 +209,8 @@ def export_longmemeval_cases(
             },
             qa={},
             selection_reason=(
-                "Question where archive operations reduce active memory and "
-                "suppress evidence retained by the no-archive ablation."
+                "Question where non-destructive archive annotations change the "
+                "ranking of evidence retained by the no-archive ablation."
             ),
         ),
         _build_case(
@@ -371,16 +371,24 @@ def _select_archive_case(
     for question_id, full_record in full.items():
         no_archive_record = no_archive[question_id]
         archive_count = _operation_count(full_record, "archive")
+        ranking_delta = len(
+            set(no_archive_record.retrieved_session_ids)
+            - set(full_record.retrieved_session_ids)
+        )
         memory_delta = (
             _adapter_number(no_archive_record, "memory_count")
             - _adapter_number(full_record, "memory_count")
         )
         extra_non_gold = _non_gold_count(no_archive_record) - _non_gold_count(full_record)
-        if archive_count <= 0 or memory_delta <= 0:
+        if archive_count <= 0:
             continue
         candidates.append(
             (
-                (float(archive_count), memory_delta, float(extra_non_gold)),
+                (
+                    float(archive_count),
+                    float(max(ranking_delta, extra_non_gold)),
+                    memory_delta,
+                ),
                 question_id,
             )
         )
@@ -480,7 +488,11 @@ def _method_view(
         ),
         locally_correct=_qa_correct(qa),
         operation_counts=operation_counts,
-        active_memory_count=_adapter_optional_number(record, "memory_count"),
+        active_memory_count=(
+            _adapter_optional_number(record, "active_memory_count")
+            if "active_memory_count" in record.adapter_stats
+            else _adapter_optional_number(record, "memory_count")
+        ),
         active_memory_tokens=_adapter_optional_number(record, "total_tokens"),
         storage_size_bytes=_adapter_optional_number(record, "storage_size_bytes"),
     )
@@ -534,8 +546,8 @@ def _analysis_lines(
         return [
             f"Archive operations={first.operation_counts.get('archive', 0)}; "
             f"active memories {first.active_memory_count} vs {second.active_memory_count}.",
-            "The no-archive variant uses the same frozen ranking model; only the "
-            "archive operation is disabled.",
+            "Both variants retain the same physical source memories. The no-archive "
+            "variant disables only the bounded superseded-status score penalty.",
         ]
     return [
         f"VMP local correctness={second.locally_correct}; "

@@ -42,6 +42,10 @@ def test_feature_and_operation_ablation_targets_are_independent() -> None:
         features,
         disabled_operations=no_update.disabled_operations,
     )
+    non_temporal_values = vmp_tuned_feature_values(
+        features,
+        temporal_intent=False,
+    )
 
     assert recency_values["recency"] == 0.0
     assert recency_values["update_signal"] == 0.0
@@ -49,45 +53,60 @@ def test_feature_and_operation_ablation_targets_are_independent() -> None:
     assert update_values["recency"] == 0.8
     assert update_values["contradiction"] == 0.5
     assert update_values["update_signal"] == 0.0
+    assert non_temporal_values["recency"] == 0.0
+    assert non_temporal_values["contradiction"] == 0.0
+    assert non_temporal_values["update_signal"] == 0.0
+    assert non_temporal_values["action_signal"] == 0.0
 
 
-def test_archive_and_merge_operation_ablations_change_evidence(tmp_path) -> None:
+def test_lifecycle_operations_are_non_destructive_during_retrieval(tmp_path) -> None:
     model_path = _model().save(tmp_path / "model.json")
     update_sample = LongMemEvalSample.model_validate(_record(0))
 
-    full = _retrieve(
+    full, full_stats = _retrieve(
         "vmp_tuned",
         update_sample,
         model_path=model_path,
         workspace=tmp_path / "full",
     )
-    no_archive = _retrieve(
+    no_archive, no_archive_stats = _retrieve(
         "vmp_tuned__no_archive_operation",
         update_sample,
         model_path=model_path,
         workspace=tmp_path / "no_archive",
     )
-    assert [memory.source_session_id for memory in full] == ["q0_new"]
+    assert {memory.source_session_id for memory in full} == {
+        "q0_old",
+        "q0_new",
+    }
     assert {memory.source_session_id for memory in no_archive} == {
         "q0_old",
         "q0_new",
     }
+    assert full_stats["memory_count"] == 2
+    assert no_archive_stats["memory_count"] == 2
+    assert full_stats["lifecycle_status_counts"]["superseded"] == 1
+    assert no_archive_stats["lifecycle_status_counts"]["superseded"] == 0
 
     duplicate_sample = LongMemEvalSample.model_validate(_duplicate_record())
-    merged = _retrieve(
+    merged, merged_stats = _retrieve(
         "vmp_tuned",
         duplicate_sample,
         model_path=model_path,
         workspace=tmp_path / "merged",
     )
-    no_merge = _retrieve(
+    no_merge, no_merge_stats = _retrieve(
         "vmp_tuned__no_merge_operation",
         duplicate_sample,
         model_path=model_path,
         workspace=tmp_path / "no_merge",
     )
-    assert len(merged) == 1
+    assert len(merged) == 2
     assert len(no_merge) == 2
+    assert merged_stats["memory_count"] == 2
+    assert no_merge_stats["memory_count"] == 2
+    assert merged_stats["lifecycle_status_counts"]["duplicate"] == 1
+    assert no_merge_stats["lifecycle_status_counts"]["duplicate"] == 0
 
 
 def test_ablation_run_exports_delta_table_from_test_split(tmp_path) -> None:
@@ -135,7 +154,7 @@ def _retrieve(
     *,
     model_path: Path,
     workspace: Path,
-) -> list[RetrievedMemory]:
+) -> tuple[list[RetrievedMemory], dict[str, object]]:
     adapter = adapter_for_name(
         method,
         vmp_tuned_model_path=str(model_path),
@@ -152,14 +171,16 @@ def _retrieve(
             "question_type": "single_session_user",
         },
     )
+    stats = adapter.stats()
     adapter.close()
-    return results
+    return results, stats
 
 
 def _model() -> VMPTunedModel:
     return VMPTunedModel(
         weights=BASELINE_VMP_WEIGHTS,
         retrieve_threshold=0.0,
+        archive_similarity_threshold=0.45,
         split_id="test_split",
         split_manifest_sha256="test_manifest",
         dataset_sha256="test_dataset",

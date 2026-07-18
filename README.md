@@ -27,7 +27,7 @@ VMP-MemOS 是一个面向长期 LLM Agent 的可解释 Memory Policy Layer。项
 - LongMemEval-cleaned 接入骨架：loader、inspector、Event 转换、session-level evidence chunk；
 - 论文实验 adapter 基类：`RetrievedMemory`、`BaseMemoryFrameworkAdapter`、`FrameworkRegistry`、framework controllability audit；
 - 第一批可控 retrieval adapter：`empty`、`bm25`、`naive_vector`、`vector_recency`、`vector_importance`、`vmp_rule`；
-- VMP-Tuned：固定 SHA-256 question-level dev/test split，只在 dev 上搜索检索权重，冻结模型后强制只在 test 上报告；
+- VMP-v3：固定 SHA-256 question-level dev/test split，使用 Dense + BM25 混合候选、语义安全锚点、有界 policy 重排和非破坏生命周期；只有通过 Dev 质量门禁后才允许访问 Test；
 - LongMemEval 消融：在同一冻结模型上运行 7 个 feature ablation 和 3 个 operation ablation，导出 retrieval/QA delta 表；
 - Cost analysis：离线聚合 ingestion/retrieval/reader 延迟、token、active memory、storage 和每个正确答案成本；
 - Case export：从 test 主实验与消融 run 中确定性导出四类可审计论文案例；
@@ -86,6 +86,7 @@ VMP-MemOS 是一个面向长期 LLM Agent 的可解释 Memory Policy Layer。项
 │   ├── run_longmemeval_qa.py
 │   ├── run_longmemeval_ablation.sh
 │   ├── run_vmp_tuned_experiment.sh
+│   ├── check_vmp_v3_gate.py
 │   ├── run_ablation.py
 │   ├── serve_embeddings.py
 │   ├── serve_graphiti_neo4j.sh
@@ -302,7 +303,26 @@ outputs/longmemeval/runs/{run_id}/{method}/summary.json
 
 正式结果不要使用 `--no-embeddings`。该选项只用于验证数据、runner 和输出格式。
 
-### VMP-Tuned：固定 dev/test 后调参
+### VMP-v3：固定 dev/test、质量门禁与安全重排
+
+当前链路不再允许 policy 在检索时删除 source session：
+
+```text
+LongMemEval sessions
+  -> BGE-M3 dense score + BM25 lexical score
+  -> Top-20 hybrid candidate pool
+  -> dense safety anchor
+  -> temporal-intent gated PolicyFeatures
+  -> bounded policy delta
+  -> non-destructive active/superseded/duplicate annotation
+  -> Top-10 retrieval evidence
+  -> Top-5 shared vLLM reader context
+```
+
+第 0 个 Dev trial 固定为纯 dense 安全基线。其余 trial 只能在最多
+`policy_adjustment_limit` 的范围内调整 hybrid anchor；最终选择首先最大化官方
+`Recall-All@5`。冻结模型必须同时满足绝对 Dev 指标和相对 dense 增益门禁，否则
+脚本在访问 Test 前退出。
 
 先生成一次固定 split。分配只使用 `question_id` 和 seed，不读取答案；manifest
 同时记录原始数据 SHA-256，后续数据文件有任何字节变化都会拒绝运行：
@@ -322,14 +342,14 @@ python scripts/create_longmemeval_split.py \
 python scripts/train_vmp_tuned.py \
   --data data/longmemeval/longmemeval_s_cleaned.json \
   --split-manifest outputs/longmemeval/splits/dev_test_seed42.json \
-  --output outputs/longmemeval/models/vmp_tuned_seed42.json \
-  --report outputs/longmemeval/models/vmp_tuned_seed42_search.json \
+  --output outputs/longmemeval/models/vmp_v3_seed42.json \
+  --report outputs/longmemeval/models/vmp_v3_seed42_search.json \
   --embedding-model BAAI/bge-m3 \
   --embedding-device cuda \
   --embedding-cache-dir "${HOME}/.cache/huggingface" \
   --embedding-cache-db outputs/longmemeval/cache/bge_m3.sqlite3 \
   --embedding-batch-size 1 \
-  --trials 64 \
+  --trials 512 \
   --tuning-seed 2025
 ```
 
@@ -342,7 +362,7 @@ python scripts/run_longmemeval_retrieval.py \
   --data data/longmemeval/longmemeval_s_cleaned.json \
   --split-manifest outputs/longmemeval/splits/dev_test_seed42.json \
   --split test \
-  --vmp-tuned-model outputs/longmemeval/models/vmp_tuned_seed42.json \
+  --vmp-tuned-model outputs/longmemeval/models/vmp_v3_seed42.json \
   --methods empty,bm25,naive_vector,vector_recency,vector_importance,vmp_rule,vmp_tuned \
   --top-k 5 \
   --retrieval-depth 10 \
@@ -352,15 +372,15 @@ python scripts/run_longmemeval_retrieval.py \
   --embedding-cache-db outputs/longmemeval/cache/bge_m3.sqlite3 \
   --embedding-batch-size 1 \
   --prewarm-embeddings \
-  --run-id lme_test_vmp_tuned_seed42
+  --run-id lme_test_vmp_v3_seed42
 ```
 
 一条脚本可顺序执行 split、dev 调优、test retrieval 和表格导出：
 
 ```bash
 DATA_PATH=data/longmemeval/longmemeval_s_cleaned.json \
-RUN_ID=lme_test_vmp_tuned_seed42 \
-bash scripts/run_vmp_tuned_experiment.sh
+RUN_ID=lme_test_vmp_v3_seed42 \
+uv run --no-sync bash scripts/run_vmp_tuned_experiment.sh
 ```
 
 脚本将表格写入 `outputs/longmemeval/tables/{RUN_ID}/`，避免新 run
@@ -379,10 +399,10 @@ abstention accuracy。
 ### LongMemEval 消融实验
 
 消融实验严格复用前一步生成的 split manifest、BGE-M3 和冻结
-`vmp_tuned_seed42.json`，不会为任何消融变体重新调参。
-本阶段将模型 schema 升级为 `1.2`，记录修正后的日期语义、官方
-`recall_all@5` 调参目标与 operation policy；拉取新代码后应先重新执行
-`run_vmp_tuned_experiment.sh`，旧 `1.0/1.1` 工件会被明确拒绝。变体包括：
+`vmp_v3_seed42.json`，不会为任何消融变体重新调参。
+V3 模型 schema 为 `1.3`，记录 hybrid anchor、有界重排、Dev safety baseline
+和非破坏 lifecycle policy；拉取新代码后应先重新执行
+`run_vmp_tuned_experiment.sh`，旧 `1.0`–`1.2` 工件会被明确拒绝。变体包括：
 
 ```text
 VMP-full
@@ -398,8 +418,10 @@ VMP w/o merge_operation
 VMP w/o archive_operation
 ```
 
-operation ablation 具有独立语义：update 识别并提升新的冲突证据，archive
-抑制被较新 update session 取代的旧证据，merge 去除近重复 session。
+operation ablation 具有独立语义：update 只在问题具有时间/更新意图时参与重排；
+archive 和 merge 只写入 `superseded/duplicate` 状态并施加有上限的软惩罚，
+不会在 retrieval 阶段删除原始 session。每道题的 operation counts、状态数量、
+禁用组件和模型 split ID 都写入 retrieval record。
 每道题的 operation counts、禁用组件和模型 split ID 都写入 retrieval record。
 
 先在未启动 vLLM 时完成全部 test retrieval。脚本使用持久化 SQLite embedding
@@ -440,7 +462,7 @@ retrieved tokens、Normalized EM、Token F1 及其相对 VMP-full 的差值。
 
 ```bash
 python scripts/export_longmemeval_cost.py \
-  --retrieval-run outputs/longmemeval/runs/lme_test_vmp_tuned_seed42
+  --retrieval-run outputs/longmemeval/runs/lme_test_vmp_v3_seed42
 ```
 
 输出：
@@ -462,7 +484,7 @@ answer。本地 vLLM 不伪造美元价格；官方框架无法导出内部 LLM 
 
 ```bash
 python scripts/export_longmemeval_cost.py \
-  --retrieval-run outputs/longmemeval/runs/lme_test_vmp_tuned_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_vmp_v3_seed42 \
   --allow-missing-qa
 ```
 
@@ -485,7 +507,7 @@ python scripts/export_longmemeval_cases.py \
 ```text
 1. VMP 正确处理 knowledge update
 2. NaiveVectorRAG 召回与新证据相关但更旧的非 gold 证据
-3. VMP archive 相对 no-archive 减少 active memory
+3. VMP archive 在保留 source evidence 的同时降低 superseded memory 排名
 4. VMP 的真实错误案例
 ```
 
@@ -721,7 +743,7 @@ python scripts/run_longmemeval_retrieval.py \
   --data data/longmemeval/longmemeval_s_cleaned.json \
   --split-manifest outputs/longmemeval/splits/dev_test_seed42.json \
   --split test \
-  --vmp-tuned-model outputs/longmemeval/models/vmp_tuned_seed42.json \
+  --vmp-tuned-model outputs/longmemeval/models/vmp_v3_seed42.json \
   --methods bm25,naive_vector,vector_recency,vector_importance,vmp_rule,vmp_tuned,mem0,langmem,graphiti,letta \
   --top-k 5 \
   --retrieval-depth 10 \

@@ -73,7 +73,7 @@ def test_case_export_selects_four_distinct_auditable_cases(tmp_path) -> None:
         "vmp_tuned",
         [_memory("q3_new", "2024-01-20")],
         recall=1,
-        memory_count=1,
+        memory_count=2,
         archive_count=1,
     )
     no_archive = [
