@@ -483,17 +483,18 @@ End-to-End Latency
 
 必须先做固定 dev/test split，避免调参污染测试集。
 
-当前实现采用 VMP-v3 安全链路：
+当前实现采用 VMP-v4 稳健安全链路：
 
 ```text
-Dense + BM25 hybrid candidate generation
--> dense safety baseline
+Dense Top-10 safety set
+-> cached query-independent policy features
 -> temporal-intent gated policy features
--> bounded policy reranking
--> non-destructive lifecycle annotations
+-> guarded Top-5 policy reranking (at least four dense-head items)
+-> cached non-destructive lifecycle annotations
 ```
 
-调参的第一个 trial 固定为纯 dense，最终选择首先最大化官方
+调参的第一个 trial 固定为纯 dense，所有 trial 同时检查确定性 fold 稳定性、
+question-type 宏平均与最差类型召回；最终选择首先最大化官方
 `Recall-All@5`。`ARCHIVE/MERGE` 在 retrieval 阶段不得删除 source session；
 只有 Dev `Recall-All@5 >= 0.90` 且相对 dense 至少提升 0.02，才能运行 Test。
 
@@ -512,10 +513,12 @@ VMP-Tuned 只在 dev 上调参，在 test 上报告。
 
 ```text
 Objective =
-Official Session Recall-All@5
-+ 0.5 * MRR
+0.80 * Official Session Recall-All@5
++ 0.35 * MacroTypeRecall-All@5
++ 0.15 * WorstTypeRecall-All@5
++ 0.40 * MRR
+- 0.20 * FoldRecallStdDev
 - 0.05 * NormalizedTokenCost
-- 0.05 * MemoryGrowth
 - 0.10 * StaleRetrievalRate
 - 0.10 * ConflictRetrievalRate
 ```

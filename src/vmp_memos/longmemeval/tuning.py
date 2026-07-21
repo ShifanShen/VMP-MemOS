@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import random
 import tempfile
 from dataclasses import dataclass
@@ -14,29 +15,36 @@ from pydantic import Field, JsonValue
 
 from vmp_memos.embeddings import BaseEmbedder
 from vmp_memos.evaluation import aggregate_retrieval_metrics, compute_retrieval_metrics
-from vmp_memos.frameworks.text import parse_date
+from vmp_memos.frameworks.text import clamp01, parse_date
 from vmp_memos.frameworks.vmp_memos import VMPRuleAdapter
 from vmp_memos.frameworks.vmp_tuned import (
     VMP_TUNED_FEATURES,
     VMPTunedModel,
+    build_static_vmp_features,
+    build_vmp_feature_rows,
+    guarded_ranked_indices,
     normalized_bm25_scores,
     question_has_temporal_intent,
     superseded_candidate_indices,
+    vmp_tuned_feature_values,
 )
 from vmp_memos.longmemeval.converter import sample_to_session_events
 from vmp_memos.longmemeval.schema import LongMemEvalSample
 from vmp_memos.longmemeval.splits import load_split_samples, sha256_file, sha256_json
 from vmp_memos.longmemeval.validation import validate_longmemeval_dates
 from vmp_memos.schemas import PolicyFeatures
-from vmp_memos.schemas.base import NonEmptyStr, NonNegativeInt, SchemaModel
+from vmp_memos.schemas.base import NonEmptyStr, NonNegativeInt, SchemaModel, Score
 
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_OBJECTIVE_WEIGHTS: dict[str, float] = {
-    "recall_all@5": 1.0,
-    "mrr": 0.5,
+    "recall_all@5": 0.80,
+    "macro_type_recall_all@5": 0.35,
+    "worst_type_recall_all@5": 0.15,
+    "mrr": 0.40,
+    "fold_recall_stddev": -0.20,
     "normalized_token_cost": -0.05,
-    # Physical memory growth is reported, but V3 never rewards destructive
+    # Physical memory growth is reported, but V4 never rewards destructive
     # deletion during query-time ranking.
     "memory_growth": 0.0,
     "stale_retrieval_rate": -0.10,
@@ -68,6 +76,9 @@ class VMPTuningCandidate(SchemaModel):
     source_date: str | None = None
     token_count: NonNegativeInt
     policy_features: PolicyFeatures
+    lexical_score: Score = 0.0
+    lifecycle_status: NonEmptyStr = "active"
+    policy_values: dict[NonEmptyStr, Score] = Field(default_factory=dict)
 
 
 class VMPTuningExample(SchemaModel):
@@ -102,6 +113,8 @@ class VMPTuningParameters:
     lexical_anchor_weight: float
     policy_adjustment_limit: float
     archive_score_penalty: float
+    protected_dense_count: int
+    promotion_margin: float
 
     def as_payload(self) -> dict[str, object]:
         """Return deterministic JSON-compatible search provenance."""
@@ -113,6 +126,8 @@ class VMPTuningParameters:
             "lexical_anchor_weight": self.lexical_anchor_weight,
             "policy_adjustment_limit": self.policy_adjustment_limit,
             "archive_score_penalty": self.archive_score_penalty,
+            "protected_dense_count": self.protected_dense_count,
+            "promotion_margin": self.promotion_margin,
         }
 
 
@@ -126,6 +141,7 @@ def train_vmp_tuned(
     retrieval_depth: int = 10,
     qa_top_k: int = 5,
     token_budget: int = 2048,
+    stability_folds: int = 5,
 ) -> VMPTuningResult:
     """Tune on manifest ``dev`` IDs and freeze the best deterministic trial."""
 
@@ -133,7 +149,7 @@ def train_vmp_tuned(
         raise ValueError("trials must be at least 1")
     if retrieval_depth < qa_top_k:
         raise ValueError("retrieval_depth must be at least qa_top_k")
-    if qa_top_k < 1 or token_budget < 1:
+    if qa_top_k < 1 or token_budget < 1 or stability_folds < 2:
         raise ValueError("qa_top_k and token_budget must be positive")
 
     samples, manifest = load_split_samples(data_path, split_manifest_path, "dev")
@@ -154,7 +170,7 @@ def train_vmp_tuned(
     best_metrics: dict[str, float] | None = None
     baseline_metrics: dict[str, float] | None = None
     best_objective: float | None = None
-    best_key: tuple[float, float, float, float, str] | None = None
+    best_key: tuple[float, float, float, float, float, float, str] | None = None
     search_started = perf_counter()
     for index, parameters in enumerate(trial_parameters):
         weights = parameters.weights
@@ -167,10 +183,13 @@ def train_vmp_tuned(
             lexical_anchor_weight=parameters.lexical_anchor_weight,
             policy_adjustment_limit=parameters.policy_adjustment_limit,
             archive_score_penalty=parameters.archive_score_penalty,
+            protected_dense_count=parameters.protected_dense_count,
+            promotion_margin=parameters.promotion_margin,
             retrieval_depth=retrieval_depth,
             qa_top_k=qa_top_k,
             token_budget=token_budget,
             max_memory_count=max_memory_count,
+            stability_folds=stability_folds,
         )
         objective = sum(
             DEFAULT_OBJECTIVE_WEIGHTS[name] * metrics[name]
@@ -179,11 +198,27 @@ def train_vmp_tuned(
         if index == 0:
             baseline_metrics = dict(metrics)
         parameter_hash = sha256_json(parameters.as_payload())
+        baseline_recall = float(
+            (baseline_metrics or metrics).get("recall_all@5", 0.0)
+        )
+        baseline_macro = float(
+            (baseline_metrics or metrics).get("macro_type_recall_all@5", 0.0)
+        )
+        baseline_worst = float(
+            (baseline_metrics or metrics).get("worst_type_recall_all@5", 0.0)
+        )
+        robust_non_regression = int(
+            metrics["recall_all@5"] >= baseline_recall
+            and metrics["macro_type_recall_all@5"] >= baseline_macro - 0.01
+            and metrics["worst_type_recall_all@5"] >= baseline_worst - 0.03
+        )
         key = (
-            metrics["recall_all@5"],
+            float(robust_non_regression),
+            metrics["min_fold_recall_all@5"],
             objective,
+            metrics["recall_all@5"],
             metrics["mrr"],
-            -metrics["normalized_token_cost"],
+            -parameters.policy_adjustment_limit,
             parameter_hash,
         )
         summaries.append(
@@ -195,6 +230,9 @@ def train_vmp_tuned(
                 "lexical_anchor_weight": parameters.lexical_anchor_weight,
                 "policy_adjustment_limit": parameters.policy_adjustment_limit,
                 "archive_score_penalty": parameters.archive_score_penalty,
+                "protected_dense_count": parameters.protected_dense_count,
+                "promotion_margin": parameters.promotion_margin,
+                "robust_non_regression": bool(robust_non_regression),
                 "parameter_sha256": parameter_hash,
                 "metrics": cast(
                     JsonValue,
@@ -214,7 +252,7 @@ def train_vmp_tuned(
                 completed,
                 len(trial_parameters),
                 objective,
-                best_key[1],
+                best_objective,
                 perf_counter() - search_started,
             )
 
@@ -236,6 +274,8 @@ def train_vmp_tuned(
         lexical_anchor_weight=best_parameters.lexical_anchor_weight,
         policy_adjustment_limit=best_parameters.policy_adjustment_limit,
         archive_score_penalty=best_parameters.archive_score_penalty,
+        protected_dense_count=best_parameters.protected_dense_count,
+        promotion_margin=best_parameters.promotion_margin,
         split_id=manifest.split_id,
         split_manifest_sha256=sha256_file(manifest_path),
         dataset_sha256=manifest.dataset_sha256,
@@ -252,8 +292,9 @@ def train_vmp_tuned(
             "retrieval_depth": retrieval_depth,
             "qa_top_k": qa_top_k,
             "token_budget": token_budget,
-            "search": "seeded_bounded_policy_search_with_dense_safety_baseline",
-            "feature_semantics_version": "3",
+            "stability_folds": stability_folds,
+            "search": "seeded_guarded_policy_search_with_fold_and_group_stability",
+            "feature_semantics_version": "4",
             "retrieval_objective_metric": "recall_all@5",
             "dense_safety_baseline_metrics": cast(JsonValue, baseline_metrics),
             "dev_recall_all_at_5_delta_vs_dense": (
@@ -265,8 +306,12 @@ def train_vmp_tuned(
             "date_validation": date_validation,
             "test_labels_used": False,
             "ranking_pipeline": (
-                "hybrid_candidate_generation -> bounded_policy_rerank -> "
-                "non_destructive_lifecycle"
+                "dense_top10_safety_set -> guarded_top5_policy_rerank -> "
+                "cached_non_destructive_lifecycle"
+            ),
+            "dense_safety_guarantee": (
+                "Returned Top-10 preserves the dense Top-10 set; Top-5 retains at "
+                "least protected_dense_count dense-head items."
             ),
             "operation_policy": (
                 "query-independent lifecycle annotations with bounded score penalties; "
@@ -330,15 +375,43 @@ def build_vmp_tuning_examples(
                 for events in sample_to_session_events(sample):
                     adapter.ingest_session(events)
                 adapter.finalize_ingestion()
-                rows = adapter.feature_rows(
+                query_embedding = (
+                    embedder.embed_one(sample.question) if embedder is not None else None
+                )
+                static_features = build_static_vmp_features(adapter.chunks)
+                rows = build_vmp_feature_rows(
+                    adapter.chunks,
                     sample.question,
+                    query_embedding=query_embedding,
                     question_date=sample.question_date,
                     metadata={
                         "question_id": sample.question_id,
                         "question_type": sample.question_type,
                         "token_budget": token_budget,
                     },
+                    static_features=static_features,
                 )
+                lexical_scores = normalized_bm25_scores(
+                    sample.question,
+                    [chunk.content for chunk, _ in rows],
+                )
+                lifecycle_model = VMPTunedModel(
+                    weights={name: 0.0 for name in VMP_TUNED_FEATURES},
+                    split_id="dev_features",
+                    split_manifest_sha256="dev_features",
+                    dataset_sha256="dev_features",
+                    best_objective=0.0,
+                )
+                superseded = set(
+                    superseded_candidate_indices(
+                        [
+                            (chunk.content, chunk.source_date, features)
+                            for chunk, features in rows
+                        ],
+                        model=lifecycle_model,
+                    )
+                )
+                temporal_intent = question_has_temporal_intent(sample.question)
                 candidates = [
                     VMPTuningCandidate(
                         memory_id=chunk.memory_id,
@@ -347,8 +420,18 @@ def build_vmp_tuning_examples(
                         source_date=chunk.source_date,
                         token_count=chunk.token_count,
                         policy_features=features,
+                        lexical_score=lexical_score,
+                        lifecycle_status=(
+                            "superseded" if index in superseded else "active"
+                        ),
+                        policy_values=vmp_tuned_feature_values(
+                            features,
+                            temporal_intent=temporal_intent,
+                        ),
                     )
-                    for chunk, features in rows
+                    for index, ((chunk, features), lexical_score) in enumerate(
+                        zip(rows, lexical_scores, strict=True)
+                    )
                 ]
                 examples.append(
                     VMPTuningExample(
@@ -381,20 +464,24 @@ def evaluate_vmp_parameters(
     retrieve_threshold: float,
     semantic_anchor_weight: float = 0.80,
     lexical_anchor_weight: float = 0.20,
-    policy_adjustment_limit: float = 0.10,
-    archive_score_penalty: float = 0.03,
+    policy_adjustment_limit: float = 0.06,
+    archive_score_penalty: float = 0.02,
+    protected_dense_count: int = 4,
+    promotion_margin: float = 0.02,
     retrieval_depth: int,
     qa_top_k: int,
     token_budget: int,
     max_memory_count: int,
+    stability_folds: int = 5,
 ) -> dict[str, float]:
-    """Evaluate one parameter set against dev gold labels."""
+    """Evaluate one parameter set with dense guards and stability slices."""
 
     metric_rows: list[dict[str, float]] = []
     token_costs: list[float] = []
     memory_growth: list[float] = []
     stale_rates: list[float] = []
     conflict_rates: list[float] = []
+    retained_dense_head: list[float] = []
     search_model = VMPTunedModel(
         weights=weights,
         split_id="dev_search",
@@ -406,67 +493,74 @@ def evaluate_vmp_parameters(
         lexical_anchor_weight=lexical_anchor_weight,
         policy_adjustment_limit=policy_adjustment_limit,
         archive_score_penalty=archive_score_penalty,
+        protected_dense_count=protected_dense_count,
+        promotion_margin=promotion_margin,
     )
     for example in examples:
-        superseded = set(
-            superseded_candidate_indices(
-                [
-                    (
-                        candidate.content,
-                        candidate.source_date,
-                        candidate.policy_features,
-                    )
-                    for candidate in example.candidates
-                ],
-                model=search_model,
-            )
-        )
-        lexical_scores = normalized_bm25_scores(
-            example.question,
-            [candidate.content for candidate in example.candidates],
-        )
         temporal_intent = question_has_temporal_intent(example.question)
+        dense_ranked = sorted(
+            range(len(example.candidates)),
+            key=lambda candidate_index: (
+                -float(
+                    example.candidates[
+                        candidate_index
+                    ].policy_features.semantic_relevance
+                ),
+                example.candidates[candidate_index].memory_id,
+            ),
+        )
         anchor_ranked = sorted(
             (
                 (
                     search_model.anchor_score(
                         float(candidate.policy_features.semantic_relevance),
-                        lexical_score,
+                        float(candidate.lexical_score),
                     ),
                     index,
-                    candidate,
                 )
-                for index, (candidate, lexical_score) in enumerate(
-                    zip(example.candidates, lexical_scores, strict=True)
-                )
+                for index, candidate in enumerate(example.candidates)
             ),
-            key=lambda row: (-row[0], row[2].memory_id),
+            key=lambda row: (-row[0], example.candidates[row[1]].memory_id),
         )
-        candidate_pool = anchor_ranked[
-            : max(retrieval_depth, search_model.candidate_pool_size)
-        ]
-        ranked = sorted(
-            (
-                (
-                    search_model.score(
-                        candidate.policy_features,
-                        anchor_score=anchor_score,
-                        temporal_intent=temporal_intent,
-                        lifecycle_status=(
-                            "superseded" if index in superseded else "active"
-                        ),
-                    ),
-                    anchor_score,
-                    candidate,
-                )
-                for anchor_score, index, candidate in candidate_pool
-            ),
-            key=lambda row: (-row[0], -row[1], row[2].memory_id),
+        pool_size = max(
+            retrieval_depth,
+            search_model.candidate_pool_size,
+            search_model.preserve_dense_top_n,
+        )
+        pool_indices = list(
+            dict.fromkeys(
+                [*dense_ranked[:pool_size], *[row[1] for row in anchor_ranked[:pool_size]]]
+            )
+        )
+        anchor_scores = {index: score for score, index in anchor_ranked}
+        policy_scores: dict[int, float] = {}
+        for index in pool_indices:
+            candidate = example.candidates[index]
+            values = candidate.policy_values or vmp_tuned_feature_values(
+                candidate.policy_features,
+                temporal_intent=temporal_intent,
+            )
+            raw_policy_score = sum(
+                float(weights[name]) * float(values[name])
+                for name in VMP_TUNED_FEATURES
+            )
+            policy_delta = policy_adjustment_limit * math.tanh(raw_policy_score)
+            policy_scores[index] = clamp01(
+                anchor_scores[index]
+                + policy_delta
+                - search_model.lifecycle_penalty(candidate.lifecycle_status)
+            )
+        selected_indices = guarded_ranked_indices(
+            dense_ranked_indices=dense_ranked,
+            policy_scores=policy_scores,
+            anchor_scores=anchor_scores,
+            requested_top_k=retrieval_depth,
+            model=search_model,
         )
         retrieved = [
-            candidate
-            for score, _, candidate in ranked[:retrieval_depth]
-            if score >= retrieve_threshold
+            example.candidates[index]
+            for index in selected_indices
+            if policy_scores[index] >= retrieve_threshold
         ]
         retrieved_ids = [candidate.session_id for candidate in retrieved]
         metric_rows.append(
@@ -480,15 +574,57 @@ def evaluate_vmp_parameters(
         stale_rate, conflict_rate = _update_error_rates(example, qa_evidence)
         stale_rates.append(stale_rate)
         conflict_rates.append(conflict_rate)
+        dense_head = set(dense_ranked[:qa_top_k])
+        selected_head = set(selected_indices[:qa_top_k])
+        retained_dense_head.append(
+            len(dense_head & selected_head) / max(1, len(dense_head))
+        )
 
     retrieval_metrics = aggregate_retrieval_metrics(metric_rows)
+    robust_metrics = _stability_metrics(
+        examples,
+        metric_rows,
+        folds=stability_folds,
+    )
     return {
         "recall_all@5": retrieval_metrics["recall_all@5"],
         "mrr": retrieval_metrics["mrr"],
+        **robust_metrics,
+        "dense_head_retention@5": _mean(retained_dense_head),
         "normalized_token_cost": _mean(token_costs),
         "memory_growth": _mean(memory_growth),
         "stale_retrieval_rate": _mean(stale_rates),
         "conflict_retrieval_rate": _mean(conflict_rates),
+    }
+
+
+def _stability_metrics(
+    examples: list[VMPTuningExample],
+    metric_rows: list[dict[str, float]],
+    *,
+    folds: int,
+) -> dict[str, float]:
+    by_type: dict[str, list[dict[str, float]]] = {}
+    by_fold: dict[int, list[dict[str, float]]] = {}
+    for example, row in zip(examples, metric_rows, strict=True):
+        by_type.setdefault(example.question_type, []).append(row)
+        fold = int(sha256_json(example.question_id)[:8], 16) % folds
+        by_fold.setdefault(fold, []).append(row)
+    type_recalls = [
+        aggregate_retrieval_metrics(rows)["recall_all@5"]
+        for rows in by_type.values()
+    ]
+    fold_recalls = [
+        aggregate_retrieval_metrics(rows)["recall_all@5"]
+        for _, rows in sorted(by_fold.items())
+    ]
+    fold_mean = _mean(fold_recalls)
+    fold_variance = _mean([(value - fold_mean) ** 2 for value in fold_recalls])
+    return {
+        "macro_type_recall_all@5": _mean(type_recalls),
+        "worst_type_recall_all@5": min(type_recalls, default=0.0),
+        "min_fold_recall_all@5": min(fold_recalls, default=0.0),
+        "fold_recall_stddev": math.sqrt(fold_variance),
     }
 
 
@@ -504,6 +640,8 @@ def _trial_parameters(
             lexical_anchor_weight=0.0,
             policy_adjustment_limit=0.0,
             archive_score_penalty=0.0,
+            protected_dense_count=5,
+            promotion_margin=0.0,
         )
     ]
     # Deterministic fusion sweep gives every run strong dense/BM25 anchors
@@ -519,6 +657,8 @@ def _trial_parameters(
                 lexical_anchor_weight=lexical_weight,
                 policy_adjustment_limit=0.0,
                 archive_score_penalty=0.0,
+                protected_dense_count=5,
+                promotion_margin=0.0,
             )
         )
     rng = random.Random(seed)
@@ -527,15 +667,17 @@ def _trial_parameters(
             name: rng.uniform(*_WEIGHT_BOUNDS[name])
             for name in VMP_TUNED_FEATURES
         }
-        semantic_anchor_weight = rng.uniform(0.60, 1.0)
+        semantic_anchor_weight = rng.uniform(0.70, 1.0)
         parameters.append(
             VMPTuningParameters(
                 weights=weights,
                 retrieve_threshold=0.0,
                 semantic_anchor_weight=semantic_anchor_weight,
                 lexical_anchor_weight=1.0 - semantic_anchor_weight,
-                policy_adjustment_limit=rng.uniform(0.0, 0.15),
-                archive_score_penalty=rng.uniform(0.0, 0.05),
+                policy_adjustment_limit=rng.uniform(0.0, 0.08),
+                archive_score_penalty=rng.uniform(0.0, 0.02),
+                protected_dense_count=rng.choice((4, 5)),
+                promotion_margin=rng.uniform(0.01, 0.06),
             )
         )
     return parameters

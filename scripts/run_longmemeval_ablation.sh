@@ -4,7 +4,7 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_PATH="${DATA_PATH:-data/longmemeval/longmemeval_s_cleaned.json}"
 SPLIT_PATH="${SPLIT_PATH:-outputs/longmemeval/splits/dev_test_seed42.json}"
-MODEL_PATH="${MODEL_PATH:-outputs/longmemeval/models/vmp_v3_seed42.json}"
+MODEL_PATH="${MODEL_PATH:-outputs/longmemeval/models/vmp_v4_seed42.json}"
 EMBEDDING_MODEL="${EMBEDDING_MODEL:-BAAI/bge-m3}"
 EMBEDDING_DEVICE="${EMBEDDING_DEVICE:-cuda}"
 EMBEDDING_CACHE_DIR="${EMBEDDING_CACHE_DIR:-${HOME}/.cache/huggingface}"
@@ -34,12 +34,12 @@ cd "${PROJECT_ROOT}"
 
 if [[ ! -f "${SPLIT_PATH}" ]]; then
   echo "Missing split manifest: ${SPLIT_PATH}" >&2
-  echo "Run scripts/run_vmp_tuned_experiment.sh first." >&2
+  echo "Run scripts/run_vmp_v4_experiment.sh first." >&2
   exit 2
 fi
 if [[ ! -f "${MODEL_PATH}" ]]; then
   echo "Missing frozen VMP-Tuned model: ${MODEL_PATH}" >&2
-  echo "Run scripts/run_vmp_tuned_experiment.sh first." >&2
+  echo "Run scripts/run_vmp_v4_experiment.sh first." >&2
   exit 2
 fi
 

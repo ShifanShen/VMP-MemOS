@@ -7,6 +7,7 @@ import json
 import pytest
 
 from vmp_memos.frameworks import VMPTunedModel, adapter_for_name
+from vmp_memos.frameworks.vmp_tuned import guarded_ranked_indices
 from vmp_memos.longmemeval import LongMemEvalRunConfig
 from vmp_memos.longmemeval.retrieval_runner import run_longmemeval_retrieval
 from vmp_memos.longmemeval.splits import create_longmemeval_split
@@ -96,7 +97,7 @@ def test_vmp_tuned_rejects_models_with_obsolete_feature_semantics(tmp_path) -> N
         VMPTunedModel.load(model_path)
 
 
-def test_vmp_v3_safe_trial_is_dense_only_and_model_records_safety_bounds(
+def test_vmp_v4_safe_trial_is_dense_only_and_model_records_safety_bounds(
     tmp_path,
 ) -> None:
     data_path = tmp_path / "longmemeval.json"
@@ -115,18 +116,22 @@ def test_vmp_v3_safe_trial_is_dense_only_and_model_records_safety_bounds(
         tuning_seed=7,
     )
 
-    assert tuning.model.schema_version == "1.3"
+    assert tuning.model.schema_version == "1.4"
     assert tuning.model.semantic_anchor_weight == 1.0
     assert tuning.model.lexical_anchor_weight == 0.0
     assert tuning.model.policy_adjustment_limit == 0.0
     assert tuning.model.retrieve_threshold == 0.0
+    assert tuning.model.protected_dense_count == 5
+    assert tuning.model.preserve_dense_top_n == 10
     assert tuning.model.metadata["ranking_pipeline"] == (
-        "hybrid_candidate_generation -> bounded_policy_rerank -> "
-        "non_destructive_lifecycle"
+        "dense_top10_safety_set -> guarded_top5_policy_rerank -> "
+        "cached_non_destructive_lifecycle"
     )
+    assert "macro_type_recall_all@5" in tuning.model.dev_metrics
+    assert "min_fold_recall_all@5" in tuning.model.dev_metrics
 
 
-def test_vmp_v3_policy_delta_is_bounded_independently_of_lifecycle() -> None:
+def test_vmp_v4_policy_delta_is_bounded_independently_of_lifecycle() -> None:
     model = VMPTunedModel(
         weights={
             name: 1.0
@@ -180,6 +185,48 @@ def test_vmp_v3_policy_delta_is_bounded_independently_of_lifecycle() -> None:
     assert 0.0 <= delta <= 0.05
     assert active == pytest.approx(0.5 + delta)
     assert superseded == pytest.approx(active - 0.03)
+
+
+def test_vmp_v4_guard_preserves_dense_top10_and_four_dense_head_items() -> None:
+    model = VMPTunedModel(
+        weights={
+            name: 0.0
+            for name in (
+                "semantic_relevance",
+                "importance",
+                "scope_match",
+                "confidence",
+                "success_contribution",
+                "recency",
+                "contradiction",
+                "redundancy",
+                "token_cost",
+                "staleness",
+                "update_signal",
+                "action_signal",
+            )
+        },
+        protected_dense_count=4,
+        promotion_margin=0.01,
+        split_id="split",
+        split_manifest_sha256="manifest",
+        dataset_sha256="dataset",
+        best_objective=0.0,
+    )
+    dense = list(range(12))
+    scores = {index: 1.0 - index * 0.01 for index in dense}
+    scores[6] = 1.05
+    selected = guarded_ranked_indices(
+        dense_ranked_indices=dense,
+        policy_scores=scores,
+        anchor_scores=scores,
+        requested_top_k=10,
+        model=model,
+    )
+
+    assert set(selected) == set(range(10))
+    assert len(set(selected[:5]) & set(range(5))) >= 4
+    assert 6 in selected[:5]
 
 
 def _record(index: int) -> dict:

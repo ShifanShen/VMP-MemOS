@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tune VMP retrieval on LongMemEval dev and freeze a test-safe model."""
+"""Tune VMP-v4 retrieval on LongMemEval dev and freeze a test-safe model."""
 
 from __future__ import annotations
 
@@ -30,12 +30,12 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("outputs/longmemeval/models/vmp_v3_seed42.json"),
+        default=Path("outputs/longmemeval/models/vmp_v4_seed42.json"),
     )
     parser.add_argument(
         "--report",
         type=Path,
-        default=Path("outputs/longmemeval/models/vmp_v3_seed42_search.json"),
+        default=Path("outputs/longmemeval/models/vmp_v4_seed42_search.json"),
     )
     parser.add_argument("--embedding-model", default="BAAI/bge-m3")
     parser.add_argument("--embedding-device", default="cuda")
@@ -52,6 +52,12 @@ def main() -> int:
     parser.add_argument("--retrieval-depth", type=int, default=10)
     parser.add_argument("--qa-top-k", type=int, default=5)
     parser.add_argument("--token-budget", type=int, default=2048)
+    parser.add_argument(
+        "--stability-folds",
+        type=int,
+        default=5,
+        help="Deterministic Dev folds used to penalize unstable trial results.",
+    )
     parser.add_argument(
         "--no-embeddings",
         action="store_true",
@@ -98,6 +104,7 @@ def main() -> int:
             retrieval_depth=args.retrieval_depth,
             qa_top_k=args.qa_top_k,
             token_budget=args.token_budget,
+            stability_folds=args.stability_folds,
         )
     finally:
         if embedder is not None:
@@ -125,6 +132,8 @@ def main() -> int:
                 "semantic_anchor_weight": result.model.semantic_anchor_weight,
                 "lexical_anchor_weight": result.model.lexical_anchor_weight,
                 "policy_adjustment_limit": result.model.policy_adjustment_limit,
+                "protected_dense_count": result.model.protected_dense_count,
+                "promotion_margin": result.model.promotion_margin,
                 "dev_delta_vs_dense": result.model.metadata.get(
                     "dev_recall_all_at_5_delta_vs_dense"
                 ),
