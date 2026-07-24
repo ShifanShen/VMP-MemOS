@@ -66,6 +66,27 @@ _WEIGHT_BOUNDS: dict[str, tuple[float, float]] = {
     "action_signal": (0.00, 0.20),
 }
 
+# This parameter vector was learned exclusively on the same fixed Dev split by
+# VMP-v3. V4 evaluates it under the new dense guard as an auditable warm start;
+# it is not selected automatically and contains no Test information.
+_V3_DEV_WARM_START_WEIGHTS: dict[str, float] = {
+    "semantic_relevance": 0.0,
+    "importance": 0.0,
+    "scope_match": 0.0,
+    "confidence": 0.0,
+    "success_contribution": 0.0,
+    "recency": 0.05535042656182352,
+    "contradiction": 0.0761703706852449,
+    "redundancy": -0.13549777583754175,
+    "token_cost": -0.017406336211412438,
+    "staleness": -0.08887743080758244,
+    "update_signal": 0.42485714048846956,
+    "action_signal": 0.00413058386983769,
+}
+_V3_DEV_SEMANTIC_ANCHOR_WEIGHT = 0.7788190416262156
+_V3_DEV_POLICY_ADJUSTMENT_LIMIT = 0.1455056068095246
+_V3_DEV_ARCHIVE_SCORE_PENALTY = 0.005451710867574167
+
 
 class VMPTuningCandidate(SchemaModel):
     """One session and its query-dependent VMP features."""
@@ -115,6 +136,7 @@ class VMPTuningParameters:
     archive_score_penalty: float
     protected_dense_count: int
     promotion_margin: float
+    source: str = "random_search"
 
     def as_payload(self) -> dict[str, object]:
         """Return deterministic JSON-compatible search provenance."""
@@ -128,6 +150,7 @@ class VMPTuningParameters:
             "archive_score_penalty": self.archive_score_penalty,
             "protected_dense_count": self.protected_dense_count,
             "promotion_margin": self.promotion_margin,
+            "source": self.source,
         }
 
 
@@ -257,6 +280,18 @@ def train_vmp_tuned(
     )
 
     trial_parameters = _trial_parameters(trials, tuning_seed)
+    parameter_source_counts: dict[str, int] = {}
+    for parameters in trial_parameters:
+        parameter_source_counts[parameters.source] = (
+            parameter_source_counts.get(parameters.source, 0) + 1
+        )
+    LOGGER.info(
+        "Search schedule: %s",
+        ", ".join(
+            f"{source}={count}"
+            for source, count in sorted(parameter_source_counts.items())
+        ),
+    )
     max_memory_count = max(example.memory_count for example in examples)
     summaries: list[dict[str, JsonValue]] = []
     best_parameters: VMPTuningParameters | None = None
@@ -329,6 +364,7 @@ def train_vmp_tuned(
                 "archive_score_penalty": parameters.archive_score_penalty,
                 "protected_dense_count": parameters.protected_dense_count,
                 "promotion_margin": parameters.promotion_margin,
+                "parameter_source": parameters.source,
                 "robust_non_regression": robust_non_regression,
                 "clears_quality_gate": clears_quality_gate,
                 "parameter_sha256": parameter_hash,
@@ -420,6 +456,21 @@ def train_vmp_tuned(
             ),
             "max_allowed_fold_recall_stddev": max_allowed_fold_recall_stddev,
             "search": "seeded_guarded_policy_search_with_fold_and_group_stability",
+            "search_parameter_source_counts": cast(
+                JsonValue,
+                parameter_source_counts,
+            ),
+            "selected_parameter_source": best_parameters.source,
+            "dev_warm_start": {
+                "enabled": "v3_dev_warm_start" in parameter_source_counts,
+                "source_model_schema": "1.3",
+                "source_training_split": "dev",
+                "source_split_id": manifest.split_id,
+                "selection_rule": (
+                    "re-evaluated under V4 Dev metrics and quality gates"
+                ),
+                "test_labels_used": False,
+            },
             "feature_semantics_version": "4",
             "retrieval_objective_metric": "recall_all@5",
             "dense_safety_baseline_metrics": cast(JsonValue, baseline_metrics),
@@ -839,6 +890,7 @@ def _trial_parameters(
             archive_score_penalty=0.0,
             protected_dense_count=5,
             promotion_margin=0.0,
+            source="dense_baseline",
         )
     ]
     # Deterministic fusion sweep gives every run strong dense/BM25 anchors
@@ -856,8 +908,13 @@ def _trial_parameters(
                 archive_score_penalty=0.0,
                 protected_dense_count=5,
                 promotion_margin=0.0,
+                source="fusion_sweep",
             )
         )
+    for warm_start in _v3_dev_warm_start_parameters():
+        if len(parameters) >= trials:
+            return parameters
+        parameters.append(warm_start)
     rng = random.Random(seed)
     while len(parameters) < trials:
         weights = {
@@ -877,9 +934,45 @@ def _trial_parameters(
                 policy_adjustment_limit=rng.uniform(0.0, 0.15),
                 archive_score_penalty=rng.uniform(0.0, 0.02),
                 protected_dense_count=rng.choice((4, 5)),
-                promotion_margin=rng.uniform(0.01, 0.06),
+                promotion_margin=rng.uniform(0.0, 0.06),
+                source="random_search",
             )
         )
+    return parameters
+
+
+def _v3_dev_warm_start_parameters() -> list[VMPTuningParameters]:
+    """Return deterministic Dev-only seeds evaluated under the V4 guard."""
+
+    parameters: list[VMPTuningParameters] = []
+    anchor_weights = (
+        _V3_DEV_SEMANTIC_ANCHOR_WEIGHT,
+        0.75,
+        0.70,
+        0.80,
+    )
+    policy_limits = (
+        _V3_DEV_POLICY_ADJUSTMENT_LIMIT,
+        0.12,
+        0.08,
+    )
+    promotion_margins = (0.0, 0.005, 0.01)
+    for semantic_anchor_weight in anchor_weights:
+        for policy_adjustment_limit in policy_limits:
+            for promotion_margin in promotion_margins:
+                parameters.append(
+                    VMPTuningParameters(
+                        weights=dict(_V3_DEV_WARM_START_WEIGHTS),
+                        retrieve_threshold=0.0,
+                        semantic_anchor_weight=semantic_anchor_weight,
+                        lexical_anchor_weight=1.0 - semantic_anchor_weight,
+                        policy_adjustment_limit=policy_adjustment_limit,
+                        archive_score_penalty=_V3_DEV_ARCHIVE_SCORE_PENALTY,
+                        protected_dense_count=4,
+                        promotion_margin=promotion_margin,
+                        source="v3_dev_warm_start",
+                    )
+                )
     return parameters
 
 

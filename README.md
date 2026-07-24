@@ -13,6 +13,13 @@ fold 更稳定但绝对 Recall 不达标的 trial 覆盖可通过门禁的 trial
 同时记录 `max_dev_recall_all_at_5_seen` 和 `dev_oracle_ceiling_metrics`，用于区分
 “搜索没有找到”与“Dense guard 结构理论上无法达到门禁”。
 
+V4.1 的 512-trial 搜索计划还包含 36 个可审计的 Dev-only warm-start trial：
+它们复用同一固定 Dev split 上 V3 已学到的权重，并重新测试 V4 Dense guard 下的
+零/低 promotion margin。warm start 不会自动入选，仍需通过与随机 trial 完全相同
+的 Dev 指标和质量门禁；Test 标签不参与参数生成或选择。搜索报告的
+`parameter_source`、模型的 `selected_parameter_source` 和
+`search_parameter_source_counts` 会记录完整来源。
+
 V4 工件 schema 为 `1.4`，旧 V3 工件必须重新训练。服务器入口命令：
 
 ```bash

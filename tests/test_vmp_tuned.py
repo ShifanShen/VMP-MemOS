@@ -11,7 +11,11 @@ from vmp_memos.frameworks.vmp_tuned import guarded_ranked_indices
 from vmp_memos.longmemeval import LongMemEvalRunConfig
 from vmp_memos.longmemeval.retrieval_runner import run_longmemeval_retrieval
 from vmp_memos.longmemeval.splits import create_longmemeval_split
-from vmp_memos.longmemeval.tuning import train_vmp_tuned, vmp_trial_selection_key
+from vmp_memos.longmemeval.tuning import (
+    _trial_parameters,
+    train_vmp_tuned,
+    vmp_trial_selection_key,
+)
 from vmp_memos.schemas import PolicyFeatures
 
 
@@ -36,6 +40,14 @@ def test_vmp_tuned_trains_on_dev_and_runs_only_on_test(tmp_path) -> None:
     assert tuning.model.training_split == "dev"
     assert tuning.model.split_id == split.split_id
     assert tuning.model.metadata["test_labels_used"] is False
+    assert tuning.model.metadata["selected_parameter_source"] in {
+        "dense_baseline",
+        "fusion_sweep",
+    }
+    assert tuning.model.metadata["search_parameter_source_counts"] == {
+        "dense_baseline": 1,
+        "fusion_sweep": 2,
+    }
     assert tuning.trials_evaluated == 3
     assert VMPTunedModel.load(model_path).weights == tuning.model.weights
     assert adapter_for_name(
@@ -274,6 +286,36 @@ def test_vmp_v4_trial_selection_cannot_prefer_a_gate_failing_recall() -> None:
     assert failing_passes is False
     assert passing_passes is True
     assert passing_key > failing_key
+
+
+def test_vmp_v4_search_contains_zero_margin_v3_dev_warm_start() -> None:
+    parameters = _trial_parameters(64, 2025)
+    source_counts = {
+        source: sum(parameter.source == source for parameter in parameters)
+        for source in {parameter.source for parameter in parameters}
+    }
+
+    warm_starts = [
+        parameter
+        for parameter in parameters
+        if parameter.protected_dense_count == 4
+        and parameter.promotion_margin == 0.0
+        and parameter.semantic_anchor_weight
+        == pytest.approx(0.7788190416262156)
+        and parameter.policy_adjustment_limit
+        == pytest.approx(0.1455056068095246)
+    ]
+
+    assert warm_starts
+    assert source_counts == {
+        "dense_baseline": 1,
+        "fusion_sweep": 7,
+        "random_search": 20,
+        "v3_dev_warm_start": 36,
+    }
+    assert warm_starts[0].weights["update_signal"] == pytest.approx(
+        0.42485714048846956
+    )
 
 
 def _record(index: int) -> dict:
