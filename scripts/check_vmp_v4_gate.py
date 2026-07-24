@@ -39,6 +39,14 @@ def main() -> int:
         baseline, "worst_type_recall_all@5"
     )
     fold_stddev = _metric(dev, "fold_recall_stddev")
+    oracle = model.metadata.get("dev_oracle_ceiling_metrics", {})
+    oracle_ceiling = _metric(oracle, "guarded_recall_all@5_ceiling")
+    max_recall_seen = model.metadata.get("max_dev_recall_all_at_5_seen", recall)
+    max_recall_seen = (
+        float(max_recall_seen)
+        if isinstance(max_recall_seen, int | float)
+        else recall
+    )
     passed = all(
         (
             recall >= args.min_recall_all_at_5,
@@ -61,6 +69,18 @@ def main() -> int:
                 "worst_type_delta_vs_dense": worst_delta,
                 "fold_recall_stddev": fold_stddev,
                 "dense_head_retention@5": _metric(dev, "dense_head_retention@5"),
+                "selected_trial": model.metadata.get("selected_trial"),
+                "max_recall_trial": model.metadata.get("max_recall_trial"),
+                "max_dev_recall_all@5_seen": max_recall_seen,
+                "dev_oracle_ceiling_metrics": oracle,
+                "diagnosis": {
+                    "search_found_gate_passing_trial": (
+                        max_recall_seen >= args.min_recall_all_at_5
+                    ),
+                    "guard_can_theoretically_pass": (
+                        oracle_ceiling >= args.min_recall_all_at_5
+                    ),
+                },
                 "required": {
                     "min_recall_all@5": args.min_recall_all_at_5,
                     "min_delta_vs_dense": args.min_delta_vs_dense,

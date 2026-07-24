@@ -59,6 +59,22 @@ def main() -> int:
         help="Deterministic Dev folds used to penalize unstable trial results.",
     )
     parser.add_argument(
+        "--min-required-recall-all-at-5",
+        type=float,
+        default=0.90,
+        help="Absolute Dev gate used when selecting among robust trials.",
+    )
+    parser.add_argument("--min-required-delta-vs-dense", type=float, default=0.02)
+    parser.add_argument(
+        "--min-required-macro-delta-vs-dense", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--min-required-worst-type-delta-vs-dense", type=float, default=-0.03
+    )
+    parser.add_argument(
+        "--max-allowed-fold-recall-stddev", type=float, default=0.20
+    )
+    parser.add_argument(
         "--no-embeddings",
         action="store_true",
         help="Dependency-light pipeline smoke only; not valid for paper results.",
@@ -105,6 +121,17 @@ def main() -> int:
             qa_top_k=args.qa_top_k,
             token_budget=args.token_budget,
             stability_folds=args.stability_folds,
+            min_required_recall_all_at_5=args.min_required_recall_all_at_5,
+            min_required_delta_vs_dense=args.min_required_delta_vs_dense,
+            min_required_macro_delta_vs_dense=(
+                args.min_required_macro_delta_vs_dense
+            ),
+            min_required_worst_type_delta_vs_dense=(
+                args.min_required_worst_type_delta_vs_dense
+            ),
+            max_allowed_fold_recall_stddev=(
+                args.max_allowed_fold_recall_stddev
+            ),
         )
     finally:
         if embedder is not None:
@@ -136,6 +163,14 @@ def main() -> int:
                 "promotion_margin": result.model.promotion_margin,
                 "dev_delta_vs_dense": result.model.metadata.get(
                     "dev_recall_all_at_5_delta_vs_dense"
+                ),
+                "selected_trial": result.model.metadata.get("selected_trial"),
+                "max_recall_trial": result.model.metadata.get("max_recall_trial"),
+                "max_dev_recall_all_at_5_seen": result.model.metadata.get(
+                    "max_dev_recall_all_at_5_seen"
+                ),
+                "dev_oracle_ceiling_metrics": result.model.metadata.get(
+                    "dev_oracle_ceiling_metrics"
                 ),
                 "trials": result.trials_evaluated,
                 "test_labels_used": False,

@@ -17,6 +17,9 @@ TUNING_TRIALS="${TUNING_TRIALS:-512}"
 STABILITY_FOLDS="${STABILITY_FOLDS:-5}"
 MIN_DEV_RECALL_ALL_5="${MIN_DEV_RECALL_ALL_5:-0.90}"
 MIN_DEV_DELTA_VS_DENSE="${MIN_DEV_DELTA_VS_DENSE:-0.02}"
+MIN_DEV_MACRO_DELTA_VS_DENSE="${MIN_DEV_MACRO_DELTA_VS_DENSE:-0.0}"
+MIN_DEV_WORST_TYPE_DELTA_VS_DENSE="${MIN_DEV_WORST_TYPE_DELTA_VS_DENSE:--0.03}"
+MAX_DEV_FOLD_RECALL_STDDEV="${MAX_DEV_FOLD_RECALL_STDDEV:-0.20}"
 VMP_LLM_BASE_URL="${VMP_LLM_BASE_URL:-http://127.0.0.1:8000/v1}"
 VMP_LLM_MODEL="${VMP_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
 RUN_QA="${RUN_QA:-0}"
@@ -69,6 +72,11 @@ python scripts/train_vmp_tuned.py \
   --embedding-batch-size "${EMBEDDING_BATCH_SIZE}" \
   --trials "${TUNING_TRIALS}" \
   --stability-folds "${STABILITY_FOLDS}" \
+  --min-required-recall-all-at-5 "${MIN_DEV_RECALL_ALL_5}" \
+  --min-required-delta-vs-dense "${MIN_DEV_DELTA_VS_DENSE}" \
+  --min-required-macro-delta-vs-dense "${MIN_DEV_MACRO_DELTA_VS_DENSE}" \
+  --min-required-worst-type-delta-vs-dense "${MIN_DEV_WORST_TYPE_DELTA_VS_DENSE}" \
+  --max-allowed-fold-recall-stddev "${MAX_DEV_FOLD_RECALL_STDDEV}" \
   --tuning-seed 2025 \
   --retrieval-depth 10 \
   --qa-top-k 5
@@ -77,7 +85,10 @@ log_stage "Phase 3/5: enforcing robust Dev gates before Test."
 python scripts/check_vmp_v4_gate.py \
   --model "${MODEL_PATH}" \
   --min-recall-all-at-5 "${MIN_DEV_RECALL_ALL_5}" \
-  --min-delta-vs-dense "${MIN_DEV_DELTA_VS_DENSE}"
+  --min-delta-vs-dense "${MIN_DEV_DELTA_VS_DENSE}" \
+  --min-macro-delta-vs-dense "${MIN_DEV_MACRO_DELTA_VS_DENSE}" \
+  --min-worst-type-delta-vs-dense "${MIN_DEV_WORST_TYPE_DELTA_VS_DENSE}" \
+  --max-fold-recall-stddev "${MAX_DEV_FOLD_RECALL_STDDEV}"
 
 log_stage "Phase 4/5: evaluating frozen methods on Test."
 python scripts/run_longmemeval_retrieval.py \

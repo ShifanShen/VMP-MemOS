@@ -131,6 +131,79 @@ class VMPTuningParameters:
         }
 
 
+TrialSelectionKey = tuple[
+    float,
+    float,
+    float,
+    float,
+    float,
+    float,
+    float,
+    float,
+    float,
+    str,
+]
+
+
+def vmp_trial_selection_key(
+    metrics: dict[str, float],
+    *,
+    baseline_metrics: dict[str, float],
+    objective: float,
+    policy_adjustment_limit: float,
+    parameter_hash: str,
+    min_required_recall_all_at_5: float,
+    min_required_delta_vs_dense: float = 0.02,
+    min_required_macro_delta_vs_dense: float = 0.0,
+    min_required_worst_type_delta_vs_dense: float = -0.03,
+    max_allowed_fold_recall_stddev: float = 0.20,
+) -> tuple[TrialSelectionKey, bool, bool]:
+    """Rank robust trials without preferring a gate-failing absolute recall.
+
+    Robust non-regression remains the first constraint. Within that feasible
+    region, a trial that clears the configured absolute Dev gate always outranks
+    one that does not. Fold stability then breaks ties between trials with the
+    same discrete Recall-All@5 rather than silently overriding the gate.
+    """
+
+    baseline_recall = float(baseline_metrics.get("recall_all@5", 0.0))
+    baseline_macro = float(
+        baseline_metrics.get("macro_type_recall_all@5", 0.0)
+    )
+    baseline_worst = float(
+        baseline_metrics.get("worst_type_recall_all@5", 0.0)
+    )
+    robust_non_regression = (
+        metrics["recall_all@5"] >= baseline_recall
+        and metrics["macro_type_recall_all@5"] >= baseline_macro
+        and metrics["worst_type_recall_all@5"] >= baseline_worst - 0.03
+    )
+    clears_quality_gate = (
+        metrics["recall_all@5"] >= min_required_recall_all_at_5
+        and metrics["recall_all@5"] - baseline_recall
+        >= min_required_delta_vs_dense
+        and metrics["macro_type_recall_all@5"] - baseline_macro
+        >= min_required_macro_delta_vs_dense
+        and metrics["worst_type_recall_all@5"] - baseline_worst
+        >= min_required_worst_type_delta_vs_dense
+        and metrics.get("fold_recall_stddev", 0.0)
+        <= max_allowed_fold_recall_stddev
+    )
+    key: TrialSelectionKey = (
+        float(clears_quality_gate),
+        float(robust_non_regression),
+        metrics["recall_all@5"],
+        metrics["macro_type_recall_all@5"],
+        metrics["min_fold_recall_all@5"],
+        -metrics.get("fold_recall_stddev", 0.0),
+        objective,
+        metrics["mrr"],
+        -policy_adjustment_limit,
+        parameter_hash,
+    )
+    return key, robust_non_regression, clears_quality_gate
+
+
 def train_vmp_tuned(
     data_path: str | Path,
     split_manifest_path: str | Path,
@@ -142,6 +215,11 @@ def train_vmp_tuned(
     qa_top_k: int = 5,
     token_budget: int = 2048,
     stability_folds: int = 5,
+    min_required_recall_all_at_5: float = 0.90,
+    min_required_delta_vs_dense: float = 0.02,
+    min_required_macro_delta_vs_dense: float = 0.0,
+    min_required_worst_type_delta_vs_dense: float = -0.03,
+    max_allowed_fold_recall_stddev: float = 0.20,
 ) -> VMPTuningResult:
     """Tune on manifest ``dev`` IDs and freeze the best deterministic trial."""
 
@@ -151,6 +229,8 @@ def train_vmp_tuned(
         raise ValueError("retrieval_depth must be at least qa_top_k")
     if qa_top_k < 1 or token_budget < 1 or stability_folds < 2:
         raise ValueError("qa_top_k and token_budget must be positive")
+    if not 0.0 <= min_required_recall_all_at_5 <= 1.0:
+        raise ValueError("min_required_recall_all_at_5 must be in [0, 1]")
 
     samples, manifest = load_split_samples(data_path, split_manifest_path, "dev")
     date_validation = validate_longmemeval_dates(samples)
@@ -162,6 +242,19 @@ def train_vmp_tuned(
     )
     if not examples:
         raise ValueError("dev split has no answerable examples with gold session IDs")
+    oracle_metrics = dense_guard_oracle_metrics(
+        examples,
+        safety_top_k=qa_top_k,
+        preserve_dense_top_n=retrieval_depth,
+        protected_dense_count=max(1, qa_top_k - 1),
+    )
+    LOGGER.info(
+        "Dense guard oracle: dense@5=%.6f dense@10=%.6f guarded@5=%.6f required=%.6f",
+        oracle_metrics["dense_recall_all@5"],
+        oracle_metrics["dense_recall_all@10"],
+        oracle_metrics["guarded_recall_all@5_ceiling"],
+        min_required_recall_all_at_5,
+    )
 
     trial_parameters = _trial_parameters(trials, tuning_seed)
     max_memory_count = max(example.memory_count for example in examples)
@@ -170,7 +263,12 @@ def train_vmp_tuned(
     best_metrics: dict[str, float] | None = None
     baseline_metrics: dict[str, float] | None = None
     best_objective: float | None = None
-    best_key: tuple[float, float, float, float, float, float, str] | None = None
+    best_key: TrialSelectionKey | None = None
+    selected_trial: int | None = None
+    max_recall_key: tuple[float, float, float, str] | None = None
+    max_recall_trial: int | None = None
+    max_recall_metrics: dict[str, float] | None = None
+    max_recall_objective: float | None = None
     search_started = perf_counter()
     for index, parameters in enumerate(trial_parameters):
         weights = parameters.weights
@@ -198,27 +296,26 @@ def train_vmp_tuned(
         if index == 0:
             baseline_metrics = dict(metrics)
         parameter_hash = sha256_json(parameters.as_payload())
-        baseline_recall = float(
-            (baseline_metrics or metrics).get("recall_all@5", 0.0)
+        key, robust_non_regression, clears_quality_gate = vmp_trial_selection_key(
+            metrics,
+            baseline_metrics=baseline_metrics or metrics,
+            objective=objective,
+            policy_adjustment_limit=parameters.policy_adjustment_limit,
+            parameter_hash=parameter_hash,
+            min_required_recall_all_at_5=min_required_recall_all_at_5,
+            min_required_delta_vs_dense=min_required_delta_vs_dense,
+            min_required_macro_delta_vs_dense=(
+                min_required_macro_delta_vs_dense
+            ),
+            min_required_worst_type_delta_vs_dense=(
+                min_required_worst_type_delta_vs_dense
+            ),
+            max_allowed_fold_recall_stddev=max_allowed_fold_recall_stddev,
         )
-        baseline_macro = float(
-            (baseline_metrics or metrics).get("macro_type_recall_all@5", 0.0)
-        )
-        baseline_worst = float(
-            (baseline_metrics or metrics).get("worst_type_recall_all@5", 0.0)
-        )
-        robust_non_regression = int(
-            metrics["recall_all@5"] >= baseline_recall
-            and metrics["macro_type_recall_all@5"] >= baseline_macro - 0.01
-            and metrics["worst_type_recall_all@5"] >= baseline_worst - 0.03
-        )
-        key = (
-            float(robust_non_regression),
-            metrics["min_fold_recall_all@5"],
-            objective,
+        recall_key = (
             metrics["recall_all@5"],
+            objective,
             metrics["mrr"],
-            -parameters.policy_adjustment_limit,
             parameter_hash,
         )
         summaries.append(
@@ -232,7 +329,8 @@ def train_vmp_tuned(
                 "archive_score_penalty": parameters.archive_score_penalty,
                 "protected_dense_count": parameters.protected_dense_count,
                 "promotion_margin": parameters.promotion_margin,
-                "robust_non_regression": bool(robust_non_regression),
+                "robust_non_regression": robust_non_regression,
+                "clears_quality_gate": clears_quality_gate,
                 "parameter_sha256": parameter_hash,
                 "metrics": cast(
                     JsonValue,
@@ -245,14 +343,29 @@ def train_vmp_tuned(
             best_parameters = parameters
             best_metrics = metrics
             best_objective = objective
+            selected_trial = index
+        if max_recall_key is None or recall_key > max_recall_key:
+            max_recall_key = recall_key
+            max_recall_trial = index
+            max_recall_metrics = dict(metrics)
+            max_recall_objective = objective
         completed = index + 1
         if completed == 1 or completed % 8 == 0 or completed == len(trial_parameters):
+            if (
+                best_objective is None
+                or best_metrics is None
+                or max_recall_metrics is None
+            ):
+                raise RuntimeError("trial diagnostics were not initialized")
             LOGGER.info(
-                "Parameter search %d/%d: objective=%.6f best=%.6f elapsed=%.1fs",
+                "Parameter search %d/%d: objective=%.6f selected=%.6f "
+                "selected_recall=%.6f max_recall=%.6f elapsed=%.1fs",
                 completed,
                 len(trial_parameters),
                 objective,
                 best_objective,
+                best_metrics["recall_all@5"],
+                max_recall_metrics["recall_all@5"],
                 perf_counter() - search_started,
             )
 
@@ -262,6 +375,10 @@ def train_vmp_tuned(
         or best_key is None
         or best_objective is None
         or baseline_metrics is None
+        or selected_trial is None
+        or max_recall_trial is None
+        or max_recall_metrics is None
+        or max_recall_objective is None
     ):
         raise RuntimeError("VMP-Tuned search produced no model")
     best_weights = best_parameters.weights
@@ -293,10 +410,25 @@ def train_vmp_tuned(
             "qa_top_k": qa_top_k,
             "token_budget": token_budget,
             "stability_folds": stability_folds,
+            "min_required_recall_all_at_5": min_required_recall_all_at_5,
+            "min_required_delta_vs_dense": min_required_delta_vs_dense,
+            "min_required_macro_delta_vs_dense": (
+                min_required_macro_delta_vs_dense
+            ),
+            "min_required_worst_type_delta_vs_dense": (
+                min_required_worst_type_delta_vs_dense
+            ),
+            "max_allowed_fold_recall_stddev": max_allowed_fold_recall_stddev,
             "search": "seeded_guarded_policy_search_with_fold_and_group_stability",
             "feature_semantics_version": "4",
             "retrieval_objective_metric": "recall_all@5",
             "dense_safety_baseline_metrics": cast(JsonValue, baseline_metrics),
+            "dev_oracle_ceiling_metrics": cast(JsonValue, oracle_metrics),
+            "selected_trial": selected_trial,
+            "max_recall_trial": max_recall_trial,
+            "max_dev_recall_all_at_5_seen": max_recall_metrics["recall_all@5"],
+            "max_recall_trial_objective": max_recall_objective,
+            "max_recall_trial_metrics": cast(JsonValue, max_recall_metrics),
             "dev_recall_all_at_5_delta_vs_dense": (
                 best_metrics["recall_all@5"]
                 - float(baseline_metrics.get("recall_all@5", 0.0))
@@ -455,6 +587,71 @@ def build_vmp_tuning_examples(
     finally:
         adapter.close()
     return examples, skipped
+
+
+def dense_guard_oracle_metrics(
+    examples: list[VMPTuningExample],
+    *,
+    safety_top_k: int,
+    preserve_dense_top_n: int,
+    protected_dense_count: int,
+) -> dict[str, float]:
+    """Report label-aware Dev ceilings imposed by the dense guard structure.
+
+    This diagnostic never participates in candidate scoring. It answers whether
+    the configured guard can theoretically reach the absolute Dev gate when an
+    oracle chooses the open Top-5 slots from the preserved Dense Top-10 set.
+    """
+
+    if safety_top_k < 1 or preserve_dense_top_n < safety_top_k:
+        raise ValueError("invalid dense guard sizes")
+    if not 0 <= protected_dense_count <= safety_top_k:
+        raise ValueError("protected_dense_count must be within safety_top_k")
+    if not examples:
+        return {
+            "dense_recall_all@5": 0.0,
+            "dense_recall_all@10": 0.0,
+            "guarded_recall_all@5_ceiling": 0.0,
+        }
+
+    dense_head_successes = 0
+    dense_set_successes = 0
+    guarded_successes = 0
+    open_slots = safety_top_k - protected_dense_count
+    for example in examples:
+        dense_ranked = sorted(
+            example.candidates,
+            key=lambda candidate: (
+                -float(candidate.policy_features.semantic_relevance),
+                candidate.memory_id,
+            ),
+        )
+        gold = set(example.gold_session_ids)
+        dense_head = {
+            candidate.session_id for candidate in dense_ranked[:safety_top_k]
+        }
+        preserved = {
+            candidate.session_id
+            for candidate in dense_ranked[:preserve_dense_top_n]
+        }
+        protected = {
+            candidate.session_id
+            for candidate in dense_ranked[:protected_dense_count]
+        }
+        dense_head_successes += int(gold.issubset(dense_head))
+        dense_set_successes += int(gold.issubset(preserved))
+        remaining_gold = gold - protected
+        guarded_successes += int(
+            remaining_gold.issubset(preserved)
+            and len(remaining_gold) <= open_slots
+        )
+
+    denominator = len(examples)
+    return {
+        "dense_recall_all@5": dense_head_successes / denominator,
+        "dense_recall_all@10": dense_set_successes / denominator,
+        "guarded_recall_all@5_ceiling": guarded_successes / denominator,
+    }
 
 
 def evaluate_vmp_parameters(
@@ -674,7 +871,10 @@ def _trial_parameters(
                 retrieve_threshold=0.0,
                 semantic_anchor_weight=semantic_anchor_weight,
                 lexical_anchor_weight=1.0 - semantic_anchor_weight,
-                policy_adjustment_limit=rng.uniform(0.0, 0.08),
+                # Dense Top-10 and four Top-5 items remain structurally guarded,
+                # so V4 can recover the policy range that V3 needed for >=0.90
+                # Dev recall without permitting destructive multi-item churn.
+                policy_adjustment_limit=rng.uniform(0.0, 0.15),
                 archive_score_penalty=rng.uniform(0.0, 0.02),
                 protected_dense_count=rng.choice((4, 5)),
                 promotion_margin=rng.uniform(0.01, 0.06),

@@ -8,6 +8,11 @@ margin 才能进入 Top-5。查询无关 policy features 和 lifecycle 关系只
 Dev 搜索除整体 Recall-All@5 外，同时约束确定性 fold 稳定性、问题类型宏平均召回
 与最差类型召回。
 
+搜索器使用与 `check_vmp_v4_gate.py` 完全相同的门禁阈值选择最终 trial，避免
+fold 更稳定但绝对 Recall 不达标的 trial 覆盖可通过门禁的 trial。模型 metadata
+同时记录 `max_dev_recall_all_at_5_seen` 和 `dev_oracle_ceiling_metrics`，用于区分
+“搜索没有找到”与“Dense guard 结构理论上无法达到门禁”。
+
 V4 工件 schema 为 `1.4`，旧 V3 工件必须重新训练。服务器入口命令：
 
 ```bash

@@ -11,7 +11,7 @@ from vmp_memos.frameworks.vmp_tuned import guarded_ranked_indices
 from vmp_memos.longmemeval import LongMemEvalRunConfig
 from vmp_memos.longmemeval.retrieval_runner import run_longmemeval_retrieval
 from vmp_memos.longmemeval.splits import create_longmemeval_split
-from vmp_memos.longmemeval.tuning import train_vmp_tuned
+from vmp_memos.longmemeval.tuning import train_vmp_tuned, vmp_trial_selection_key
 from vmp_memos.schemas import PolicyFeatures
 
 
@@ -129,6 +129,10 @@ def test_vmp_v4_safe_trial_is_dense_only_and_model_records_safety_bounds(
     )
     assert "macro_type_recall_all@5" in tuning.model.dev_metrics
     assert "min_fold_recall_all@5" in tuning.model.dev_metrics
+    oracle = tuning.model.metadata["dev_oracle_ceiling_metrics"]
+    assert isinstance(oracle, dict)
+    assert oracle["guarded_recall_all@5_ceiling"] == 1.0
+    assert tuning.model.metadata["max_dev_recall_all_at_5_seen"] == 1.0
 
 
 def test_vmp_v4_policy_delta_is_bounded_independently_of_lifecycle() -> None:
@@ -227,6 +231,49 @@ def test_vmp_v4_guard_preserves_dense_top10_and_four_dense_head_items() -> None:
     assert set(selected) == set(range(10))
     assert len(set(selected[:5]) & set(range(5))) >= 4
     assert 6 in selected[:5]
+
+
+def test_vmp_v4_trial_selection_cannot_prefer_a_gate_failing_recall() -> None:
+    baseline = {
+        "recall_all@5": 0.83,
+        "macro_type_recall_all@5": 0.85,
+        "worst_type_recall_all@5": 0.70,
+    }
+    gate_failing_but_stable = {
+        "recall_all@5": 0.86,
+        "macro_type_recall_all@5": 0.87,
+        "worst_type_recall_all@5": 0.70,
+        "min_fold_recall_all@5": 0.77,
+        "mrr": 0.93,
+    }
+    gate_passing = {
+        "recall_all@5": 0.90,
+        "macro_type_recall_all@5": 0.87,
+        "worst_type_recall_all@5": 0.70,
+        "min_fold_recall_all@5": 0.75,
+        "mrr": 0.92,
+    }
+
+    failing_key, _, failing_passes = vmp_trial_selection_key(
+        gate_failing_but_stable,
+        baseline_metrics=baseline,
+        objective=1.38,
+        policy_adjustment_limit=0.05,
+        parameter_hash="failing",
+        min_required_recall_all_at_5=0.90,
+    )
+    passing_key, _, passing_passes = vmp_trial_selection_key(
+        gate_passing,
+        baseline_metrics=baseline,
+        objective=1.36,
+        policy_adjustment_limit=0.12,
+        parameter_hash="passing",
+        min_required_recall_all_at_5=0.90,
+    )
+
+    assert failing_passes is False
+    assert passing_passes is True
+    assert passing_key > failing_key
 
 
 def _record(index: int) -> dict:
