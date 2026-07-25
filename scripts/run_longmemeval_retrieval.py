@@ -45,6 +45,7 @@ def main() -> int:
     parser.add_argument("--split-manifest", type=Path, default=None)
     parser.add_argument("--split", choices=("dev", "test"), default=None)
     parser.add_argument("--vmp-tuned-model", type=Path, default=None)
+    parser.add_argument("--vmp-hierarchical-model", type=Path, default=None)
     parser.add_argument(
         "--ingestion-granularity",
         choices=("session", "turn"),
@@ -199,6 +200,7 @@ def main() -> int:
         split_manifest_path=args.split_manifest,
         split_name=args.split,
         vmp_tuned_model_path=args.vmp_tuned_model,
+        vmp_hierarchical_model_path=args.vmp_hierarchical_model,
         metadata={
             "embedding_model": None if args.no_embeddings else args.embedding_model,
             "embedding_device": None if args.no_embeddings else args.embedding_device,
@@ -267,6 +269,8 @@ def _needs_embeddings(methods: list[str]) -> bool:
         "vector_importance",
         "vmp_rule",
         "vmp_tuned",
+        "vmp_hierarchical",
+        "vmp_v5",
         "langmem",
         "langmem_official",
         "graphiti",

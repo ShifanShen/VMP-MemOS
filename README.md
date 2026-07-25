@@ -1,5 +1,35 @@
 # VMP-MemOS
 
+## VMP-v5 分层 Session/Turn 检索
+
+VMP-v5 用分层索引解决长 session 被单个 BGE-M3 向量截断或稀释的问题。每个
+LongMemEval history session 同时建立 session chunk 和 role-prefixed turn
+chunks；查询分别计算 session semantic、pooled turn semantic 和 turn BM25，
+再使用只在固定 Dev split 搜索的三路权重聚合回官方 session ID。最终 Top-5
+成员由 hierarchical dense head 冻结决定，排序继续复用 V4.3 的 VMP policy 和
+非破坏 lifecycle。
+
+V5 不复用 V4.3 的 nearest-prototype promotion ranker，因为新的分层分数改变了
+特征几何；直接复用旧 prototype 会造成未校准分数。当前 `2.0` 工件只使用原始
+turn，不调用 LLM，因此可以先独立验证分层检索贡献。后续 atomic-memory writer
+必须通过同一个本地 vLLM endpoint 生成，并作为单独消融报告。
+
+V5 只有在 Dev Recall-All@5、相对 V4.3 增量、turn 权重和 fold 稳定性门禁全部
+通过后才会运行 Test：
+
+```bash
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+RUN_ID=lme_test_vmp_v5_seed42 \
+DATA_PATH=data/longmemeval/longmemeval_s_cleaned.json \
+RUN_QA=0 \
+uv run --no-sync bash scripts/run_vmp_v5_experiment.sh
+```
+
+脚本会生成 `vmp_v5_seed42.json`、完整 grid-search report、Test retrieval
+JSONL、运行日志和论文表格。V5 会额外预热 turn embeddings，正式计时阶段不会
+把首次 embedding 下载或生成混入某个单独方法。
+
 ## VMP-v4.3 稳健 Dense 保护链路
 
 VMP-v4 面向 V3 暴露出的泛化与延迟问题：完整保留 Dense Top-10 证据集合，
@@ -71,6 +101,7 @@ VMP-MemOS 是一个面向长期 LLM Agent 的可解释 Memory Policy Layer。项
 - 论文实验 adapter 基类：`RetrievedMemory`、`BaseMemoryFrameworkAdapter`、`FrameworkRegistry`、framework controllability audit；
 - 第一批可控 retrieval adapter：`empty`、`bm25`、`naive_vector`、`vector_recency`、`vector_importance`、`vmp_rule`；
 - VMP-v4：固定 SHA-256 question-level dev/test split，保护 Dense Top-10 集合，使用受保护 Top-5 policy 重排、稳定性调参与缓存的非破坏生命周期；只有通过稳健 Dev 门禁后才允许访问 Test；
+- VMP-v5：Dev-only session/turn/BM25 分层融合，turn embedding 聚合回官方 session provenance，冻结 hierarchical Top-5 后复用 VMP policy ordering；
 - LongMemEval 消融：在同一冻结模型上运行 7 个 feature ablation 和 3 个 operation ablation，导出 retrieval/QA delta 表；
 - Cost analysis：离线聚合 ingestion/retrieval/reader 延迟、token、active memory、storage 和每个正确答案成本；
 - Case export：从 test 主实验与消融 run 中确定性导出四类可审计论文案例；

@@ -130,7 +130,7 @@ def run_longmemeval_retrieval(
         len(methods),
         ",".join(methods),
     )
-    _validate_vmp_tuned_provenance(
+    _validate_vmp_provenance(
         config,
         split_manifest=split_manifest,
         embedder=embedder,
@@ -156,6 +156,7 @@ def run_longmemeval_retrieval(
             samples,
             embedder=embedder,
             ingestion_granularity=config.ingestion_granularity,
+            methods=methods,
             enabled=config.prewarm_embeddings,
         )
         _write_json(manifest_path, manifest)
@@ -311,6 +312,11 @@ def _run_method(
             if config.vmp_tuned_model_path is not None
             else None
         ),
+        vmp_hierarchical_model_path=(
+            str(config.vmp_hierarchical_model_path)
+            if config.vmp_hierarchical_model_path is not None
+            else None
+        ),
     )
     method_dir = run_dir / method
     workspace_root = method_dir / "workspaces"
@@ -444,6 +450,16 @@ def _build_manifest(
             if config.vmp_tuned_model_path is not None
             else None
         ),
+        "vmp_hierarchical_model": (
+            {
+                "path": str(config.vmp_hierarchical_model_path),
+                "sha256": sha256_file(
+                    config.vmp_hierarchical_model_path
+                ),
+            }
+            if config.vmp_hierarchical_model_path is not None
+            else None
+        ),
         "embedding_identifier": embedder.identifier if embedder else None,
         "embedding_runtime": _embedding_runtime_metadata(embedder),
         "official_framework_runtime": (
@@ -555,7 +571,7 @@ def _load_run_samples(
     return samples, manifest
 
 
-def _validate_vmp_tuned_provenance(
+def _validate_vmp_provenance(
     config: LongMemEvalRunConfig,
     *,
     split_manifest: LongMemEvalSplitManifest | None,
@@ -568,35 +584,60 @@ def _validate_vmp_tuned_provenance(
         method == "vmp_full" or method.startswith("vmp_tuned")
         for method in normalized_methods
     )
-    if not uses_vmp_tuned:
+    uses_vmp_hierarchical = bool(
+        normalized_methods & {"vmp_hierarchical", "vmp_v5"}
+    )
+    if not uses_vmp_tuned and not uses_vmp_hierarchical:
         return
     if (
         split_manifest is None
         or config.split_name is None
         or config.split_manifest_path is None
     ):
-        raise ValueError("vmp_tuned evaluation requires a checked split manifest")
-    if config.vmp_tuned_model_path is None:
-        raise ValueError("vmp_tuned_model_path is required")
-
-    from vmp_memos.frameworks.vmp_tuned import VMPTunedModel
-
-    model = VMPTunedModel.load(config.vmp_tuned_model_path)
-    if model.dataset_sha256 != split_manifest.dataset_sha256:
-        raise ValueError("VMP-Tuned model dataset SHA-256 differs from split manifest")
-    if model.split_id != split_manifest.split_id:
-        raise ValueError("VMP-Tuned model and evaluation split manifest differ")
-    if model.split_manifest_sha256 != sha256_file(config.split_manifest_path):
-        raise ValueError("VMP-Tuned model split-manifest SHA-256 differs")
-    if config.split_name == model.training_split:
-        raise ValueError(
-            "Refusing to report VMP-Tuned on its training split; use --split test"
-        )
+        raise ValueError("VMP evaluation requires a checked split manifest")
     actual_embedding = embedder.identifier if embedder else None
-    if model.embedding_identifier != actual_embedding:
-        raise ValueError(
-            "VMP-Tuned embedding differs from evaluation embedding: "
-            f"expected {model.embedding_identifier!r}, got {actual_embedding!r}"
+    manifest_sha256 = sha256_file(config.split_manifest_path)
+    if uses_vmp_tuned:
+        if config.vmp_tuned_model_path is None:
+            raise ValueError("vmp_tuned_model_path is required")
+        from vmp_memos.frameworks.vmp_tuned import VMPTunedModel
+
+        model = VMPTunedModel.load(config.vmp_tuned_model_path)
+        _validate_frozen_vmp_model(
+            model_name="VMP-Tuned",
+            dataset_sha256=model.dataset_sha256,
+            split_id=model.split_id,
+            split_manifest_sha256=model.split_manifest_sha256,
+            training_split=model.training_split,
+            embedding_identifier=model.embedding_identifier,
+            expected_dataset_sha256=split_manifest.dataset_sha256,
+            expected_split_id=split_manifest.split_id,
+            expected_manifest_sha256=manifest_sha256,
+            evaluation_split=config.split_name,
+            actual_embedding_identifier=actual_embedding,
+        )
+    if uses_vmp_hierarchical:
+        if config.vmp_hierarchical_model_path is None:
+            raise ValueError("vmp_hierarchical_model_path is required")
+        from vmp_memos.frameworks.vmp_hierarchical import (
+            VMPHierarchicalModel,
+        )
+
+        hierarchical = VMPHierarchicalModel.load(
+            config.vmp_hierarchical_model_path
+        )
+        _validate_frozen_vmp_model(
+            model_name="VMP-v5",
+            dataset_sha256=hierarchical.dataset_sha256,
+            split_id=hierarchical.split_id,
+            split_manifest_sha256=hierarchical.split_manifest_sha256,
+            training_split=hierarchical.training_split,
+            embedding_identifier=hierarchical.embedding_identifier,
+            expected_dataset_sha256=split_manifest.dataset_sha256,
+            expected_split_id=split_manifest.split_id,
+            expected_manifest_sha256=manifest_sha256,
+            evaluation_split=config.split_name,
+            actual_embedding_identifier=actual_embedding,
         )
 
 
@@ -605,6 +646,7 @@ def _prewarm_embeddings(
     *,
     embedder: BaseEmbedder | None,
     ingestion_granularity: str,
+    methods: list[str],
     enabled: bool,
 ) -> dict[str, JsonValue]:
     if not enabled:
@@ -620,16 +662,29 @@ def _prewarm_embeddings(
     before_stats = embedder.cache_stats()
     entries_before = embedder.cache.count(embedder.identifier)
     total = len(samples)
+    include_hierarchical_turns = bool(
+        set(methods) & {"vmp_hierarchical", "vmp_v5"}
+    )
     for index, sample in enumerate(samples, start=1):
         if ingestion_granularity == "session":
             texts = [
                 session_to_text(events)
                 for events in sample_to_session_events(sample)
             ]
+            if include_hierarchical_turns:
+                from vmp_memos.frameworks.vmp_hierarchical import (
+                    contextual_turn_chunk,
+                )
+
+                texts.extend(
+                    chunk.content
+                    for event in sample_to_events(sample)
+                    if (chunk := contextual_turn_chunk(event)) is not None
+                )
         else:
             texts = [str(event.content) for event in sample_to_events(sample)]
         texts.append(sample.question)
-        embedder.embed(texts)
+        embedder.embed(list(dict.fromkeys(texts)))
         if index == 1 or index % 10 == 0 or index == total:
             LOGGER.info(
                 "Embedding prewarm progress %d/%d: question_id=%s elapsed=%.1fs",
@@ -645,8 +700,48 @@ def _prewarm_embeddings(
         "duration_seconds": perf_counter() - started,
         "cache_entries_before": entries_before,
         "cache_entries_after": embedder.cache.count(embedder.identifier),
+        "hierarchical_turns": include_hierarchical_turns,
         **delta,
     }
+
+
+def _validate_frozen_vmp_model(
+    *,
+    model_name: str,
+    dataset_sha256: str,
+    split_id: str,
+    split_manifest_sha256: str,
+    training_split: str,
+    embedding_identifier: str | None,
+    expected_dataset_sha256: str,
+    expected_split_id: str,
+    expected_manifest_sha256: str,
+    evaluation_split: str,
+    actual_embedding_identifier: str | None,
+) -> None:
+    if dataset_sha256 != expected_dataset_sha256:
+        raise ValueError(
+            f"{model_name} model dataset SHA-256 differs from split manifest"
+        )
+    if split_id != expected_split_id:
+        raise ValueError(
+            f"{model_name} model and evaluation split manifest differ"
+        )
+    if split_manifest_sha256 != expected_manifest_sha256:
+        raise ValueError(
+            f"{model_name} model split-manifest SHA-256 differs"
+        )
+    if evaluation_split == training_split:
+        raise ValueError(
+            f"Refusing to report {model_name} on its training split; "
+            "use --split test"
+        )
+    if embedding_identifier != actual_embedding_identifier:
+        raise ValueError(
+            f"{model_name} embedding differs from evaluation embedding: "
+            f"expected {embedding_identifier!r}, "
+            f"got {actual_embedding_identifier!r}"
+        )
 
 
 def _cache_stats(embedder: BaseEmbedder | None) -> dict[str, int]:

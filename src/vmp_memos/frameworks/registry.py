@@ -4,8 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from pydantic import JsonValue
+
 from vmp_memos.embeddings import BaseEmbedder
-from vmp_memos.frameworks.base import BaseMemoryFrameworkAdapter
+from vmp_memos.frameworks.base import (
+    BaseMemoryFrameworkAdapter,
+    RetrievedMemory,
+)
 from vmp_memos.frameworks.bm25 import BM25Adapter
 from vmp_memos.frameworks.naive_vector import NaiveVectorAdapter
 from vmp_memos.frameworks.official import (
@@ -17,6 +22,10 @@ from vmp_memos.frameworks.official import (
 from vmp_memos.frameworks.runtime import FrameworkRuntimeConfig
 from vmp_memos.frameworks.vector_importance import VectorImportanceAdapter
 from vmp_memos.frameworks.vector_recency import VectorRecencyAdapter
+from vmp_memos.frameworks.vmp_hierarchical import (
+    VMPHierarchicalAdapter,
+    VMPHierarchicalModel,
+)
 from vmp_memos.frameworks.vmp_memos import VMPRuleAdapter
 from vmp_memos.frameworks.vmp_tuned import (
     VMP_TUNED_METHODS,
@@ -24,6 +33,7 @@ from vmp_memos.frameworks.vmp_tuned import (
     VMPTunedModel,
     ablation_for_method,
 )
+from vmp_memos.schemas import Event
 from vmp_memos.schemas.base import NonEmptyStr, SchemaModel
 
 AdapterFactory = Callable[[], BaseMemoryFrameworkAdapter]
@@ -54,6 +64,7 @@ def default_registry(
     embedder: BaseEmbedder | None = None,
     runtime: FrameworkRuntimeConfig | None = None,
     vmp_tuned_model_path: str | None = None,
+    vmp_hierarchical_model_path: str | None = None,
 ) -> FrameworkRegistry:
     """Return built-in and dependency-lazy official adapters."""
 
@@ -68,6 +79,18 @@ def default_registry(
         "vector_recency": lambda: VectorRecencyAdapter(embedder=embedder),
         "vector_importance": lambda: VectorImportanceAdapter(embedder=embedder),
         "vmp_rule": lambda: VMPRuleAdapter(embedder=embedder),
+        "vmp_hierarchical": lambda: VMPHierarchicalAdapter(
+            model=_load_vmp_hierarchical_model(
+                vmp_hierarchical_model_path
+            ),
+            embedder=embedder,
+        ),
+        "vmp_v5": lambda: VMPHierarchicalAdapter(
+            model=_load_vmp_hierarchical_model(
+                vmp_hierarchical_model_path
+            ),
+            embedder=embedder,
+        ),
         "mem0": lambda: Mem0OfficialAdapter(runtime=official_runtime),
         "mem0_official": lambda: Mem0OfficialAdapter(runtime=official_runtime),
         "langmem": lambda: LangMemOfficialAdapter(
@@ -92,10 +115,10 @@ def default_registry(
         ),
     }
     for method_name in VMP_TUNED_METHODS:
-        factories[method_name] = lambda method_name=method_name: VMPTunedAdapter(
-            model=_load_vmp_tuned_model(vmp_tuned_model_path),
+        factories[method_name] = _vmp_tuned_factory(
+            method_name,
+            model_path=vmp_tuned_model_path,
             embedder=embedder,
-            ablation=ablation_for_method(method_name),
         )
     return FrameworkRegistry(factories=factories)
 
@@ -106,6 +129,7 @@ def adapter_for_name(
     embedder: BaseEmbedder | None = None,
     runtime: FrameworkRuntimeConfig | None = None,
     vmp_tuned_model_path: str | None = None,
+    vmp_hierarchical_model_path: str | None = None,
 ) -> BaseMemoryFrameworkAdapter:
     """Create a built-in or official adapter by name."""
 
@@ -113,6 +137,7 @@ def adapter_for_name(
         embedder=embedder,
         runtime=runtime,
         vmp_tuned_model_path=vmp_tuned_model_path,
+        vmp_hierarchical_model_path=vmp_hierarchical_model_path,
     ).create(name)
 
 
@@ -138,10 +163,10 @@ class EmptyRetrievalAdapter(BaseMemoryFrameworkAdapter):
     def _reset_impl(self) -> None:
         return None
 
-    def _ingest_event_impl(self, event: object) -> None:
+    def _ingest_event_impl(self, event: Event) -> None:
         return None
 
-    def _ingest_session_impl(self, events: list[object]) -> None:
+    def _ingest_session_impl(self, events: list[Event]) -> None:
         return None
 
     def _retrieve_impl(
@@ -150,8 +175,8 @@ class EmptyRetrievalAdapter(BaseMemoryFrameworkAdapter):
         *,
         top_k: int,
         question_date: str | None,
-        metadata: dict,
-    ) -> list:
+        metadata: dict[str, JsonValue],
+    ) -> list[RetrievedMemory]:
         return []
 
 
@@ -161,3 +186,30 @@ def _load_vmp_tuned_model(path: str | None) -> VMPTunedModel:
             "vmp_tuned requires a frozen model path; pass --vmp-tuned-model"
         )
     return VMPTunedModel.load(path)
+
+
+def _load_vmp_hierarchical_model(
+    path: str | None,
+) -> VMPHierarchicalModel:
+    if not path:
+        raise ValueError(
+            "vmp_hierarchical requires a frozen model path; pass "
+            "--vmp-hierarchical-model"
+        )
+    return VMPHierarchicalModel.load(path)
+
+
+def _vmp_tuned_factory(
+    method_name: str,
+    *,
+    model_path: str | None,
+    embedder: BaseEmbedder | None,
+) -> AdapterFactory:
+    def create() -> BaseMemoryFrameworkAdapter:
+        return VMPTunedAdapter(
+            model=_load_vmp_tuned_model(model_path),
+            embedder=embedder,
+            ablation=ablation_for_method(method_name),
+        )
+
+    return create

@@ -590,6 +590,10 @@ class VMPTunedAdapter(VMPRuleAdapter):
             self._index_lifecycle_statuses()
             self._static_features = build_static_vmp_features(self.chunks)
         query_embedding = self.embedder.embed_one(query) if self.embedder else None
+        semantic_scores = self._semantic_relevance_scores(
+            query,
+            query_embedding=query_embedding,
+        )
         rows = build_vmp_feature_rows(
             self.chunks,
             query,
@@ -597,6 +601,7 @@ class VMPTunedAdapter(VMPRuleAdapter):
             question_date=question_date,
             metadata=metadata,
             static_features=self._static_features,
+            semantic_scores=semantic_scores,
         )
         if not self._lifecycle_status_by_index and rows:
             self._index_lifecycle_statuses()
@@ -792,6 +797,24 @@ class VMPTunedAdapter(VMPRuleAdapter):
             and scores_by_index[index] >= self.model.retrieve_threshold
         ]
 
+    def _semantic_relevance_scores(
+        self,
+        query: str,
+        *,
+        query_embedding: Sequence[float] | None,
+    ) -> list[float]:
+        """Return the session-level semantic scores used by the dense guard."""
+
+        query_counts = term_counts(query)
+        return [
+            (
+                dense_cosine(query_embedding, chunk.content_embedding)
+                if query_embedding is not None and chunk.content_embedding
+                else sparse_cosine(query_counts, term_counts(chunk.content))
+            )
+            for chunk in self.chunks
+        ]
+
     def _index_lifecycle_statuses(self) -> None:
         """Build query-independent status annotations without deleting chunks."""
 
@@ -952,6 +975,7 @@ def build_vmp_feature_rows(
     question_date: str | None,
     metadata: dict[str, JsonValue],
     static_features: Sequence[PolicyFeatures] | None = None,
+    semantic_scores: Sequence[float] | None = None,
 ) -> list[tuple[MemoryChunk, PolicyFeatures]]:
     """Build V4 query features in O(chunks) after static precomputation."""
 
@@ -962,17 +986,23 @@ def build_vmp_feature_rows(
     )
     if len(cached) != len(chunks):
         raise ValueError("static VMP feature count must match chunk count")
+    if semantic_scores is not None and len(semantic_scores) != len(chunks):
+        raise ValueError("semantic score count must match chunk count")
     query_counts = term_counts(query)
     raw_budget = metadata.get("token_budget", 2048)
     token_budget = int(raw_budget) if isinstance(raw_budget, int) else 2048
     token_budget = max(1, token_budget)
     target_scope = metadata.get("question_id")
     rows: list[tuple[MemoryChunk, PolicyFeatures]] = []
-    for chunk, static in zip(chunks, cached, strict=True):
+    for index, (chunk, static) in enumerate(zip(chunks, cached, strict=True)):
         semantic = (
-            dense_cosine(query_embedding, chunk.content_embedding)
-            if query_embedding is not None and chunk.content_embedding
-            else sparse_cosine(query_counts, term_counts(chunk.content))
+            float(semantic_scores[index])
+            if semantic_scores is not None
+            else (
+                dense_cosine(query_embedding, chunk.content_embedding)
+                if query_embedding is not None and chunk.content_embedding
+                else sparse_cosine(query_counts, term_counts(chunk.content))
+            )
         )
         recency = _episodic_recency(chunk.source_date, question_date)
         lowered = chunk.content.casefold()

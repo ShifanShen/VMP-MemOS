@@ -21,6 +21,21 @@ tuning:
     protected_dense_count: 4
     lifecycle: cached_non_destructive
 
+hierarchical_tuning:
+  training_split: dev
+  base_model: outputs/longmemeval/models/vmp_v43_seed42.json
+  model_path: outputs/longmemeval/models/vmp_v5_seed42.json
+  search_report: outputs/longmemeval/models/vmp_v5_seed42_search.json
+  grid_step: 0.2
+  turn_pooling_options: [1, 2, 3]
+  min_dev_recall_all_at_5: 0.91
+  min_dev_delta_vs_v43: 0.0
+  min_turn_weight: 0.2
+  membership_strategy: hierarchical_dense_top5
+  ordering_strategy: frozen_vmp_base_policy_score
+  turn_representation: role_prefixed_raw_turn
+  test_labels_used: false
+
 ablation:
   reference_method: vmp_tuned
   frozen_model: outputs/longmemeval/models/vmp_v43_seed42.json
@@ -62,6 +77,7 @@ retrieval:
     - vector_importance
     - vmp_rule
     - vmp_tuned
+    - vmp_hierarchical
     - mem0
     - langmem
     - graphiti

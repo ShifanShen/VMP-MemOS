@@ -222,6 +222,7 @@ class LongMemEvalRunConfig(SchemaModel):
     split_manifest_path: Path | None = None
     split_name: str | None = None
     vmp_tuned_model_path: Path | None = None
+    vmp_hierarchical_model_path: Path | None = None
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -251,6 +252,20 @@ class LongMemEvalRunConfig(SchemaModel):
         )
         if uses_vmp_tuned and self.vmp_tuned_model_path is None:
             raise ValueError("vmp_tuned requires vmp_tuned_model_path")
+        uses_vmp_hierarchical = bool(
+            normalized_methods & {"vmp_hierarchical", "vmp_v5"}
+        )
+        if (
+            uses_vmp_hierarchical
+            and self.vmp_hierarchical_model_path is None
+        ):
+            raise ValueError(
+                "vmp_hierarchical requires vmp_hierarchical_model_path"
+            )
+        if uses_vmp_hierarchical and self.ingestion_granularity != "session":
+            raise ValueError(
+                "vmp_hierarchical requires session ingestion granularity"
+            )
         return self
 
 

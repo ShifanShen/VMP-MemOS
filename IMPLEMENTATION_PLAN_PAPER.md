@@ -1172,7 +1172,10 @@ P11. [done] VMP-Tuned with fixed dev/test split
 P12. [done] LongMemEval ablation
 P13. [done] Cost analysis
 P14. [done] Case export
-P15. Fallback style baselines only if needed
+P15. [done] VMP-v5 Dev-only hierarchical session/turn retrieval
+P16. Local-vLLM atomic-memory writer + hierarchical-memory ablation
+P17. Fresh external/final benchmark after architecture freeze
+P18. Fallback style baselines only if needed
 ```
 
 所有主实验必须统一使用本地 vLLM 模型；不能把云端 API 结果和本地 vLLM 结果混入同一主表。

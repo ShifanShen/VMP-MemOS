@@ -26,6 +26,10 @@ from vmp_memos.frameworks.registry import FrameworkRegistry, adapter_for_name, d
 from vmp_memos.frameworks.runtime import FrameworkRuntimeConfig
 from vmp_memos.frameworks.vector_importance import VectorImportanceAdapter
 from vmp_memos.frameworks.vector_recency import VectorRecencyAdapter
+from vmp_memos.frameworks.vmp_hierarchical import (
+    VMPHierarchicalAdapter,
+    VMPHierarchicalModel,
+)
 from vmp_memos.frameworks.vmp_memos import VMPRuleAdapter
 from vmp_memos.frameworks.vmp_tuned import (
     VMP_TUNED_ABLATIONS,
@@ -35,6 +39,7 @@ from vmp_memos.frameworks.vmp_tuned import (
 )
 
 __all__ = [
+    "VMP_TUNED_ABLATIONS",
     "BM25Adapter",
     "BaseMemoryFrameworkAdapter",
     "FairnessLevel",
@@ -47,13 +52,14 @@ __all__ = [
     "LangMemOfficialAdapter",
     "LettaDependencyError",
     "LettaOfficialAdapter",
-    "MemoryChunk",
     "Mem0DependencyError",
     "Mem0OfficialAdapter",
+    "MemoryChunk",
     "NaiveVectorAdapter",
     "RetrievedMemory",
+    "VMPHierarchicalAdapter",
+    "VMPHierarchicalModel",
     "VMPRuleAdapter",
-    "VMP_TUNED_ABLATIONS",
     "VMPTunedAblation",
     "VMPTunedAdapter",
     "VMPTunedModel",
