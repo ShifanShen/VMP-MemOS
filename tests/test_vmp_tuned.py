@@ -12,7 +12,11 @@ from vmp_memos.longmemeval import LongMemEvalRunConfig
 from vmp_memos.longmemeval.retrieval_runner import run_longmemeval_retrieval
 from vmp_memos.longmemeval.splits import create_longmemeval_split
 from vmp_memos.longmemeval.tuning import (
+    VMPTuningCandidate,
+    VMPTuningExample,
     _trial_parameters,
+    evaluate_vmp_parameters,
+    fit_dev_promotion_ranker,
     train_vmp_tuned,
     vmp_trial_selection_key,
 )
@@ -128,7 +132,7 @@ def test_vmp_v4_safe_trial_is_dense_only_and_model_records_safety_bounds(
         tuning_seed=7,
     )
 
-    assert tuning.model.schema_version == "1.4"
+    assert tuning.model.schema_version == "1.5"
     assert tuning.model.semantic_anchor_weight == 1.0
     assert tuning.model.lexical_anchor_weight == 0.0
     assert tuning.model.policy_adjustment_limit == 0.0
@@ -145,6 +149,62 @@ def test_vmp_v4_safe_trial_is_dense_only_and_model_records_safety_bounds(
     assert isinstance(oracle, dict)
     assert oracle["guarded_recall_all@5_ceiling"] == 1.0
     assert tuning.model.metadata["max_dev_recall_all_at_5_seen"] == 1.0
+
+
+def test_vmp_v4_pairwise_ranker_learns_the_single_open_slot() -> None:
+    candidates = [
+        VMPTuningCandidate(
+            memory_id=f"m{index}",
+            session_id=f"s{index}",
+            content=f"candidate {index}",
+            token_count=10,
+            lexical_score=max(0.0, 0.80 - index * 0.03),
+            policy_features=PolicyFeatures(
+                semantic_relevance=1.0 - index * 0.05,
+                recency=index / 10.0,
+                contradiction=index / 12.0,
+                actionability=index / 11.0,
+            ),
+        )
+        for index in range(10)
+    ]
+    example = VMPTuningExample(
+        question_id="pairwise_q",
+        question_type="knowledge-update",
+        question="What is preferred now?",
+        gold_session_ids=["s5"],
+        candidates=candidates,
+        memory_count=10,
+        memory_tokens=100,
+    )
+    parameters = _trial_parameters(1, 7)[0]
+
+    ranker, diagnostics = fit_dev_promotion_ranker(
+        [example],
+        parameters=parameters,
+        preserve_dense_top_n=10,
+        safety_top_k=5,
+    )
+
+    assert ranker is not None
+    assert diagnostics["fit_target_accuracy"] == 1.0
+    metrics = evaluate_vmp_parameters(
+        [example],
+        weights=parameters.weights,
+        retrieve_threshold=0.0,
+        semantic_anchor_weight=parameters.semantic_anchor_weight,
+        lexical_anchor_weight=parameters.lexical_anchor_weight,
+        policy_adjustment_limit=parameters.policy_adjustment_limit,
+        archive_score_penalty=parameters.archive_score_penalty,
+        protected_dense_count=4,
+        promotion_margin=0.0,
+        promotion_ranker=ranker,
+        retrieval_depth=10,
+        qa_top_k=5,
+        token_budget=2048,
+        max_memory_count=10,
+    )
+    assert metrics["recall_all@5"] == 1.0
 
 
 def test_vmp_v4_policy_delta_is_bounded_independently_of_lifecycle() -> None:

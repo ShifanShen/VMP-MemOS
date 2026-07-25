@@ -45,7 +45,7 @@ on_exit() {
 }
 trap on_exit EXIT
 
-log_stage "Starting VMP-v4 robust dense-guard experiment."
+log_stage "Starting VMP-v4.2 pairwise dense-guard experiment."
 log_stage "run_id=${RUN_ID} data=${DATA_PATH} model=${EMBEDDING_MODEL} device=${EMBEDDING_DEVICE}"
 log_stage "embedding_batch_size=${EMBEDDING_BATCH_SIZE} prewarm_embeddings=true"
 log_stage "methods=${METHODS} trials=${TUNING_TRIALS} folds=${STABILITY_FOLDS} run_qa=${RUN_QA}"
@@ -59,7 +59,7 @@ python scripts/create_longmemeval_split.py \
   --dev-size 100 \
   --test-size 400
 
-log_stage "Phase 2/5: precomputing Dev features and robustly tuning VMP-v4."
+log_stage "Phase 2/5: tuning VMP-v4.2 and fitting Dev pairwise promotion."
 python scripts/train_vmp_tuned.py \
   --data "${DATA_PATH}" \
   --split-manifest "${SPLIT_PATH}" \
@@ -129,4 +129,4 @@ python scripts/export_longmemeval_tables.py \
   --retrieval-run "outputs/longmemeval/runs/${RUN_ID}" \
   --output-dir "${TABLE_DIR}"
 
-echo "Completed VMP-v4 test run: outputs/longmemeval/runs/${RUN_ID}"
+echo "Completed VMP-v4.2 test run: outputs/longmemeval/runs/${RUN_ID}"

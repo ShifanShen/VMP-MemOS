@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tune VMP-v4 retrieval on LongMemEval dev and freeze a test-safe model."""
+"""Tune VMP-v4.2 retrieval on LongMemEval dev and freeze a test-safe model."""
 
 from __future__ import annotations
 
@@ -161,6 +161,15 @@ def main() -> int:
                 "policy_adjustment_limit": result.model.policy_adjustment_limit,
                 "protected_dense_count": result.model.protected_dense_count,
                 "promotion_margin": result.model.promotion_margin,
+                "promotion_ranker": (
+                    result.model.promotion_ranker.model_type
+                    if result.model.promotion_ranker is not None
+                    else None
+                ),
+                "selection_stage": result.model.metadata.get("selection_stage"),
+                "promotion_ranker_diagnostics": result.model.metadata.get(
+                    "promotion_ranker_diagnostics"
+                ),
                 "dev_delta_vs_dense": result.model.metadata.get(
                     "dev_recall_all_at_5_delta_vs_dense"
                 ),

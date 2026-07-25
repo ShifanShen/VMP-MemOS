@@ -1,6 +1,6 @@
 # VMP-MemOS
 
-## VMP-v4 稳健 Dense 保护链路
+## VMP-v4.2 稳健 Dense 保护链路
 
 VMP-v4 面向 V3 暴露出的泛化与延迟问题：完整保留 Dense Top-10 证据集合，
 Top-5 至少保留四个原 Dense Top-5 项，并且 Dense 第 6--10 名只有超过 promotion
@@ -20,7 +20,14 @@ V4.1 的 512-trial 搜索计划还包含 36 个可审计的 Dev-only warm-start 
 `parameter_source`、模型的 `selected_parameter_source` 和
 `search_parameter_source_counts` 会记录完整来源。
 
-V4 工件 schema 为 `1.4`，旧 V3 工件必须重新训练。服务器入口命令：
+V4.2 在全局参数搜索之后增加一个 Dev-only pairwise promotion ranker。它只在
+Dense 第 5--10 名中学习单个开放 Top-5 槽位应保留第 5 名还是晋升候选，不改变
+受保护的 Dense Top-4，也不改变 Dense Top-10 证据集合。模型同时记录训练拟合和
+leave-one-question-out 指标；前者用于确认实现能达到 Dev guard oracle，后者用于
+显式披露泛化风险。运行时不使用 LongMemEval 的 `question_type`，只使用查询文本
+派生信号和统一的检索/记忆特征。
+
+V4.2 工件 schema 为 `1.5`，旧 V3/V4.0/V4.1 工件必须重新训练。服务器入口命令：
 
 ```bash
 HF_HUB_OFFLINE=1 \
@@ -337,7 +344,7 @@ outputs/longmemeval/runs/{run_id}/{method}/summary.json
 
 正式结果不要使用 `--no-embeddings`。该选项只用于验证数据、runner 和输出格式。
 
-### VMP-v4：固定 dev/test、稳健门禁与 Dense 集合安全重排
+### VMP-v4.2：固定 dev/test、稳健门禁与 Dense 集合安全重排
 
 当前链路不再允许 policy 在检索时删除 source session：
 
@@ -436,9 +443,10 @@ abstention accuracy。
 
 消融实验严格复用前一步生成的 split manifest、BGE-M3 和冻结
 `vmp_v4_seed42.json`，不会为任何消融变体重新调参。
-V4 模型 schema 为 `1.4`，记录 Dense Top-10 安全集合、受保护 Top-5 重排、Dev safety baseline
+V4.2 模型 schema 为 `1.5`，记录 Dense Top-10 安全集合、受保护 Top-5 重排、
+Dev pairwise promotion ranker、Dev safety baseline
 和非破坏 lifecycle policy；拉取新代码后应先重新执行
-`run_vmp_v4_experiment.sh`，旧 `1.0`–`1.3` 工件会被明确拒绝。变体包括：
+`run_vmp_v4_experiment.sh`，旧 `1.0`–`1.4` 工件会被明确拒绝。变体包括：
 
 ```text
 VMP-full

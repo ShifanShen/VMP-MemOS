@@ -40,6 +40,20 @@ VMP_TUNED_FEATURES: tuple[str, ...] = (
     "update_signal",
     "action_signal",
 )
+PROMOTION_FEATURES: tuple[str, ...] = (
+    *VMP_TUNED_FEATURES,
+    "lexical_score",
+    "anchor_score",
+    "dense_rank_prior",
+    "is_dense_boundary",
+    "lifecycle_superseded",
+    "lifecycle_duplicate",
+    *(f"delta_{name}" for name in VMP_TUNED_FEATURES),
+    "delta_lexical_score",
+    "delta_anchor_score",
+    "delta_lifecycle_superseded",
+    "delta_lifecycle_duplicate",
+)
 
 # V4 treats dense retrieval as an explicit safety set. Policy weights only supply
 # a bounded delta inside that set, so a bad lifecycle heuristic cannot destroy
@@ -162,11 +176,106 @@ class VMPTunedAblation(SchemaModel):
 _FULL_VMP_ABLATION = VMPTunedAblation()
 
 
-class VMPTunedModel(SchemaModel):
-    """Portable V4 robust ranker with dense-set safety and provenance."""
+class PromotionPrototype(SchemaModel):
+    """One normalized Dev candidate used by the promotion ranker."""
 
-    schema_version: NonEmptyStr = "1.4"
-    model_type: NonEmptyStr = "vmp_v4_robust_dense_guard_ranker"
+    group_id: NonEmptyStr
+    vector: list[FiniteFloat]
+
+
+class PromotionPrototypeRanker(SchemaModel):
+    """Portable nearest-prototype ranker for the single open Top-5 slot."""
+
+    model_type: NonEmptyStr = "dev_pairwise_nearest_prototype"
+    feature_names: list[NonEmptyStr]
+    feature_means: list[FiniteFloat]
+    feature_scales: list[FiniteFloat]
+    positive_prototypes: list[PromotionPrototype]
+    negative_prototypes: list[PromotionPrototype]
+
+    @model_validator(mode="after")
+    def validate_dimensions(self) -> PromotionPrototypeRanker:
+        dimensions = len(self.feature_names)
+        if dimensions < 1 or len(set(self.feature_names)) != dimensions:
+            raise ValueError("promotion feature names must be non-empty and unique")
+        if len(self.feature_means) != dimensions:
+            raise ValueError("promotion feature means have the wrong dimension")
+        if len(self.feature_scales) != dimensions:
+            raise ValueError("promotion feature scales have the wrong dimension")
+        if any(float(scale) <= 0.0 for scale in self.feature_scales):
+            raise ValueError("promotion feature scales must be positive")
+        if not self.positive_prototypes or not self.negative_prototypes:
+            raise ValueError("promotion ranker requires positive and negative prototypes")
+        for prototype in [
+            *self.positive_prototypes,
+            *self.negative_prototypes,
+        ]:
+            if len(prototype.vector) != dimensions:
+                raise ValueError("promotion prototype has the wrong dimension")
+        return self
+
+    def normalize(self, vector: Sequence[float]) -> list[float]:
+        """Normalize one raw feature vector using frozen Dev statistics."""
+
+        if len(vector) != len(self.feature_names):
+            raise ValueError("promotion feature vector has the wrong dimension")
+        return [
+            (float(value) - float(mean)) / float(scale)
+            for value, mean, scale in zip(
+                vector,
+                self.feature_means,
+                self.feature_scales,
+                strict=True,
+            )
+        ]
+
+    def score(
+        self,
+        vector: Sequence[float],
+        *,
+        exclude_group_id: str | None = None,
+    ) -> float:
+        """Score a candidate by its relative distance to positive/negative Dev cases."""
+
+        normalized = self.normalize(vector)
+        positives = self._matching_prototypes(
+            self.positive_prototypes,
+            exclude_group_id=exclude_group_id,
+        )
+        negatives = self._matching_prototypes(
+            self.negative_prototypes,
+            exclude_group_id=exclude_group_id,
+        )
+        if not positives or not negatives:
+            return 0.0
+        positive_distance = min(
+            _squared_distance(normalized, prototype.vector)
+            for prototype in positives
+        )
+        negative_distance = min(
+            _squared_distance(normalized, prototype.vector)
+            for prototype in negatives
+        )
+        return math.tanh(negative_distance - positive_distance)
+
+    @staticmethod
+    def _matching_prototypes(
+        prototypes: Sequence[PromotionPrototype],
+        *,
+        exclude_group_id: str | None,
+    ) -> list[PromotionPrototype]:
+        return [
+            prototype
+            for prototype in prototypes
+            if prototype.group_id != exclude_group_id
+        ]
+
+
+class VMPTunedModel(SchemaModel):
+    """Portable V4.2 robust ranker with dense-set safety and provenance."""
+
+    schema_version: NonEmptyStr = "1.5"
+    model_type: NonEmptyStr = "vmp_v4_2_pairwise_dense_guard_ranker"
     weights: dict[NonEmptyStr, FiniteFloat]
     intercept: FiniteFloat = 0.0
     retrieve_threshold: Score = 0.0
@@ -191,13 +300,14 @@ class VMPTunedModel(SchemaModel):
     archive_update_signal_threshold: Score = 0.55
     archive_score_penalty: Score = 0.03
     duplicate_score_penalty: Score = 0.01
+    promotion_ranker: PromotionPrototypeRanker | None = None
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_frozen_dev_model(self) -> VMPTunedModel:
         """Require a complete V4 model trained on dev, never on test."""
 
-        if self.schema_version != "1.4":
+        if self.schema_version != "1.5":
             raise ValueError(
                 "VMP-Tuned model schema is obsolete; retrain the frozen dev model"
             )
@@ -223,6 +333,17 @@ class VMPTunedModel(SchemaModel):
             raise ValueError("safety_top_k cannot exceed preserve_dense_top_n")
         if self.retrieve_threshold != 0.0:
             raise ValueError("VMP-v4 retrieve_threshold must be zero for dense safety")
+        if self.promotion_ranker is not None:
+            if tuple(self.promotion_ranker.feature_names) != PROMOTION_FEATURES:
+                raise ValueError("promotion ranker feature schema is obsolete")
+            if self.protected_dense_count != self.safety_top_k - 1:
+                raise ValueError(
+                    "pairwise promotion must expose exactly one guarded Top-5 slot"
+                )
+            if self.promotion_margin != 0.0:
+                raise ValueError(
+                    "pairwise prototype scores require a zero promotion margin"
+                )
         return self
 
     def anchor_score(self, semantic_score: float, lexical_score: float) -> float:
@@ -349,8 +470,16 @@ class VMPTunedAdapter(VMPRuleAdapter):
         stats["ablation"] = self.ablation.model_dump(mode="json")
         stats["model_split_id"] = self.model.split_id
         stats["ranking_pipeline"] = (
-            "dense_top10_safety_set -> guarded_top5_policy_rerank -> "
-            "cached_non_destructive_lifecycle"
+            (
+                "dense_top10_safety_set -> "
+                "dev_pairwise_single_slot_promotion -> "
+                "cached_non_destructive_lifecycle"
+            )
+            if self.model.promotion_ranker is not None
+            else (
+                "dense_top10_safety_set -> guarded_top5_policy_rerank -> "
+                "cached_non_destructive_lifecycle"
+            )
         )
         stats["dense_safety"] = cast(
             JsonValue,
@@ -359,6 +488,11 @@ class VMPTunedAdapter(VMPRuleAdapter):
                 "preserve_dense_top_n": self.model.preserve_dense_top_n,
                 "protected_dense_count": self.model.protected_dense_count,
                 "promotion_margin": float(self.model.promotion_margin),
+                "promotion_ranker": (
+                    self.model.promotion_ranker.model_type
+                    if self.model.promotion_ranker is not None
+                    else None
+                ),
             },
         )
         return stats
@@ -405,6 +539,14 @@ class VMPTunedAdapter(VMPRuleAdapter):
             anchor_rows,
             key=lambda row: (-float(row[3].semantic_relevance), row[2].memory_id),
         )
+        dense_rank_by_index = {
+            row[1]: dense_rank for dense_rank, row in enumerate(dense_rows)
+        }
+        boundary_row = (
+            dense_rows[self.model.safety_top_k - 1]
+            if len(dense_rows) >= self.model.safety_top_k
+            else None
+        )
         pool_size = max(
             top_k,
             self.model.candidate_pool_size,
@@ -419,6 +561,7 @@ class VMPTunedAdapter(VMPRuleAdapter):
 
         ranked: list[tuple[float, float, int, RetrievedMemory]] = []
         scores_by_index: dict[int, float] = {}
+        promotion_scores_by_index: dict[int, float] = {}
         anchors_by_index: dict[int, float] = {}
         update_count = 0
         for anchor_score, index, chunk, features, lexical_score in candidate_pool:
@@ -449,6 +592,39 @@ class VMPTunedAdapter(VMPRuleAdapter):
             lifecycle_penalty = self.model.lifecycle_penalty(lifecycle_status)
             scores_by_index[index] = score
             anchors_by_index[index] = anchor_score
+            promotion_score = score
+            if self.model.promotion_ranker is not None and boundary_row is not None:
+                (
+                    boundary_anchor_score,
+                    boundary_index,
+                    _,
+                    boundary_features,
+                    boundary_lexical_score,
+                ) = boundary_row
+                promotion_score = self.model.promotion_ranker.score(
+                    promotion_feature_vector(
+                        features,
+                        lexical_score=lexical_score,
+                        anchor_score=anchor_score,
+                        dense_rank=dense_rank_by_index.get(
+                            index,
+                            self.model.preserve_dense_top_n,
+                        ),
+                        boundary_features=boundary_features,
+                        boundary_lexical_score=boundary_lexical_score,
+                        boundary_anchor_score=boundary_anchor_score,
+                        temporal_intent=temporal_intent,
+                        lifecycle_status=lifecycle_status,
+                        boundary_lifecycle_status=(
+                            self._lifecycle_status_by_index.get(
+                                boundary_index,
+                                "active",
+                            )
+                        ),
+                        ablation=self.ablation,
+                    ),
+                )
+            promotion_scores_by_index[index] = promotion_score
             ranked.append(
                 (
                     score,
@@ -472,6 +648,12 @@ class VMPTunedAdapter(VMPRuleAdapter):
                             "policy_adjustment_limit": float(
                                 self.model.policy_adjustment_limit
                             ),
+                            "promotion_score": promotion_score,
+                            "promotion_ranker": (
+                                self.model.promotion_ranker.model_type
+                                if self.model.promotion_ranker is not None
+                                else None
+                            ),
                             "temporal_intent": temporal_intent,
                             "lifecycle_status": lifecycle_status,
                             "lifecycle_is_non_destructive": True,
@@ -492,7 +674,7 @@ class VMPTunedAdapter(VMPRuleAdapter):
         ranked_memory = {index: memory for _, _, index, memory in ranked}
         selected_indices = guarded_ranked_indices(
             dense_ranked_indices=[row[1] for row in dense_rows],
-            policy_scores=scores_by_index,
+            policy_scores=promotion_scores_by_index,
             anchor_scores=anchors_by_index,
             requested_top_k=top_k,
             model=self.model,
@@ -760,6 +942,15 @@ def _ordered_unique_indices(*groups: Sequence[int]) -> list[int]:
     return list(dict.fromkeys(index for group in groups for index in group))
 
 
+def _squared_distance(left: Sequence[float], right: Sequence[float]) -> float:
+    if len(left) != len(right):
+        raise ValueError("distance vectors must have matching dimensions")
+    return sum(
+        (float(left_value) - float(right_value)) ** 2
+        for left_value, right_value in zip(left, right, strict=True)
+    )
+
+
 def vmp_tuned_feature_values(
     features: PolicyFeatures,
     *,
@@ -800,6 +991,61 @@ def vmp_tuned_feature_values(
             else 0.0
         ),
     }
+
+
+def promotion_feature_vector(
+    features: PolicyFeatures,
+    *,
+    lexical_score: float,
+    anchor_score: float,
+    dense_rank: int,
+    boundary_features: PolicyFeatures,
+    boundary_lexical_score: float,
+    boundary_anchor_score: float,
+    temporal_intent: bool,
+    lifecycle_status: str = "active",
+    boundary_lifecycle_status: str = "active",
+    ablation: VMPTunedAblation | None = None,
+) -> list[float]:
+    """Build query-relative features for choosing the open guarded Top-5 slot."""
+
+    if dense_rank < 0:
+        raise ValueError("dense_rank must be non-negative")
+    active_ablation = ablation or _FULL_VMP_ABLATION
+    values = vmp_tuned_feature_values(
+        features,
+        disabled_features=active_ablation.disabled_features,
+        disabled_operations=active_ablation.disabled_operations,
+        temporal_intent=temporal_intent,
+    )
+    boundary_values = vmp_tuned_feature_values(
+        boundary_features,
+        disabled_features=active_ablation.disabled_features,
+        disabled_operations=active_ablation.disabled_operations,
+        temporal_intent=temporal_intent,
+    )
+    payload = {
+        **values,
+        "lexical_score": clamp01(lexical_score),
+        "anchor_score": clamp01(anchor_score),
+        "dense_rank_prior": 1.0 - min(dense_rank, 9) / 9.0,
+        "is_dense_boundary": float(dense_rank == 4),
+        "lifecycle_superseded": float(lifecycle_status == "superseded"),
+        "lifecycle_duplicate": float(lifecycle_status == "duplicate"),
+        **{
+            f"delta_{name}": values[name] - boundary_values[name]
+            for name in VMP_TUNED_FEATURES
+        },
+        "delta_lexical_score": clamp01(lexical_score)
+        - clamp01(boundary_lexical_score),
+        "delta_anchor_score": clamp01(anchor_score)
+        - clamp01(boundary_anchor_score),
+        "delta_lifecycle_superseded": float(lifecycle_status == "superseded")
+        - float(boundary_lifecycle_status == "superseded"),
+        "delta_lifecycle_duplicate": float(lifecycle_status == "duplicate")
+        - float(boundary_lifecycle_status == "duplicate"),
+    }
+    return [float(payload[name]) for name in PROMOTION_FEATURES]
 
 
 def question_has_temporal_intent(query: str) -> bool:

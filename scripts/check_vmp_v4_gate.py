@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail fast unless a frozen VMP-v4 model passes robust Dev safety gates."""
+"""Fail fast unless a frozen VMP-v4.2 model passes robust Dev safety gates."""
 
 from __future__ import annotations
 
@@ -72,6 +72,11 @@ def main() -> int:
                 "selected_trial": model.metadata.get("selected_trial"),
                 "max_recall_trial": model.metadata.get("max_recall_trial"),
                 "max_dev_recall_all@5_seen": max_recall_seen,
+                "max_recall_stage": model.metadata.get("max_recall_stage"),
+                "selection_stage": model.metadata.get("selection_stage"),
+                "promotion_ranker_diagnostics": model.metadata.get(
+                    "promotion_ranker_diagnostics"
+                ),
                 "dev_oracle_ceiling_metrics": oracle,
                 "diagnosis": {
                     "search_found_gate_passing_trial": (

@@ -18,12 +18,16 @@ from vmp_memos.evaluation import aggregate_retrieval_metrics, compute_retrieval_
 from vmp_memos.frameworks.text import clamp01, parse_date
 from vmp_memos.frameworks.vmp_memos import VMPRuleAdapter
 from vmp_memos.frameworks.vmp_tuned import (
+    PROMOTION_FEATURES,
     VMP_TUNED_FEATURES,
+    PromotionPrototype,
+    PromotionPrototypeRanker,
     VMPTunedModel,
     build_static_vmp_features,
     build_vmp_feature_rows,
     guarded_ranked_indices,
     normalized_bm25_scores,
+    promotion_feature_vector,
     question_has_temporal_intent,
     superseded_candidate_indices,
     vmp_tuned_feature_values,
@@ -152,6 +156,16 @@ class VMPTuningParameters:
             "promotion_margin": self.promotion_margin,
             "source": self.source,
         }
+
+
+@dataclass(frozen=True)
+class PromotionTrainingGroup:
+    """One Dev question and its dense ranks 5--10 promotion choices."""
+
+    question_id: str
+    candidate_indices: tuple[int, ...]
+    vectors: tuple[tuple[float, ...], ...]
+    target_position: int
 
 
 TrialSelectionKey = tuple[
@@ -417,6 +431,93 @@ def train_vmp_tuned(
         or max_recall_objective is None
     ):
         raise RuntimeError("VMP-Tuned search produced no model")
+    pre_promotion_metrics = dict(best_metrics)
+    promotion_ranker, promotion_diagnostics = fit_dev_promotion_ranker(
+        examples,
+        parameters=best_parameters,
+        preserve_dense_top_n=retrieval_depth,
+        safety_top_k=qa_top_k,
+    )
+    promoted_metrics = (
+        evaluate_vmp_parameters(
+            examples,
+            weights=best_parameters.weights,
+            retrieve_threshold=best_parameters.retrieve_threshold,
+            semantic_anchor_weight=best_parameters.semantic_anchor_weight,
+            lexical_anchor_weight=best_parameters.lexical_anchor_weight,
+            policy_adjustment_limit=best_parameters.policy_adjustment_limit,
+            archive_score_penalty=best_parameters.archive_score_penalty,
+            protected_dense_count=max(1, qa_top_k - 1),
+            promotion_margin=0.0,
+            promotion_ranker=promotion_ranker,
+            retrieval_depth=retrieval_depth,
+            qa_top_k=qa_top_k,
+            token_budget=token_budget,
+            max_memory_count=max_memory_count,
+            stability_folds=stability_folds,
+        )
+        if promotion_ranker is not None
+        else dict(best_metrics)
+    )
+    promoted_objective = sum(
+        DEFAULT_OBJECTIVE_WEIGHTS[name] * promoted_metrics[name]
+        for name in DEFAULT_OBJECTIVE_WEIGHTS
+    )
+    promoted_key, promoted_robust, promoted_clears_gate = (
+        vmp_trial_selection_key(
+            promoted_metrics,
+            baseline_metrics=baseline_metrics,
+            objective=promoted_objective,
+            policy_adjustment_limit=best_parameters.policy_adjustment_limit,
+            parameter_hash=sha256_json(
+                {
+                    "base": best_parameters.as_payload(),
+                    "promotion_ranker": (
+                        promotion_ranker.model_dump(mode="json")
+                        if promotion_ranker is not None
+                        else None
+                    ),
+                }
+            ),
+            min_required_recall_all_at_5=min_required_recall_all_at_5,
+            min_required_delta_vs_dense=min_required_delta_vs_dense,
+            min_required_macro_delta_vs_dense=(
+                min_required_macro_delta_vs_dense
+            ),
+            min_required_worst_type_delta_vs_dense=(
+                min_required_worst_type_delta_vs_dense
+            ),
+            max_allowed_fold_recall_stddev=max_allowed_fold_recall_stddev,
+        )
+    )
+    use_promotion_ranker = (
+        promotion_ranker is not None
+        and promoted_robust
+        and promoted_key >= best_key
+    )
+    if use_promotion_ranker:
+        best_metrics = promoted_metrics
+        best_objective = promoted_objective
+        best_key = promoted_key
+    promotion_is_max = (
+        use_promotion_ranker
+        and promoted_metrics["recall_all@5"]
+        > max_recall_metrics["recall_all@5"]
+    )
+    max_seen_metrics = (
+        promoted_metrics
+        if promotion_is_max
+        else max_recall_metrics
+    )
+    LOGGER.info(
+        "Pairwise promotion: enabled=%s fit_accuracy=%.6f loo_accuracy=%.6f "
+        "recall=%.6f clears_gate=%s",
+        use_promotion_ranker,
+        promotion_diagnostics["fit_target_accuracy"],
+        promotion_diagnostics["leave_one_out_target_accuracy"],
+        promoted_metrics["recall_all@5"],
+        promoted_clears_gate,
+    )
     best_weights = best_parameters.weights
     best_threshold = best_parameters.retrieve_threshold
     manifest_path = Path(split_manifest_path).expanduser().resolve()
@@ -427,8 +528,13 @@ def train_vmp_tuned(
         lexical_anchor_weight=best_parameters.lexical_anchor_weight,
         policy_adjustment_limit=best_parameters.policy_adjustment_limit,
         archive_score_penalty=best_parameters.archive_score_penalty,
-        protected_dense_count=best_parameters.protected_dense_count,
-        promotion_margin=best_parameters.promotion_margin,
+        protected_dense_count=(
+            max(1, qa_top_k - 1)
+            if use_promotion_ranker
+            else best_parameters.protected_dense_count
+        ),
+        promotion_margin=0.0 if use_promotion_ranker else best_parameters.promotion_margin,
+        promotion_ranker=promotion_ranker if use_promotion_ranker else None,
         split_id=manifest.split_id,
         split_manifest_sha256=sha256_file(manifest_path),
         dataset_sha256=manifest.dataset_sha256,
@@ -461,6 +567,19 @@ def train_vmp_tuned(
                 parameter_source_counts,
             ),
             "selected_parameter_source": best_parameters.source,
+            "selection_stage": (
+                "dev_pairwise_promotion"
+                if use_promotion_ranker
+                else "guarded_parameter_search"
+            ),
+            "pre_promotion_ranker_dev_metrics": cast(
+                JsonValue,
+                pre_promotion_metrics,
+            ),
+            "promotion_ranker_diagnostics": cast(
+                JsonValue,
+                promotion_diagnostics,
+            ),
             "dev_warm_start": {
                 "enabled": "v3_dev_warm_start" in parameter_source_counts,
                 "source_model_schema": "1.3",
@@ -477,7 +596,12 @@ def train_vmp_tuned(
             "dev_oracle_ceiling_metrics": cast(JsonValue, oracle_metrics),
             "selected_trial": selected_trial,
             "max_recall_trial": max_recall_trial,
-            "max_dev_recall_all_at_5_seen": max_recall_metrics["recall_all@5"],
+            "max_dev_recall_all_at_5_seen": max_seen_metrics["recall_all@5"],
+            "max_recall_stage": (
+                "dev_pairwise_promotion"
+                if promotion_is_max
+                else "guarded_parameter_search"
+            ),
             "max_recall_trial_objective": max_recall_objective,
             "max_recall_trial_metrics": cast(JsonValue, max_recall_metrics),
             "dev_recall_all_at_5_delta_vs_dense": (
@@ -489,8 +613,16 @@ def train_vmp_tuned(
             "date_validation": date_validation,
             "test_labels_used": False,
             "ranking_pipeline": (
-                "dense_top10_safety_set -> guarded_top5_policy_rerank -> "
-                "cached_non_destructive_lifecycle"
+                (
+                    "dense_top10_safety_set -> "
+                    "dev_pairwise_single_slot_promotion -> "
+                    "cached_non_destructive_lifecycle"
+                )
+                if use_promotion_ranker
+                else (
+                    "dense_top10_safety_set -> guarded_top5_policy_rerank -> "
+                    "cached_non_destructive_lifecycle"
+                )
             ),
             "dense_safety_guarantee": (
                 "Returned Top-10 preserves the dense Top-10 set; Top-5 retains at "
@@ -705,6 +837,246 @@ def dense_guard_oracle_metrics(
     }
 
 
+def fit_dev_promotion_ranker(
+    examples: list[VMPTuningExample],
+    *,
+    parameters: VMPTuningParameters,
+    preserve_dense_top_n: int,
+    safety_top_k: int,
+) -> tuple[PromotionPrototypeRanker | None, dict[str, JsonValue]]:
+    """Fit a Dev ranker for the single unprotected Top-5 slot."""
+
+    groups = _promotion_training_groups(
+        examples,
+        parameters=parameters,
+        preserve_dense_top_n=preserve_dense_top_n,
+        safety_top_k=safety_top_k,
+    )
+    if not groups:
+        return None, {
+            "model_type": "dev_pairwise_nearest_prototype",
+            "enabled": False,
+            "reason": "no examples contain the guarded Top-5 boundary",
+            "fit_target_accuracy": 0.0,
+            "leave_one_out_target_accuracy": 0.0,
+            "test_labels_used": False,
+        }
+    raw_vectors = [
+        vector
+        for group in groups
+        for vector in group.vectors
+    ]
+    dimensions = len(PROMOTION_FEATURES)
+    means = [
+        _mean([vector[index] for vector in raw_vectors])
+        for index in range(dimensions)
+    ]
+    scales = []
+    for index, mean in enumerate(means):
+        variance = _mean(
+            [(vector[index] - mean) ** 2 for vector in raw_vectors]
+        )
+        scales.append(max(math.sqrt(variance), 1e-6))
+
+    def normalize(vector: tuple[float, ...]) -> list[float]:
+        return [
+            (value - mean) / scale
+            for value, mean, scale in zip(vector, means, scales, strict=True)
+        ]
+
+    positives: list[PromotionPrototype] = []
+    negatives: list[PromotionPrototype] = []
+    for group in groups:
+        for position, vector in enumerate(group.vectors):
+            prototype = PromotionPrototype(
+                group_id=group.question_id,
+                vector=normalize(vector),
+            )
+            if position == group.target_position:
+                positives.append(prototype)
+            else:
+                negatives.append(prototype)
+    ranker = PromotionPrototypeRanker(
+        feature_names=list(PROMOTION_FEATURES),
+        feature_means=means,
+        feature_scales=scales,
+        positive_prototypes=positives,
+        negative_prototypes=negatives,
+    )
+    fit_diagnostics = _promotion_accuracy(
+        groups,
+        ranker=ranker,
+        leave_one_out=False,
+    )
+    leave_one_out_diagnostics = _promotion_accuracy(
+        groups,
+        ranker=ranker,
+        leave_one_out=True,
+    )
+    diagnostics: dict[str, JsonValue] = {
+        "model_type": ranker.model_type,
+        "enabled": True,
+        "feature_count": len(ranker.feature_names),
+        "training_question_count": len(groups),
+        "positive_prototype_count": len(positives),
+        "negative_prototype_count": len(negatives),
+        "fit_target_accuracy": fit_diagnostics["target_accuracy"],
+        "fit_useful_promotion_accuracy": fit_diagnostics[
+            "useful_promotion_accuracy"
+        ],
+        "fit_unsafe_promotion_rate": fit_diagnostics[
+            "unsafe_promotion_rate"
+        ],
+        "leave_one_out_target_accuracy": leave_one_out_diagnostics[
+            "target_accuracy"
+        ],
+        "leave_one_out_useful_promotion_accuracy": (
+            leave_one_out_diagnostics["useful_promotion_accuracy"]
+        ),
+        "leave_one_out_unsafe_promotion_rate": leave_one_out_diagnostics[
+            "unsafe_promotion_rate"
+        ],
+        "test_labels_used": False,
+    }
+    return ranker, diagnostics
+
+
+def _promotion_training_groups(
+    examples: list[VMPTuningExample],
+    *,
+    parameters: VMPTuningParameters,
+    preserve_dense_top_n: int,
+    safety_top_k: int,
+) -> list[PromotionTrainingGroup]:
+    if safety_top_k < 2:
+        raise ValueError("pairwise promotion requires at least two Top-K slots")
+    search_model = VMPTunedModel(
+        weights=parameters.weights,
+        split_id="promotion_search",
+        split_manifest_sha256="promotion_search",
+        dataset_sha256="promotion_search",
+        best_objective=0.0,
+        semantic_anchor_weight=parameters.semantic_anchor_weight,
+        lexical_anchor_weight=parameters.lexical_anchor_weight,
+        policy_adjustment_limit=parameters.policy_adjustment_limit,
+        archive_score_penalty=parameters.archive_score_penalty,
+        protected_dense_count=safety_top_k - 1,
+        promotion_margin=0.0,
+    )
+    groups: list[PromotionTrainingGroup] = []
+    for example in examples:
+        dense_ranked = sorted(
+            range(len(example.candidates)),
+            key=lambda index: (
+                -float(
+                    example.candidates[index].policy_features.semantic_relevance
+                ),
+                example.candidates[index].memory_id,
+            ),
+        )
+        if len(dense_ranked) < safety_top_k:
+            continue
+        boundary_position = safety_top_k - 1
+        candidate_indices = tuple(
+            dense_ranked[
+                boundary_position : min(
+                    preserve_dense_top_n,
+                    len(dense_ranked),
+                )
+            ]
+        )
+        if not candidate_indices:
+            continue
+        boundary_index = candidate_indices[0]
+        boundary = example.candidates[boundary_index]
+        temporal_intent = question_has_temporal_intent(example.question)
+        anchor_scores = {
+            index: search_model.anchor_score(
+                float(example.candidates[index].policy_features.semantic_relevance),
+                float(example.candidates[index].lexical_score),
+            )
+            for index in candidate_indices
+        }
+        vectors = tuple(
+            tuple(
+                promotion_feature_vector(
+                    example.candidates[index].policy_features,
+                    lexical_score=float(example.candidates[index].lexical_score),
+                    anchor_score=anchor_scores[index],
+                    dense_rank=dense_rank,
+                    boundary_features=boundary.policy_features,
+                    boundary_lexical_score=float(boundary.lexical_score),
+                    boundary_anchor_score=anchor_scores[boundary_index],
+                    temporal_intent=temporal_intent,
+                    lifecycle_status=example.candidates[index].lifecycle_status,
+                    boundary_lifecycle_status=boundary.lifecycle_status,
+                )
+            )
+            for dense_rank, index in enumerate(
+                candidate_indices,
+                start=boundary_position,
+            )
+        )
+        protected_sessions = {
+            example.candidates[index].session_id
+            for index in dense_ranked[:boundary_position]
+        }
+        remaining_gold = set(example.gold_session_ids) - protected_sessions
+        target_position = 0
+        if len(remaining_gold) == 1:
+            target_session = next(iter(remaining_gold))
+            for position, index in enumerate(candidate_indices):
+                if example.candidates[index].session_id == target_session:
+                    target_position = position
+                    break
+        groups.append(
+            PromotionTrainingGroup(
+                question_id=example.question_id,
+                candidate_indices=candidate_indices,
+                vectors=vectors,
+                target_position=target_position,
+            )
+        )
+    return groups
+
+
+def _promotion_accuracy(
+    groups: list[PromotionTrainingGroup],
+    *,
+    ranker: PromotionPrototypeRanker,
+    leave_one_out: bool,
+) -> dict[str, float]:
+    correct = 0
+    useful_total = 0
+    useful_correct = 0
+    conservative_total = 0
+    unsafe_promotions = 0
+    for group in groups:
+        scores = [
+            ranker.score(
+                vector,
+                exclude_group_id=group.question_id if leave_one_out else None,
+            )
+            for vector in group.vectors
+        ]
+        predicted = max(
+            range(len(scores)),
+            key=lambda position: (scores[position], -position),
+        )
+        correct += int(predicted == group.target_position)
+        if group.target_position > 0:
+            useful_total += 1
+            useful_correct += int(predicted == group.target_position)
+        else:
+            conservative_total += 1
+            unsafe_promotions += int(predicted > 0)
+    return {
+        "target_accuracy": correct / max(1, len(groups)),
+        "useful_promotion_accuracy": useful_correct / max(1, useful_total),
+        "unsafe_promotion_rate": unsafe_promotions / max(1, conservative_total),
+    }
+
+
 def evaluate_vmp_parameters(
     examples: list[VMPTuningExample],
     *,
@@ -716,6 +1088,7 @@ def evaluate_vmp_parameters(
     archive_score_penalty: float = 0.02,
     protected_dense_count: int = 4,
     promotion_margin: float = 0.02,
+    promotion_ranker: PromotionPrototypeRanker | None = None,
     retrieval_depth: int,
     qa_top_k: int,
     token_budget: int,
@@ -798,9 +1171,32 @@ def evaluate_vmp_parameters(
                 + policy_delta
                 - search_model.lifecycle_penalty(candidate.lifecycle_status)
             )
+        promotion_scores = dict(policy_scores)
+        if promotion_ranker is not None and len(dense_ranked) >= qa_top_k:
+            boundary_index = dense_ranked[qa_top_k - 1]
+            boundary = example.candidates[boundary_index]
+            boundary_anchor = anchor_scores[boundary_index]
+            for dense_rank, index in enumerate(
+                dense_ranked[: search_model.preserve_dense_top_n]
+            ):
+                candidate = example.candidates[index]
+                promotion_scores[index] = promotion_ranker.score(
+                    promotion_feature_vector(
+                        candidate.policy_features,
+                        lexical_score=float(candidate.lexical_score),
+                        anchor_score=anchor_scores[index],
+                        dense_rank=dense_rank,
+                        boundary_features=boundary.policy_features,
+                        boundary_lexical_score=float(boundary.lexical_score),
+                        boundary_anchor_score=boundary_anchor,
+                        temporal_intent=temporal_intent,
+                        lifecycle_status=candidate.lifecycle_status,
+                        boundary_lifecycle_status=boundary.lifecycle_status,
+                    ),
+                )
         selected_indices = guarded_ranked_indices(
             dense_ranked_indices=dense_ranked,
-            policy_scores=policy_scores,
+            policy_scores=promotion_scores,
             anchor_scores=anchor_scores,
             requested_top_k=retrieval_depth,
             model=search_model,
