@@ -6,8 +6,8 @@ dataset:
 
 tuning:
   training_split: dev
-  model_path: outputs/longmemeval/models/vmp_v4_seed42.json
-  search_report: outputs/longmemeval/models/vmp_v4_seed42_search.json
+  model_path: outputs/longmemeval/models/vmp_v43_seed42.json
+  search_report: outputs/longmemeval/models/vmp_v43_seed42_search.json
   split_seed: 42
   tuning_seed: 2025
   trials: 512
@@ -23,7 +23,7 @@ tuning:
 
 ablation:
   reference_method: vmp_tuned
-  frozen_model: outputs/longmemeval/models/vmp_v4_seed42.json
+  frozen_model: outputs/longmemeval/models/vmp_v43_seed42.json
   split_role: test
   methods:
     - vmp_tuned__no_recency

@@ -132,7 +132,9 @@ def test_vmp_v4_safe_trial_is_dense_only_and_model_records_safety_bounds(
         tuning_seed=7,
     )
 
-    assert tuning.model.schema_version == "1.5"
+    assert tuning.model.schema_version == "1.6"
+    assert tuning.model.ordering_strategy == "base_policy_score"
+    assert tuning.model.metadata["ranking_semantics_version"] == "4.3"
     assert tuning.model.semantic_anchor_weight == 1.0
     assert tuning.model.lexical_anchor_weight == 0.0
     assert tuning.model.policy_adjustment_limit == 0.0
@@ -188,6 +190,20 @@ def test_vmp_v4_pairwise_ranker_learns_the_single_open_slot() -> None:
 
     assert ranker is not None
     assert diagnostics["fit_target_accuracy"] == 1.0
+    vectors = [
+        [float(mean) for mean in ranker.feature_means],
+        [
+            float(mean) + 0.25 * float(scale)
+            for mean, scale in zip(
+                ranker.feature_means,
+                ranker.feature_scales,
+                strict=True,
+            )
+        ],
+    ]
+    assert ranker.score_many(vectors) == pytest.approx(
+        [ranker.score(vector) for vector in vectors]
+    )
     metrics = evaluate_vmp_parameters(
         [example],
         weights=parameters.weights,
@@ -205,6 +221,60 @@ def test_vmp_v4_pairwise_ranker_learns_the_single_open_slot() -> None:
         max_memory_count=10,
     )
     assert metrics["recall_all@5"] == 1.0
+
+
+def test_vmp_v4_promotion_changes_membership_without_reordering_protected_head() -> None:
+    model = VMPTunedModel(
+        weights={
+            name: 0.0
+            for name in (
+                "semantic_relevance",
+                "importance",
+                "scope_match",
+                "confidence",
+                "success_contribution",
+                "recency",
+                "contradiction",
+                "redundancy",
+                "token_cost",
+                "staleness",
+                "update_signal",
+                "action_signal",
+            )
+        },
+        protected_dense_count=4,
+        promotion_margin=0.0,
+        split_id="split",
+        split_manifest_sha256="manifest",
+        dataset_sha256="dataset",
+        best_objective=0.0,
+    )
+    dense = list(range(10))
+    promotion_scores = {
+        0: -0.8,
+        1: 0.1,
+        2: -0.4,
+        3: 0.3,
+        4: -0.2,
+        5: -0.1,
+        6: 0.9,
+        7: 0.0,
+        8: -0.3,
+        9: -0.5,
+    }
+    dense_order_scores = {index: 1.0 - index * 0.05 for index in dense}
+
+    selected = guarded_ranked_indices(
+        dense_ranked_indices=dense,
+        policy_scores=promotion_scores,
+        anchor_scores=dense_order_scores,
+        ordering_scores=dense_order_scores,
+        requested_top_k=10,
+        model=model,
+    )
+
+    assert selected[:5] == [0, 1, 2, 3, 6]
+    assert selected[5:] == [4, 5, 7, 8, 9]
 
 
 def test_vmp_v4_policy_delta_is_bounded_independently_of_lifecycle() -> None:

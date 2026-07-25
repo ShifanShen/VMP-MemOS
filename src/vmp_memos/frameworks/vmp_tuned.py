@@ -6,9 +6,16 @@ import math
 from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
-from pydantic import Field, FiniteFloat, JsonValue, PositiveInt, model_validator
+from pydantic import (
+    Field,
+    FiniteFloat,
+    JsonValue,
+    PositiveInt,
+    PrivateAttr,
+    model_validator,
+)
 
 from vmp_memos.embeddings import BaseEmbedder
 from vmp_memos.frameworks.base import MemoryChunk, RetrievedMemory
@@ -192,6 +199,10 @@ class PromotionPrototypeRanker(SchemaModel):
     feature_scales: list[FiniteFloat]
     positive_prototypes: list[PromotionPrototype]
     negative_prototypes: list[PromotionPrototype]
+    _positive_matrix: Any = PrivateAttr(default=None)
+    _negative_matrix: Any = PrivateAttr(default=None)
+    _positive_norms: Any = PrivateAttr(default=None)
+    _negative_norms: Any = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def validate_dimensions(self) -> PromotionPrototypeRanker:
@@ -258,6 +269,68 @@ class PromotionPrototypeRanker(SchemaModel):
         )
         return math.tanh(negative_distance - positive_distance)
 
+    def score_many(
+        self,
+        vectors: Sequence[Sequence[float]],
+        *,
+        exclude_group_id: str | None = None,
+    ) -> list[float]:
+        """Score a candidate batch, vectorizing the frozen prototype distances."""
+
+        if not vectors:
+            return []
+        if exclude_group_id is not None:
+            return [
+                self.score(vector, exclude_group_id=exclude_group_id)
+                for vector in vectors
+            ]
+        try:
+            import numpy as np  # type: ignore[import-not-found]
+        except ImportError:
+            return [self.score(vector) for vector in vectors]
+
+        raw = np.asarray(vectors, dtype=np.float64)
+        if raw.ndim != 2 or raw.shape[1] != len(self.feature_names):
+            raise ValueError("promotion feature matrix has the wrong dimension")
+        means = np.asarray(self.feature_means, dtype=np.float64)
+        scales = np.asarray(self.feature_scales, dtype=np.float64)
+        normalized = (raw - means) / scales
+        if self._positive_matrix is None:
+            self._positive_matrix = np.asarray(
+                [prototype.vector for prototype in self.positive_prototypes],
+                dtype=np.float64,
+            )
+            self._positive_norms = np.sum(
+                self._positive_matrix**2,
+                axis=1,
+            )
+        if self._negative_matrix is None:
+            self._negative_matrix = np.asarray(
+                [prototype.vector for prototype in self.negative_prototypes],
+                dtype=np.float64,
+            )
+            self._negative_norms = np.sum(
+                self._negative_matrix**2,
+                axis=1,
+            )
+        query_norms = np.sum(normalized**2, axis=1)[:, np.newaxis]
+        positive_distances = (
+            query_norms
+            + self._positive_norms[np.newaxis, :]
+            - 2.0 * normalized @ self._positive_matrix.T
+        ).min(axis=1)
+        negative_distances = (
+            query_norms
+            + self._negative_norms[np.newaxis, :]
+            - 2.0 * normalized @ self._negative_matrix.T
+        ).min(axis=1)
+        return [
+            float(value)
+            for value in np.tanh(
+                negative_distances - positive_distances
+            ).tolist()
+        ]
+
     @staticmethod
     def _matching_prototypes(
         prototypes: Sequence[PromotionPrototype],
@@ -272,10 +345,10 @@ class PromotionPrototypeRanker(SchemaModel):
 
 
 class VMPTunedModel(SchemaModel):
-    """Portable V4.2 robust ranker with dense-set safety and provenance."""
+    """Portable V4.3 robust ranker with dense-set safety and provenance."""
 
-    schema_version: NonEmptyStr = "1.5"
-    model_type: NonEmptyStr = "vmp_v4_2_pairwise_dense_guard_ranker"
+    schema_version: NonEmptyStr = "1.6"
+    model_type: NonEmptyStr = "vmp_v4_3_decoupled_pairwise_dense_guard_ranker"
     weights: dict[NonEmptyStr, FiniteFloat]
     intercept: FiniteFloat = 0.0
     retrieve_threshold: Score = 0.0
@@ -287,6 +360,7 @@ class VMPTunedModel(SchemaModel):
     preserve_dense_top_n: PositiveInt = 10
     protected_dense_count: PositiveInt = 4
     promotion_margin: Score = 0.02
+    ordering_strategy: NonEmptyStr = "base_policy_score"
     training_split: NonEmptyStr = "dev"
     split_id: NonEmptyStr
     split_manifest_sha256: NonEmptyStr
@@ -307,7 +381,7 @@ class VMPTunedModel(SchemaModel):
     def validate_frozen_dev_model(self) -> VMPTunedModel:
         """Require a complete V4 model trained on dev, never on test."""
 
-        if self.schema_version != "1.5":
+        if self.schema_version != "1.6":
             raise ValueError(
                 "VMP-Tuned model schema is obsolete; retrain the frozen dev model"
             )
@@ -333,6 +407,10 @@ class VMPTunedModel(SchemaModel):
             raise ValueError("safety_top_k cannot exceed preserve_dense_top_n")
         if self.retrieve_threshold != 0.0:
             raise ValueError("VMP-v4 retrieve_threshold must be zero for dense safety")
+        if self.ordering_strategy != "base_policy_score":
+            raise ValueError(
+                "VMP-v4.3 must order selected evidence by base policy score"
+            )
         if self.promotion_ranker is not None:
             if tuple(self.promotion_ranker.feature_names) != PROMOTION_FEATURES:
                 raise ValueError("promotion ranker feature schema is obsolete")
@@ -472,7 +550,8 @@ class VMPTunedAdapter(VMPRuleAdapter):
         stats["ranking_pipeline"] = (
             (
                 "dense_top10_safety_set -> "
-                "dev_pairwise_single_slot_promotion -> "
+                "dev_pairwise_single_slot_membership -> "
+                "base_policy_score_ordering -> "
                 "cached_non_destructive_lifecycle"
             )
             if self.model.promotion_ranker is not None
@@ -493,6 +572,7 @@ class VMPTunedAdapter(VMPRuleAdapter):
                     if self.model.promotion_ranker is not None
                     else None
                 ),
+                "ordering_strategy": self.model.ordering_strategy,
             },
         )
         return stats
@@ -559,9 +639,64 @@ class VMPTunedAdapter(VMPRuleAdapter):
         rows_by_index = {row[1]: row for row in anchor_rows}
         candidate_pool = [rows_by_index[index] for index in pool_indices]
 
+        promotion_scores_by_index: dict[int, float] = {}
+        if self.model.promotion_ranker is not None and boundary_row is not None:
+            (
+                boundary_anchor_score,
+                boundary_index,
+                _,
+                boundary_features,
+                boundary_lexical_score,
+            ) = boundary_row
+            promotion_rows = [
+                row
+                for row in candidate_pool
+                if dense_rank_by_index.get(
+                    row[1],
+                    self.model.preserve_dense_top_n,
+                )
+                < self.model.preserve_dense_top_n
+            ]
+            promotion_vectors = [
+                promotion_feature_vector(
+                    features,
+                    lexical_score=lexical_score,
+                    anchor_score=anchor_score,
+                    dense_rank=dense_rank_by_index[index],
+                    boundary_features=boundary_features,
+                    boundary_lexical_score=boundary_lexical_score,
+                    boundary_anchor_score=boundary_anchor_score,
+                    temporal_intent=temporal_intent,
+                    lifecycle_status=self._lifecycle_status_by_index.get(
+                        index,
+                        "active",
+                    ),
+                    boundary_lifecycle_status=(
+                        self._lifecycle_status_by_index.get(
+                            boundary_index,
+                            "active",
+                        )
+                    ),
+                    ablation=self.ablation,
+                )
+                for (
+                    anchor_score,
+                    index,
+                    _,
+                    features,
+                    lexical_score,
+                ) in promotion_rows
+            ]
+            promotion_scores_by_index.update(
+                zip(
+                    [row[1] for row in promotion_rows],
+                    self.model.promotion_ranker.score_many(promotion_vectors),
+                    strict=True,
+                )
+            )
+
         ranked: list[tuple[float, float, int, RetrievedMemory]] = []
         scores_by_index: dict[int, float] = {}
-        promotion_scores_by_index: dict[int, float] = {}
         anchors_by_index: dict[int, float] = {}
         update_count = 0
         for anchor_score, index, chunk, features, lexical_score in candidate_pool:
@@ -592,38 +727,7 @@ class VMPTunedAdapter(VMPRuleAdapter):
             lifecycle_penalty = self.model.lifecycle_penalty(lifecycle_status)
             scores_by_index[index] = score
             anchors_by_index[index] = anchor_score
-            promotion_score = score
-            if self.model.promotion_ranker is not None and boundary_row is not None:
-                (
-                    boundary_anchor_score,
-                    boundary_index,
-                    _,
-                    boundary_features,
-                    boundary_lexical_score,
-                ) = boundary_row
-                promotion_score = self.model.promotion_ranker.score(
-                    promotion_feature_vector(
-                        features,
-                        lexical_score=lexical_score,
-                        anchor_score=anchor_score,
-                        dense_rank=dense_rank_by_index.get(
-                            index,
-                            self.model.preserve_dense_top_n,
-                        ),
-                        boundary_features=boundary_features,
-                        boundary_lexical_score=boundary_lexical_score,
-                        boundary_anchor_score=boundary_anchor_score,
-                        temporal_intent=temporal_intent,
-                        lifecycle_status=lifecycle_status,
-                        boundary_lifecycle_status=(
-                            self._lifecycle_status_by_index.get(
-                                boundary_index,
-                                "active",
-                            )
-                        ),
-                        ablation=self.ablation,
-                    ),
-                )
+            promotion_score = promotion_scores_by_index.get(index, score)
             promotion_scores_by_index[index] = promotion_score
             ranked.append(
                 (
@@ -654,6 +758,7 @@ class VMPTunedAdapter(VMPRuleAdapter):
                                 if self.model.promotion_ranker is not None
                                 else None
                             ),
+                            "ordering_strategy": self.model.ordering_strategy,
                             "temporal_intent": temporal_intent,
                             "lifecycle_status": lifecycle_status,
                             "lifecycle_is_non_destructive": True,
@@ -678,6 +783,7 @@ class VMPTunedAdapter(VMPRuleAdapter):
             anchor_scores=anchors_by_index,
             requested_top_k=top_k,
             model=self.model,
+            ordering_scores=scores_by_index,
         )
         return [
             ranked_memory[index]
@@ -723,6 +829,7 @@ def guarded_ranked_indices(
     anchor_scores: dict[int, float],
     requested_top_k: int,
     model: VMPTunedModel,
+    ordering_scores: dict[int, float] | None = None,
 ) -> list[int]:
     """Compose a policy ranking without destroying the dense safety set.
 
@@ -738,17 +845,18 @@ def guarded_ranked_indices(
     available_dense = [
         index for index in dense_ranked_indices if index in policy_scores
     ]
-    policy_order = sorted(
+    final_scores = ordering_scores if ordering_scores is not None else policy_scores
+    final_order = sorted(
         policy_scores,
         key=lambda index: (
-            -policy_scores[index],
+            -final_scores.get(index, policy_scores[index]),
             -anchor_scores.get(index, 0.0),
             index,
         ),
     )
     preserved = available_dense[: min(model.preserve_dense_top_n, len(available_dense))]
     if not preserved:
-        return policy_order[:requested_top_k]
+        return final_order[:requested_top_k]
 
     head_size = min(model.safety_top_k, requested_top_k, len(preserved))
     dense_head = preserved[:head_size]
@@ -785,7 +893,7 @@ def guarded_ranked_indices(
         selected_head = selected_head[:head_size]
     selected_head.sort(
         key=lambda index: (
-            -policy_scores[index],
+            -final_scores.get(index, policy_scores[index]),
             -anchor_scores.get(index, 0.0),
             index,
         )
@@ -794,7 +902,7 @@ def guarded_ranked_indices(
     tail = [index for index in preserved if index not in selected_head]
     tail.sort(
         key=lambda index: (
-            -policy_scores[index],
+            -final_scores.get(index, policy_scores[index]),
             -anchor_scores.get(index, 0.0),
             index,
         )
@@ -802,7 +910,7 @@ def guarded_ranked_indices(
     selected = selected_head + tail
     if len(selected) < requested_top_k:
         selected.extend(
-            index for index in policy_order if index not in selected
+            index for index in final_order if index not in selected
         )
     return selected[:requested_top_k]
 
@@ -902,7 +1010,7 @@ def _max_pairwise_redundancy(chunks: Sequence[MemoryChunk]) -> list[float]:
     dimensions = {len(chunk.content_embedding) for chunk in chunks}
     if len(dimensions) == 1 and 0 not in dimensions:
         try:
-            import numpy as np  # type: ignore[import-not-found]
+            import numpy as np
         except ImportError:
             pass
         else:

@@ -1,6 +1,6 @@
 # VMP-MemOS
 
-## VMP-v4.2 稳健 Dense 保护链路
+## VMP-v4.3 稳健 Dense 保护链路
 
 VMP-v4 面向 V3 暴露出的泛化与延迟问题：完整保留 Dense Top-10 证据集合，
 Top-5 至少保留四个原 Dense Top-5 项，并且 Dense 第 6--10 名只有超过 promotion
@@ -25,14 +25,17 @@ Dense 第 5--10 名中学习单个开放 Top-5 槽位应保留第 5 名还是晋
 受保护的 Dense Top-4，也不改变 Dense Top-10 证据集合。模型同时记录训练拟合和
 leave-one-question-out 指标；前者用于确认实现能达到 Dev guard oracle，后者用于
 显式披露泛化风险。运行时不使用 LongMemEval 的 `question_type`，只使用查询文本
-派生信号和统一的检索/记忆特征。
+派生信号和统一的检索/记忆特征。V4.3 进一步将 promotion membership score 与
+最终 evidence ordering 解耦：前者只决定第 5 个成员，后者始终使用冻结的 base
+policy score，避免扰乱受保护的 Dense Top-4；prototype 距离在 NumPy 环境批量
+向量化，并且只计算 Dense Top-10。
 
-V4.2 工件 schema 为 `1.5`，旧 V3/V4.0/V4.1 工件必须重新训练。服务器入口命令：
+V4.3 工件 schema 为 `1.6`，旧 V3/V4.0–V4.2 工件必须重新训练。服务器入口命令：
 
 ```bash
 HF_HUB_OFFLINE=1 \
 TRANSFORMERS_OFFLINE=1 \
-RUN_ID=lme_test_vmp_v4_seed42 \
+RUN_ID=lme_test_vmp_v43_seed42 \
 DATA_PATH=data/longmemeval/longmemeval_s_cleaned.json \
 uv run --no-sync bash scripts/run_vmp_v4_experiment.sh
 ```
@@ -344,7 +347,7 @@ outputs/longmemeval/runs/{run_id}/{method}/summary.json
 
 正式结果不要使用 `--no-embeddings`。该选项只用于验证数据、runner 和输出格式。
 
-### VMP-v4.2：固定 dev/test、稳健门禁与 Dense 集合安全重排
+### VMP-v4.3：固定 dev/test、稳健门禁与 Dense 集合安全重排
 
 当前链路不再允许 policy 在检索时删除 source session：
 
@@ -384,8 +387,8 @@ python scripts/create_longmemeval_split.py \
 python scripts/train_vmp_tuned.py \
   --data data/longmemeval/longmemeval_s_cleaned.json \
   --split-manifest outputs/longmemeval/splits/dev_test_seed42.json \
-  --output outputs/longmemeval/models/vmp_v4_seed42.json \
-  --report outputs/longmemeval/models/vmp_v4_seed42_search.json \
+  --output outputs/longmemeval/models/vmp_v43_seed42.json \
+  --report outputs/longmemeval/models/vmp_v43_seed42_search.json \
   --embedding-model BAAI/bge-m3 \
   --embedding-device cuda \
   --embedding-cache-dir "${HOME}/.cache/huggingface" \
@@ -405,7 +408,7 @@ python scripts/run_longmemeval_retrieval.py \
   --data data/longmemeval/longmemeval_s_cleaned.json \
   --split-manifest outputs/longmemeval/splits/dev_test_seed42.json \
   --split test \
-  --vmp-tuned-model outputs/longmemeval/models/vmp_v4_seed42.json \
+  --vmp-tuned-model outputs/longmemeval/models/vmp_v43_seed42.json \
   --methods empty,bm25,naive_vector,vector_recency,vector_importance,vmp_rule,vmp_tuned \
   --top-k 5 \
   --retrieval-depth 10 \
@@ -415,14 +418,14 @@ python scripts/run_longmemeval_retrieval.py \
   --embedding-cache-db outputs/longmemeval/cache/bge_m3.sqlite3 \
   --embedding-batch-size 8 \
   --prewarm-embeddings \
-  --run-id lme_test_vmp_v4_seed42
+  --run-id lme_test_vmp_v43_seed42
 ```
 
 一条脚本可顺序执行 split、dev 调优、test retrieval 和表格导出：
 
 ```bash
 DATA_PATH=data/longmemeval/longmemeval_s_cleaned.json \
-RUN_ID=lme_test_vmp_v4_seed42 \
+RUN_ID=lme_test_vmp_v43_seed42 \
 uv run --no-sync bash scripts/run_vmp_v4_experiment.sh
 ```
 
@@ -442,11 +445,11 @@ abstention accuracy。
 ### LongMemEval 消融实验
 
 消融实验严格复用前一步生成的 split manifest、BGE-M3 和冻结
-`vmp_v4_seed42.json`，不会为任何消融变体重新调参。
-V4.2 模型 schema 为 `1.5`，记录 Dense Top-10 安全集合、受保护 Top-5 重排、
-Dev pairwise promotion ranker、Dev safety baseline
+`vmp_v43_seed42.json`，不会为任何消融变体重新调参。
+V4.3 模型 schema 为 `1.6`，记录 Dense Top-10 安全集合、受保护 Top-5 重排、
+Dev pairwise promotion ranker、独立的 base-policy ordering、Dev safety baseline
 和非破坏 lifecycle policy；拉取新代码后应先重新执行
-`run_vmp_v4_experiment.sh`，旧 `1.0`–`1.4` 工件会被明确拒绝。变体包括：
+`run_vmp_v4_experiment.sh`，旧 `1.0`–`1.5` 工件会被明确拒绝。变体包括：
 
 ```text
 VMP-full
@@ -506,7 +509,7 @@ retrieved tokens、Normalized EM、Token F1 及其相对 VMP-full 的差值。
 
 ```bash
 python scripts/export_longmemeval_cost.py \
-  --retrieval-run outputs/longmemeval/runs/lme_test_vmp_v4_seed42
+  --retrieval-run outputs/longmemeval/runs/lme_test_vmp_v43_seed42
 ```
 
 输出：
@@ -528,7 +531,7 @@ answer。本地 vLLM 不伪造美元价格；官方框架无法导出内部 LLM 
 
 ```bash
 python scripts/export_longmemeval_cost.py \
-  --retrieval-run outputs/longmemeval/runs/lme_test_vmp_v4_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_vmp_v43_seed42 \
   --allow-missing-qa
 ```
 
@@ -787,7 +790,7 @@ python scripts/run_longmemeval_retrieval.py \
   --data data/longmemeval/longmemeval_s_cleaned.json \
   --split-manifest outputs/longmemeval/splits/dev_test_seed42.json \
   --split test \
-  --vmp-tuned-model outputs/longmemeval/models/vmp_v4_seed42.json \
+  --vmp-tuned-model outputs/longmemeval/models/vmp_v43_seed42.json \
   --methods bm25,naive_vector,vector_recency,vector_importance,vmp_rule,vmp_tuned,mem0,langmem,graphiti,letta \
   --top-k 5 \
   --retrieval-depth 10 \

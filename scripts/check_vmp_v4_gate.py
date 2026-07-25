@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail fast unless a frozen VMP-v4.2 model passes robust Dev safety gates."""
+"""Fail fast unless a frozen VMP-v4.3 model passes robust Dev safety gates."""
 
 from __future__ import annotations
 
@@ -63,6 +63,7 @@ def main() -> int:
                 "status": "passed" if passed else "failed",
                 "model": str(args.model.expanduser().resolve()),
                 "schema_version": model.schema_version,
+                "ordering_strategy": model.ordering_strategy,
                 "dev_recall_all@5": recall,
                 "delta_vs_dense": recall_delta,
                 "macro_delta_vs_dense": macro_delta,

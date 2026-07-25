@@ -4,14 +4,14 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_PATH="${DATA_PATH:-data/longmemeval/longmemeval_s_cleaned.json}"
 SPLIT_PATH="${SPLIT_PATH:-outputs/longmemeval/splits/dev_test_seed42.json}"
-MODEL_PATH="${MODEL_PATH:-outputs/longmemeval/models/vmp_v4_seed42.json}"
-SEARCH_REPORT="${SEARCH_REPORT:-outputs/longmemeval/models/vmp_v4_seed42_search.json}"
+MODEL_PATH="${MODEL_PATH:-outputs/longmemeval/models/vmp_v43_seed42.json}"
+SEARCH_REPORT="${SEARCH_REPORT:-outputs/longmemeval/models/vmp_v43_seed42_search.json}"
 EMBEDDING_MODEL="${EMBEDDING_MODEL:-BAAI/bge-m3}"
 EMBEDDING_DEVICE="${EMBEDDING_DEVICE:-cuda}"
 EMBEDDING_CACHE_DIR="${EMBEDDING_CACHE_DIR:-${HOME}/.cache/huggingface}"
 EMBEDDING_CACHE_DB="${EMBEDDING_CACHE_DB:-outputs/longmemeval/cache/bge_m3.sqlite3}"
 EMBEDDING_BATCH_SIZE="${EMBEDDING_BATCH_SIZE:-8}"
-RUN_ID="${RUN_ID:-lme_test_vmp_v4_$(date -u +%Y%m%dT%H%M%SZ)}"
+RUN_ID="${RUN_ID:-lme_test_vmp_v43_$(date -u +%Y%m%dT%H%M%SZ)}"
 METHODS="${METHODS:-empty,bm25,naive_vector,vector_recency,vector_importance,vmp_rule,vmp_tuned}"
 TUNING_TRIALS="${TUNING_TRIALS:-512}"
 STABILITY_FOLDS="${STABILITY_FOLDS:-5}"
@@ -45,7 +45,7 @@ on_exit() {
 }
 trap on_exit EXIT
 
-log_stage "Starting VMP-v4.2 pairwise dense-guard experiment."
+log_stage "Starting VMP-v4.3 decoupled pairwise dense-guard experiment."
 log_stage "run_id=${RUN_ID} data=${DATA_PATH} model=${EMBEDDING_MODEL} device=${EMBEDDING_DEVICE}"
 log_stage "embedding_batch_size=${EMBEDDING_BATCH_SIZE} prewarm_embeddings=true"
 log_stage "methods=${METHODS} trials=${TUNING_TRIALS} folds=${STABILITY_FOLDS} run_qa=${RUN_QA}"
@@ -59,7 +59,7 @@ python scripts/create_longmemeval_split.py \
   --dev-size 100 \
   --test-size 400
 
-log_stage "Phase 2/5: tuning VMP-v4.2 and fitting Dev pairwise promotion."
+log_stage "Phase 2/5: tuning VMP-v4.3 and fitting Dev pairwise promotion."
 python scripts/train_vmp_tuned.py \
   --data "${DATA_PATH}" \
   --split-manifest "${SPLIT_PATH}" \
@@ -129,4 +129,4 @@ python scripts/export_longmemeval_tables.py \
   --retrieval-run "outputs/longmemeval/runs/${RUN_ID}" \
   --output-dir "${TABLE_DIR}"
 
-echo "Completed VMP-v4.2 test run: outputs/longmemeval/runs/${RUN_ID}"
+echo "Completed VMP-v4.3 test run: outputs/longmemeval/runs/${RUN_ID}"

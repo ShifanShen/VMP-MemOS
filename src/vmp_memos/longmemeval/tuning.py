@@ -591,6 +591,8 @@ def train_vmp_tuned(
                 "test_labels_used": False,
             },
             "feature_semantics_version": "4",
+            "ranking_semantics_version": "4.3",
+            "ordering_strategy": "base_policy_score",
             "retrieval_objective_metric": "recall_all@5",
             "dense_safety_baseline_metrics": cast(JsonValue, baseline_metrics),
             "dev_oracle_ceiling_metrics": cast(JsonValue, oracle_metrics),
@@ -615,7 +617,8 @@ def train_vmp_tuned(
             "ranking_pipeline": (
                 (
                     "dense_top10_safety_set -> "
-                    "dev_pairwise_single_slot_promotion -> "
+                    "dev_pairwise_single_slot_membership -> "
+                    "base_policy_score_ordering -> "
                     "cached_non_destructive_lifecycle"
                 )
                 if use_promotion_ranker
@@ -1176,30 +1179,42 @@ def evaluate_vmp_parameters(
             boundary_index = dense_ranked[qa_top_k - 1]
             boundary = example.candidates[boundary_index]
             boundary_anchor = anchor_scores[boundary_index]
-            for dense_rank, index in enumerate(
+            promotion_indices = list(
                 dense_ranked[: search_model.preserve_dense_top_n]
-            ):
-                candidate = example.candidates[index]
-                promotion_scores[index] = promotion_ranker.score(
-                    promotion_feature_vector(
-                        candidate.policy_features,
-                        lexical_score=float(candidate.lexical_score),
-                        anchor_score=anchor_scores[index],
-                        dense_rank=dense_rank,
-                        boundary_features=boundary.policy_features,
-                        boundary_lexical_score=float(boundary.lexical_score),
-                        boundary_anchor_score=boundary_anchor,
-                        temporal_intent=temporal_intent,
-                        lifecycle_status=candidate.lifecycle_status,
-                        boundary_lifecycle_status=boundary.lifecycle_status,
+            )
+            promotion_vectors = [
+                promotion_feature_vector(
+                    example.candidates[index].policy_features,
+                    lexical_score=float(
+                        example.candidates[index].lexical_score
                     ),
+                    anchor_score=anchor_scores[index],
+                    dense_rank=dense_rank,
+                    boundary_features=boundary.policy_features,
+                    boundary_lexical_score=float(boundary.lexical_score),
+                    boundary_anchor_score=boundary_anchor,
+                    temporal_intent=temporal_intent,
+                    lifecycle_status=(
+                        example.candidates[index].lifecycle_status
+                    ),
+                    boundary_lifecycle_status=boundary.lifecycle_status,
                 )
+                for dense_rank, index in enumerate(promotion_indices)
+            ]
+            promotion_scores.update(
+                zip(
+                    promotion_indices,
+                    promotion_ranker.score_many(promotion_vectors),
+                    strict=True,
+                )
+            )
         selected_indices = guarded_ranked_indices(
             dense_ranked_indices=dense_ranked,
             policy_scores=promotion_scores,
             anchor_scores=anchor_scores,
             requested_top_k=retrieval_depth,
             model=search_model,
+            ordering_scores=policy_scores,
         )
         retrieved = [
             example.candidates[index]

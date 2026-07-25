@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tune VMP-v4.2 retrieval on LongMemEval dev and freeze a test-safe model."""
+"""Tune VMP-v4.3 retrieval on LongMemEval dev and freeze a test-safe model."""
 
 from __future__ import annotations
 
@@ -30,12 +30,12 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("outputs/longmemeval/models/vmp_v4_seed42.json"),
+        default=Path("outputs/longmemeval/models/vmp_v43_seed42.json"),
     )
     parser.add_argument(
         "--report",
         type=Path,
-        default=Path("outputs/longmemeval/models/vmp_v4_seed42_search.json"),
+        default=Path("outputs/longmemeval/models/vmp_v43_seed42_search.json"),
     )
     parser.add_argument("--embedding-model", default="BAAI/bge-m3")
     parser.add_argument("--embedding-device", default="cuda")
@@ -161,6 +161,7 @@ def main() -> int:
                 "policy_adjustment_limit": result.model.policy_adjustment_limit,
                 "protected_dense_count": result.model.protected_dense_count,
                 "promotion_margin": result.model.promotion_margin,
+                "ordering_strategy": result.model.ordering_strategy,
                 "promotion_ranker": (
                     result.model.promotion_ranker.model_type
                     if result.model.promotion_ranker is not None
