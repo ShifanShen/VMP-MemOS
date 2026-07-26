@@ -142,6 +142,7 @@ class VMPHierarchicalAdapter(VMPTunedAdapter):
         self.hierarchical_model = model
         self.name = "vmp_hierarchical"
         self.turn_chunks: list[MemoryChunk] = []
+        self.skipped_empty_turn_count = 0
         self._hierarchical_components_by_session: dict[
             str,
             dict[str, float],
@@ -173,6 +174,7 @@ class VMPHierarchicalAdapter(VMPTunedAdapter):
     def _reset_impl(self) -> None:
         super()._reset_impl()
         self.turn_chunks = []
+        self.skipped_empty_turn_count = 0
         self._hierarchical_components_by_session = {}
 
     def _ingest_event_impl(self, event: Event) -> None:
@@ -187,6 +189,8 @@ class VMPHierarchicalAdapter(VMPTunedAdapter):
             turn_chunk = contextual_turn_chunk(event)
             if turn_chunk is not None:
                 self.turn_chunks.append(turn_chunk)
+            else:
+                self.skipped_empty_turn_count += 1
 
     def _finalize_ingestion_impl(self) -> None:
         super()._finalize_ingestion_impl()
@@ -301,6 +305,7 @@ class VMPHierarchicalAdapter(VMPTunedAdapter):
         stats["name"] = self.name
         stats["session_memory_count"] = len(self.chunks)
         stats["turn_memory_count"] = len(self.turn_chunks)
+        stats["skipped_empty_turn_count"] = self.skipped_empty_turn_count
         stats["physical_memory_count"] = self.memory_count
         stats["model_type"] = self.hierarchical_model.model_type
         stats["model_schema_version"] = self.hierarchical_model.schema_version
@@ -362,10 +367,10 @@ class VMPHierarchicalAdapter(VMPTunedAdapter):
 def contextual_turn_chunk(event: Event) -> MemoryChunk | None:
     """Create the role-prefixed turn representation shared by train and test."""
 
-    chunk = chunk_from_event(event)
-    content = chunk.content.strip()
+    content = str(event.content).strip()
     if not content:
         return None
+    chunk = chunk_from_event(event)
     role = str(event.metadata.get("role") or event.event_type.value)
     contextual_content = f"{role}: {content}"
     return chunk.model_copy(

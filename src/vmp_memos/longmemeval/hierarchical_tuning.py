@@ -67,6 +67,7 @@ class HierarchicalTuningExample:
     turn_lexical_scores: tuple[tuple[float, ...], ...]
     turn_count: int
     turn_tokens: int
+    skipped_empty_turn_count: int
 
 
 class VMPHierarchicalTuningResult(SchemaModel):
@@ -259,6 +260,10 @@ def train_vmp_hierarchical(
             "token_budget": token_budget,
             "stability_folds": stability_folds,
             "turn_representation": "role_prefixed_raw_turn",
+            "skipped_empty_turn_count": sum(
+                example.skipped_empty_turn_count
+                for example in hierarchical_examples
+            ),
             "promotion_ranker": "disabled_after_semantic_geometry_change",
             "membership_strategy": "hierarchical_dense_top5",
             "ordering_strategy": "frozen_vmp_base_policy_score",
@@ -308,13 +313,17 @@ def build_hierarchical_tuning_examples(
     samples_by_id = {sample.question_id: sample for sample in samples}
     examples: list[HierarchicalTuningExample] = []
     started_at = perf_counter()
+    skipped_empty_turn_count = 0
     for index, base_example in enumerate(base_examples, start=1):
         sample = samples_by_id[base_example.question_id]
+        events = sample_to_events(sample)
         turn_chunks = [
             chunk
-            for event in sample_to_events(sample)
+            for event in events
             if (chunk := contextual_turn_chunk(event)) is not None
         ]
+        sample_skipped_empty_turn_count = len(events) - len(turn_chunks)
+        skipped_empty_turn_count += sample_skipped_empty_turn_count
         query_embedding = embedder.embed_one(sample.question) if embedder else None
         if embedder is not None and turn_chunks:
             vectors = embedder.embed([chunk.content for chunk in turn_chunks])
@@ -357,18 +366,28 @@ def build_hierarchical_tuning_examples(
                 ),
                 turn_count=len(turn_chunks),
                 turn_tokens=sum(chunk.token_count for chunk in turn_chunks),
+                skipped_empty_turn_count=sample_skipped_empty_turn_count,
             )
         )
         if index == 1 or index % 10 == 0 or index == len(base_examples):
             LOGGER.info(
                 "Turn feature progress %d/%d: question_id=%s turns=%d "
-                "elapsed=%.1fs",
+                "skipped_empty=%d cumulative_skipped_empty=%d elapsed=%.1fs",
                 index,
                 len(base_examples),
                 sample.question_id,
                 len(turn_chunks),
+                sample_skipped_empty_turn_count,
+                skipped_empty_turn_count,
                 perf_counter() - started_at,
             )
+    LOGGER.info(
+        "Turn feature construction complete: examples=%d "
+        "skipped_empty_turns=%d elapsed=%.1fs",
+        len(examples),
+        skipped_empty_turn_count,
+        perf_counter() - started_at,
+    )
     return examples
 
 
