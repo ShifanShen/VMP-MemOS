@@ -124,6 +124,14 @@ def main() -> int:
                 "schema_version": result.model.schema_version,
                 "model_type": result.model.model_type,
                 "split_id": result.model.split_id,
+                "split_assignment_sha256": (
+                    result.model.split_assignment_sha256
+                ),
+                "split_manifest_file_sha256_matches_base": (
+                    result.model.metadata.get(
+                        "split_manifest_file_sha256_matches_base"
+                    )
+                ),
                 "training_split": result.model.training_split,
                 "best_objective": result.model.best_objective,
                 "dev_metrics": result.model.dev_metrics,

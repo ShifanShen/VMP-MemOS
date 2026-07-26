@@ -7,6 +7,7 @@ import json
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from pydantic import Field, JsonValue, model_validator
 
@@ -33,7 +34,7 @@ class LongMemEvalSplitManifest(SchemaModel):
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def validate_disjoint_splits(self) -> "LongMemEvalSplitManifest":
+    def validate_disjoint_splits(self) -> LongMemEvalSplitManifest:
         """Reject duplicate IDs within or across splits."""
 
         seen: set[str] = set()
@@ -51,10 +52,18 @@ class LongMemEvalSplitManifest(SchemaModel):
         return self
 
     def save(self, path: str | Path) -> Path:
-        """Write the manifest as stable UTF-8 JSON."""
+        """Write the manifest once, reusing an equivalent existing split."""
 
         output_path = Path(path).expanduser().resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        if output_path.exists():
+            existing = self.load(output_path)
+            if split_assignment_sha256(existing) == split_assignment_sha256(self):
+                return output_path
+            raise ValueError(
+                "refusing to overwrite a split manifest with different "
+                "dataset bytes or question assignments"
+            )
         output_path.write_text(
             self.model_dump_json(indent=2) + "\n",
             encoding="utf-8",
@@ -62,7 +71,7 @@ class LongMemEvalSplitManifest(SchemaModel):
         return output_path
 
     @classmethod
-    def load(cls, path: str | Path) -> "LongMemEvalSplitManifest":
+    def load(cls, path: str | Path) -> LongMemEvalSplitManifest:
         """Load a split manifest."""
 
         manifest_path = Path(path).expanduser().resolve()
@@ -132,7 +141,7 @@ def create_longmemeval_split(
             "dataset_sample_count": len(samples),
             "dev_size": dev_size,
             "test_size": resolved_test_size,
-            "unused_question_ids": unused_ids,
+            "unused_question_ids": cast(JsonValue, unused_ids),
             "assignment_uses_labels": False,
         },
     )
@@ -198,6 +207,22 @@ def sha256_json(payload: object) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def split_assignment_sha256(manifest: LongMemEvalSplitManifest) -> str:
+    """Hash only semantic split provenance, excluding path and creation time."""
+
+    return sha256_json(
+        {
+            "dataset_sha256": manifest.dataset_sha256,
+            "dataset_question_ids_sha256": (
+                manifest.dataset_question_ids_sha256
+            ),
+            "seed": manifest.seed,
+            "strategy": manifest.strategy,
+            "splits": manifest.splits,
+        }
+    )
 
 
 def _samples_by_id(samples: list[LongMemEvalSample]) -> dict[str, LongMemEvalSample]:

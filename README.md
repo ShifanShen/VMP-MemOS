@@ -26,6 +26,12 @@ RUN_QA=0 \
 uv run --no-sync bash scripts/run_vmp_v5_experiment.sh
 ```
 
+V5 的 split provenance 使用语义指纹：数据集 SHA-256、question ID
+集合、seed、划分策略以及完整 Dev/Test question assignment 都必须一致；
+`created_at` 和不同机器上的绝对 `dataset_path` 不参与语义指纹。重复执行 split
+脚本会复用已有的等价 manifest，不再改写时间戳。旧 V4.3 工件若仅文件 SHA-256
+不同但语义划分完全一致，会记录 warning 后继续；真实的数据或划分变化仍会失败。
+
 脚本会生成 `vmp_v5_seed42.json`、完整 grid-search report、Test retrieval
 JSONL、运行日志和论文表格。V5 会额外预热 turn embeddings，正式计时阶段不会
 把首次 embedding 下载或生成混入某个单独方法。

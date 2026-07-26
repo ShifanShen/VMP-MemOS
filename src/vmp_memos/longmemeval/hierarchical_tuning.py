@@ -25,6 +25,7 @@ from vmp_memos.longmemeval.splits import (
     load_split_samples,
     sha256_file,
     sha256_json,
+    split_assignment_sha256,
 )
 from vmp_memos.longmemeval.tuning import (
     DEFAULT_OBJECTIVE_WEIGHTS,
@@ -109,9 +110,16 @@ def train_vmp_hierarchical(
         base_model,
         dataset_sha256=manifest.dataset_sha256,
         split_id=manifest.split_id,
-        split_manifest_sha256=manifest_sha256,
         embedding_identifier=embedder.identifier if embedder else None,
     )
+    assignment_sha256 = split_assignment_sha256(manifest)
+    if manifest_sha256 != base_model.split_manifest_sha256:
+        LOGGER.warning(
+            "Base V4.3 manifest file SHA-256 differs from the current file, "
+            "but dataset SHA-256 and canonical split_id match. Continuing "
+            "with semantic split assignment SHA-256 %s.",
+            assignment_sha256,
+        )
 
     LOGGER.info(
         "Loaded %d V5 Dev samples; building session features and turn signals.",
@@ -232,7 +240,8 @@ def train_vmp_hierarchical(
         turn_lexical_weight=best_parameters.turn_lexical_weight,
         turn_pooling_top_n=best_parameters.turn_pooling_top_n,
         split_id=manifest.split_id,
-        split_manifest_sha256=manifest_sha256,
+        split_manifest_sha256=base_model.split_manifest_sha256,
+        split_assignment_sha256=assignment_sha256,
         dataset_sha256=manifest.dataset_sha256,
         embedding_identifier=embedder.identifier if embedder else None,
         best_objective=best_objective,
@@ -266,6 +275,11 @@ def train_vmp_hierarchical(
             ),
             "base_model_path": str(Path(base_model_path)),
             "base_model_sha256": sha256_file(base_model_path),
+            "current_split_manifest_sha256": manifest_sha256,
+            "split_manifest_file_sha256_matches_base": (
+                manifest_sha256 == base_model.split_manifest_sha256
+            ),
+            "split_assignment_sha256": assignment_sha256,
             "ranking_pipeline": (
                 "session_embedding + pooled_turn_embedding + turn_bm25 -> "
                 "hierarchical_dense_top10 -> frozen_vmp_policy_ordering -> "
@@ -526,7 +540,6 @@ def _validate_base_model(
     *,
     dataset_sha256: str,
     split_id: str,
-    split_manifest_sha256: str,
     embedding_identifier: str | None,
 ) -> None:
     if model.training_split != "dev":
@@ -535,8 +548,6 @@ def _validate_base_model(
         raise ValueError("VMP-v5 base model dataset differs from split manifest")
     if model.split_id != split_id:
         raise ValueError("VMP-v5 base model split ID differs")
-    if model.split_manifest_sha256 != split_manifest_sha256:
-        raise ValueError("VMP-v5 base model split-manifest SHA-256 differs")
     if model.embedding_identifier != embedding_identifier:
         raise ValueError("VMP-v5 base model embedding identifier differs")
     if model.metadata.get("test_labels_used") is not False:

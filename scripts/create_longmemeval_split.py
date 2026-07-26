@@ -7,7 +7,10 @@ import argparse
 import json
 from pathlib import Path
 
-from vmp_memos.longmemeval.splits import create_longmemeval_split
+from vmp_memos.longmemeval.splits import (
+    create_longmemeval_split,
+    split_assignment_sha256,
+)
 
 
 def main() -> int:
@@ -29,12 +32,15 @@ def main() -> int:
         test_size=args.test_size,
         seed=args.seed,
     )
+    reused = args.output.expanduser().resolve().exists()
     output_path = manifest.save(args.output)
     print(
         json.dumps(
             {
                 "split_id": manifest.split_id,
+                "split_assignment_sha256": split_assignment_sha256(manifest),
                 "output": str(output_path),
+                "reused": reused,
                 "dataset_sha256": manifest.dataset_sha256,
                 "counts": {
                     name: len(question_ids)

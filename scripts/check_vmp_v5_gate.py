@@ -55,6 +55,7 @@ def main() -> int:
                 "status": "passed" if passed else "failed",
                 "model": str(args.model.expanduser().resolve()),
                 "schema_version": model.schema_version,
+                "split_assignment_sha256": model.split_assignment_sha256,
                 "dev_recall_all@5": recall,
                 "delta_vs_v43": delta_v43,
                 "delta_vs_session_only": delta_session,

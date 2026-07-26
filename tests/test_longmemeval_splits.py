@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 
 import pytest
 
@@ -10,6 +11,8 @@ from vmp_memos.longmemeval.splits import (
     LongMemEvalSplitManifest,
     create_longmemeval_split,
     load_split_samples,
+    sha256_file,
+    split_assignment_sha256,
 )
 
 
@@ -30,6 +33,24 @@ def test_split_is_exact_deterministic_and_disjoint(tmp_path) -> None:
     assert first.metadata["assignment_uses_labels"] is False
 
     manifest_path = first.save(tmp_path / "split.json")
+    original_file_sha256 = sha256_file(manifest_path)
+    relocated = second.model_copy(
+        update={
+            "created_at": second.created_at + timedelta(seconds=1),
+            "dataset_path": str(tmp_path / "relocated" / data_path.name),
+        }
+    )
+    assert split_assignment_sha256(first) == split_assignment_sha256(relocated)
+    relocated.save(manifest_path)
+    assert sha256_file(manifest_path) == original_file_sha256
+    different = create_longmemeval_split(
+        data_path,
+        dev_size=2,
+        test_size=6,
+        seed=7,
+    )
+    with pytest.raises(ValueError, match="refusing to overwrite"):
+        different.save(manifest_path)
     loaded = LongMemEvalSplitManifest.load(manifest_path)
     samples, checked = load_split_samples(data_path, manifest_path, "test")
     assert checked.split_id == loaded.split_id

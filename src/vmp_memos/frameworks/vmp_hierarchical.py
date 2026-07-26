@@ -40,6 +40,7 @@ class VMPHierarchicalModel(SchemaModel):
     training_split: NonEmptyStr = "dev"
     split_id: NonEmptyStr
     split_manifest_sha256: NonEmptyStr
+    split_assignment_sha256: NonEmptyStr
     dataset_sha256: NonEmptyStr
     embedding_identifier: str | None = None
     best_objective: FiniteFloat

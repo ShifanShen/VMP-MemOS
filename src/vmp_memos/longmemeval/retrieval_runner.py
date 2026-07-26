@@ -37,6 +37,7 @@ from vmp_memos.longmemeval.splits import (
     LongMemEvalSplitManifest,
     load_split_samples,
     sha256_file,
+    split_assignment_sha256,
 )
 from vmp_memos.longmemeval.validation import validate_longmemeval_dates
 from vmp_memos.schemas.base import (
@@ -597,6 +598,7 @@ def _validate_vmp_provenance(
         raise ValueError("VMP evaluation requires a checked split manifest")
     actual_embedding = embedder.identifier if embedder else None
     manifest_sha256 = sha256_file(config.split_manifest_path)
+    assignment_sha256 = split_assignment_sha256(split_manifest)
     if uses_vmp_tuned:
         if config.vmp_tuned_model_path is None:
             raise ValueError("vmp_tuned_model_path is required")
@@ -608,11 +610,13 @@ def _validate_vmp_provenance(
             dataset_sha256=model.dataset_sha256,
             split_id=model.split_id,
             split_manifest_sha256=model.split_manifest_sha256,
+            split_assignment_sha256=None,
             training_split=model.training_split,
             embedding_identifier=model.embedding_identifier,
             expected_dataset_sha256=split_manifest.dataset_sha256,
             expected_split_id=split_manifest.split_id,
             expected_manifest_sha256=manifest_sha256,
+            expected_assignment_sha256=assignment_sha256,
             evaluation_split=config.split_name,
             actual_embedding_identifier=actual_embedding,
         )
@@ -631,11 +635,15 @@ def _validate_vmp_provenance(
             dataset_sha256=hierarchical.dataset_sha256,
             split_id=hierarchical.split_id,
             split_manifest_sha256=hierarchical.split_manifest_sha256,
+            split_assignment_sha256=(
+                hierarchical.split_assignment_sha256
+            ),
             training_split=hierarchical.training_split,
             embedding_identifier=hierarchical.embedding_identifier,
             expected_dataset_sha256=split_manifest.dataset_sha256,
             expected_split_id=split_manifest.split_id,
             expected_manifest_sha256=manifest_sha256,
+            expected_assignment_sha256=assignment_sha256,
             evaluation_split=config.split_name,
             actual_embedding_identifier=actual_embedding,
         )
@@ -711,11 +719,13 @@ def _validate_frozen_vmp_model(
     dataset_sha256: str,
     split_id: str,
     split_manifest_sha256: str,
+    split_assignment_sha256: str | None,
     training_split: str,
     embedding_identifier: str | None,
     expected_dataset_sha256: str,
     expected_split_id: str,
     expected_manifest_sha256: str,
+    expected_assignment_sha256: str,
     evaluation_split: str,
     actual_embedding_identifier: str | None,
 ) -> None:
@@ -727,9 +737,19 @@ def _validate_frozen_vmp_model(
         raise ValueError(
             f"{model_name} model and evaluation split manifest differ"
         )
-    if split_manifest_sha256 != expected_manifest_sha256:
+    if (
+        split_assignment_sha256 is not None
+        and split_assignment_sha256 != expected_assignment_sha256
+    ):
         raise ValueError(
-            f"{model_name} model split-manifest SHA-256 differs"
+            f"{model_name} model semantic split assignment differs"
+        )
+    if split_manifest_sha256 != expected_manifest_sha256:
+        LOGGER.warning(
+            "%s split-manifest file SHA-256 differs, but the checked dataset "
+            "and canonical split assignments match; accepting volatile "
+            "path/timestamp differences.",
+            model_name,
         )
     if evaluation_split == training_split:
         raise ValueError(
