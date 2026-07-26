@@ -98,6 +98,28 @@ def test_retrieval_runner_rejects_unparseable_nonempty_dates(tmp_path) -> None:
         )
 
 
+def test_dev_model_selection_override_cannot_be_used_on_test() -> None:
+    config = LongMemEvalRunConfig(
+        data_path="data.json",
+        methods=["vmp_tuned"],
+        split_manifest_path="split.json",
+        split_name="dev",
+        allow_dev_model_selection=True,
+        vmp_tuned_model_path="model.json",
+    )
+
+    assert config.allow_dev_model_selection is True
+    with pytest.raises(ValueError, match="only valid for explicit Dev"):
+        LongMemEvalRunConfig(
+            data_path="data.json",
+            methods=["vmp_tuned"],
+            split_manifest_path="split.json",
+            split_name="test",
+            allow_dev_model_selection=True,
+            vmp_tuned_model_path="model.json",
+        )
+
+
 def _read_jsonl(path) -> list[dict]:
     return [
         json.loads(line)

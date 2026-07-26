@@ -69,6 +69,7 @@ class RetrievalSampleRecord(SchemaModel):
     metrics: dict[str, NonNegativeFloat] = Field(default_factory=dict)
     retrieved_tokens: NonNegativeInt = 0
     adapter_stats: dict[str, JsonValue] = Field(default_factory=dict)
+    rerank_metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class RetrievalMethodSummary(SchemaModel):
@@ -618,6 +619,7 @@ def _validate_vmp_provenance(
             expected_manifest_sha256=manifest_sha256,
             expected_assignment_sha256=assignment_sha256,
             evaluation_split=config.split_name,
+            allow_training_split=config.allow_dev_model_selection,
             actual_embedding_identifier=actual_embedding,
         )
     if uses_vmp_hierarchical:
@@ -645,6 +647,7 @@ def _validate_vmp_provenance(
             expected_manifest_sha256=manifest_sha256,
             expected_assignment_sha256=assignment_sha256,
             evaluation_split=config.split_name,
+            allow_training_split=config.allow_dev_model_selection,
             actual_embedding_identifier=actual_embedding,
         )
 
@@ -727,6 +730,7 @@ def _validate_frozen_vmp_model(
     expected_manifest_sha256: str,
     expected_assignment_sha256: str,
     evaluation_split: str,
+    allow_training_split: bool,
     actual_embedding_identifier: str | None,
 ) -> None:
     if dataset_sha256 != expected_dataset_sha256:
@@ -751,10 +755,16 @@ def _validate_frozen_vmp_model(
             "path/timestamp differences.",
             model_name,
         )
-    if evaluation_split == training_split:
+    if evaluation_split == training_split and not allow_training_split:
         raise ValueError(
             f"Refusing to report {model_name} on its training split; "
             "use --split test"
+        )
+    if evaluation_split == training_split:
+        LOGGER.warning(
+            "%s is running on its training split for explicitly marked "
+            "Dev-only model selection; this run must not be reported as Test.",
+            model_name,
         )
     if embedding_identifier != actual_embedding_identifier:
         raise ValueError(

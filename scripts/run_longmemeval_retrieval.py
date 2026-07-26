@@ -44,6 +44,14 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/longmemeval"))
     parser.add_argument("--split-manifest", type=Path, default=None)
     parser.add_argument("--split", choices=("dev", "test"), default=None)
+    parser.add_argument(
+        "--allow-dev-model-selection",
+        action="store_true",
+        help=(
+            "Allow a Dev-trained VMP model on --split dev for an explicitly "
+            "marked model-selection run. Never use this for Test reporting."
+        ),
+    )
     parser.add_argument("--vmp-tuned-model", type=Path, default=None)
     parser.add_argument("--vmp-hierarchical-model", type=Path, default=None)
     parser.add_argument(
@@ -199,6 +207,7 @@ def main() -> int:
         prewarm_embeddings=args.prewarm_embeddings,
         split_manifest_path=args.split_manifest,
         split_name=args.split,
+        allow_dev_model_selection=args.allow_dev_model_selection,
         vmp_tuned_model_path=args.vmp_tuned_model,
         vmp_hierarchical_model_path=args.vmp_hierarchical_model,
         metadata={
@@ -212,6 +221,8 @@ def main() -> int:
             "embedding_batch_size": args.embedding_batch_size,
             "prewarm_embeddings": args.prewarm_embeddings,
             "lexical_smoke_only": args.no_embeddings,
+            "allow_dev_model_selection": args.allow_dev_model_selection,
+            "test_labels_used_for_training": False,
         },
     )
     framework_runtime = FrameworkRuntimeConfig(

@@ -221,6 +221,7 @@ class LongMemEvalRunConfig(SchemaModel):
     prewarm_embeddings: bool = True
     split_manifest_path: Path | None = None
     split_name: str | None = None
+    allow_dev_model_selection: bool = False
     vmp_tuned_model_path: Path | None = None
     vmp_hierarchical_model_path: Path | None = None
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
@@ -243,6 +244,10 @@ class LongMemEvalRunConfig(SchemaModel):
             raise ValueError("split_manifest_path and split_name must be provided together")
         if self.split_name is not None and self.split_name not in {"dev", "test"}:
             raise ValueError("split_name must be 'dev' or 'test'")
+        if self.allow_dev_model_selection and self.split_name != "dev":
+            raise ValueError(
+                "allow_dev_model_selection is only valid for explicit Dev selection runs"
+            )
         normalized_methods = {
             method.casefold().replace("-", "_") for method in self.methods
         }

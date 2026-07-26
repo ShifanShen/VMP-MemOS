@@ -36,6 +36,23 @@ hierarchical_tuning:
   turn_representation: role_prefixed_raw_turn
   test_labels_used: false
 
+v52_reranking:
+  policy_config: configs/vmp_v52.yaml
+  candidate_count: 30
+  output_top_k: 5
+  protected_top_n: 4
+  prompt_version: vmp_v52_evidence_set_v1
+  provider: vllm
+  model: Qwen/Qwen2.5-7B-Instruct
+  temperature: 0.0
+  top_p: 1.0
+  dev_candidate_run: outputs/longmemeval/runs/lme_dev_vmp_v52_candidates_seed42
+  dev_rerank_run: outputs/longmemeval/runs/lme_dev_vmp_v52_rerank_seed42
+  test_candidate_run: outputs/longmemeval/runs/lme_test_vmp_v52_candidates_seed42
+  test_rerank_run: outputs/longmemeval/runs/lme_test_vmp_v52_rerank_seed42
+  gate_receipt: outputs/longmemeval/gates/vmp_v52_seed42_dev_pass.json
+  test_labels_used: false
+
 ablation:
   reference_method: vmp_tuned
   frozen_model: outputs/longmemeval/models/vmp_v43_seed42.json

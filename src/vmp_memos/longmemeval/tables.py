@@ -101,7 +101,13 @@ def export_retrieval_tables(
 
 def _overall_row(run_dir: Path, method: str) -> dict[str, object]:
     payload = _read_json_object(run_dir / method / "summary.json")
-    summary = RetrievalMethodSummary.model_validate(payload)
+    summary = RetrievalMethodSummary.model_validate(
+        {
+            name: payload[name]
+            for name in RetrievalMethodSummary.model_fields
+            if name in payload
+        }
+    )
     row: dict[str, object] = {
         "method": method,
         "evaluated_questions": summary.evaluated_questions,

@@ -1,5 +1,88 @@
 # VMP-MemOS
 
+## VMP-v5.2 共享本地 vLLM 证据集合重排
+
+V5.1 的 nearest-prototype promotion 在训练内达到 `88/94`，但
+leave-one-question-out 仍为 `85/94`，因此没有通过 Dev gate，也没有运行 Test。
+V5.2 放弃该高维原型分类器，改为两阶段链路：
+
+```text
+V4.3 / V5 memory adapter
+  -> 各自生成 Top-30 session candidates
+  -> 相同的 query-aware session excerpt
+  -> 相同的本地 vLLM evidence-set prompt
+  -> 保护原 Top-4，只开放第 5 个证据槽
+  -> 相同的 Top-5 QA reader
+```
+
+reranker 看不到框架名称、gold session ID、gold answer 或 question type。它只接收
+question、question date 和候选 session；所有方法统一使用
+`Qwen/Qwen2.5-7B-Instruct`、temperature `0`、top-p `1`、相同 prompt 和候选数。
+Dev gate 同时要求 V5.2 优于 raw V5 和经过相同 reranker 的 V4.3，避免把通用 LLM
+增益错误归因给 VMP memory。
+
+4090D 单卡建议严格分四阶段执行，避免 BGE-M3 与 vLLM 同时占用显存。
+
+第一阶段：关闭 vLLM，生成 Dev Top-30 candidates：
+
+```bash
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+STAGE=dev_candidates \
+DATA_PATH=data/longmemeval/longmemeval_s_cleaned.json \
+EMBEDDING_BATCH_SIZE=2 \
+uv run --no-sync bash scripts/run_vmp_v52_experiment.sh
+```
+
+第二阶段：启动本地 vLLM，然后运行 Dev rerank 和质量门控：
+
+```bash
+export VMP_LLM_API_KEY="local-vllm-key"
+export VMP_VLLM_GPU_MEMORY_UTILIZATION=0.90
+export VMP_VLLM_ENABLE_TOOL_CALLING=0
+uv run --no-sync bash scripts/serve_vllm.sh
+```
+
+在另一个终端运行：
+
+```bash
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+STAGE=dev_rerank \
+DATA_PATH=data/longmemeval/longmemeval_s_cleaned.json \
+uv run --no-sync bash scripts/run_vmp_v52_experiment.sh
+```
+
+如果 rerank 被中断，保持相同 run ID 并设置 `RERANK_RESUME=1` 即可断点续跑。只有
+Dev gate 输出 `status=passed` 并生成
+`outputs/longmemeval/gates/vmp_v52_seed42_dev_pass.json` 后，才能继续。
+
+第三阶段：停止 vLLM，再生成密封 Test candidates：
+
+```bash
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+STAGE=test_candidates \
+DATA_PATH=data/longmemeval/longmemeval_s_cleaned.json \
+EMBEDDING_BATCH_SIZE=2 \
+uv run --no-sync bash scripts/run_vmp_v52_experiment.sh
+```
+
+第四阶段：重新启动同一个 vLLM，然后运行 Test rerank、可选 QA 和论文表格：
+
+```bash
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+STAGE=test_rerank \
+DATA_PATH=data/longmemeval/longmemeval_s_cleaned.json \
+RUN_QA=1 \
+uv run --no-sync bash scripts/run_vmp_v52_experiment.sh
+```
+
+配置和公平性声明见 `configs/vmp_v52.yaml`。Dev/Test candidate、rerank、逐问题
+LLM response、prompt hash、token usage、fallback 状态和运行日志都会分别保存；解析
+失败时保持原排序，并由 gate 限制 fallback rate，绝不会静默使用 gold label 修正结果。
+
 ## VMP-v5.1 分层 Top-10 安全提升
 
 VMP-v5.1 在 V5 的 session semantic、Top-1 turn semantic 和 turn BM25

@@ -1174,6 +1174,8 @@ P13. [done] Cost analysis
 P14. [done] Case export
 P15. [done] VMP-v5 Dev-only hierarchical session/turn retrieval
 P15.1. [done] VMP-v5.1 hierarchical-geometry guarded promotion + LOO Dev audit
+P15.2. [done] VMP-v5.2 shared local-vLLM Top-30 evidence-set reranking,
+       Dev-only gate, resumable audit, and sealed four-stage Test workflow
 P16. Local-vLLM atomic-memory writer + hierarchical-memory ablation
 P17. Fresh external/final benchmark after architecture freeze
 P18. Fallback style baselines only if needed

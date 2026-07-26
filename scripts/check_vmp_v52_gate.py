@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Block VMP-v5.2 Test evaluation unless shared-reranker Dev gates pass."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+from vmp_memos.longmemeval.rerank_gate import (
+    evaluate_v52_gate,
+    write_gate_receipt,
+)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--candidate-run", type=Path, required=True)
+    parser.add_argument("--rerank-run", type=Path, required=True)
+    parser.add_argument("--vmp-method", default="vmp_hierarchical")
+    parser.add_argument("--baseline-method", default="vmp_tuned")
+    parser.add_argument("--receipt", type=Path, default=None)
+    parser.add_argument("--min-recall-all-at-5", type=float, default=0.91)
+    parser.add_argument("--min-delta-vs-raw-v5", type=float, default=0.005)
+    parser.add_argument(
+        "--min-delta-vs-shared-v43",
+        type=float,
+        default=0.005,
+    )
+    parser.add_argument(
+        "--min-macro-delta-vs-shared-v43",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--max-worst-type-regression-vs-shared-v43",
+        type=float,
+        default=0.03,
+    )
+    parser.add_argument("--max-parse-fallback-rate", type=float, default=0.02)
+    parser.add_argument("--min-candidate-count", type=int, default=30)
+    args = parser.parse_args()
+
+    report = evaluate_v52_gate(
+        args.candidate_run,
+        args.rerank_run,
+        vmp_method=args.vmp_method,
+        baseline_method=args.baseline_method,
+        min_recall_all_at_5=args.min_recall_all_at_5,
+        min_delta_vs_raw_v5=args.min_delta_vs_raw_v5,
+        min_delta_vs_shared_v43=args.min_delta_vs_shared_v43,
+        min_macro_delta_vs_shared_v43=args.min_macro_delta_vs_shared_v43,
+        max_worst_type_regression_vs_shared_v43=(args.max_worst_type_regression_vs_shared_v43),
+        max_parse_fallback_rate=args.max_parse_fallback_rate,
+        min_candidate_count=args.min_candidate_count,
+    )
+    if report["status"] == "passed" and args.receipt is not None:
+        receipt_path = write_gate_receipt(report, args.receipt)
+        report["receipt"] = str(receipt_path)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report["status"] == "passed" else 3
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
