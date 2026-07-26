@@ -1,5 +1,33 @@
 # VMP-MemOS
 
+## VMP-v5.1 分层 Top-10 安全提升
+
+VMP-v5.1 在 V5 的 session semantic、Top-1 turn semantic 和 turn BM25
+分层融合之后，重新使用 Dev 数据拟合与新分数几何匹配的 promotion ranker。它严格
+保留 hierarchical Top-10 候选集合和 Top-4，只有第 5 个槽位允许第 6--10 名挑战；
+最终证据顺序仍由冻结的 VMP policy score 决定。
+
+promotion margin 只根据 leave-one-question-out Dev 指标选择。模型工件同时保存
+in-sample 指标、LOO 指标、完整 margin trials 和逐问题审计；论文 gate 只使用
+LOO 指标，且至少要求相对 V4.3 和 promotion 前 V5 各多召回一个问题。gate
+通过前不会访问 Test。
+
+服务器运行：
+
+```bash
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+RUN_ID=lme_test_vmp_v51_seed42 \
+DATA_PATH=data/longmemeval/longmemeval_s_cleaned.json \
+EMBEDDING_BATCH_SIZE=2 \
+RUN_QA=0 \
+uv run --no-sync bash scripts/run_vmp_v51_experiment.sh
+```
+
+默认使用 `GRID_STEP=0.05` 的 693 个融合 trial。已有 BGE-M3 SQLite cache
+会被复用。主要工件为 `vmp_v51_seed42.json`、
+`vmp_v51_seed42_search.json` 和 `vmp_v51_seed42_dev_audit.jsonl`。
+
 ## VMP-v5 分层 Session/Turn 检索
 
 VMP-v5 用分层索引解决长 session 被单个 BGE-M3 向量截断或稀释的问题。每个

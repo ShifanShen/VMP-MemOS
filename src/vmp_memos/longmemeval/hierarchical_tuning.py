@@ -18,7 +18,11 @@ from vmp_memos.frameworks.vmp_hierarchical import (
     hierarchical_fusion_score,
     pool_top_scores,
 )
-from vmp_memos.frameworks.vmp_tuned import VMPTunedModel, normalized_bm25_scores
+from vmp_memos.frameworks.vmp_tuned import (
+    PromotionPrototypeRanker,
+    VMPTunedModel,
+    normalized_bm25_scores,
+)
 from vmp_memos.longmemeval.converter import sample_to_events
 from vmp_memos.longmemeval.schema import LongMemEvalSample
 from vmp_memos.longmemeval.splits import (
@@ -30,9 +34,11 @@ from vmp_memos.longmemeval.splits import (
 from vmp_memos.longmemeval.tuning import (
     DEFAULT_OBJECTIVE_WEIGHTS,
     VMPTuningExample,
+    VMPTuningParameters,
     build_vmp_tuning_examples,
     dense_guard_oracle_metrics,
     evaluate_vmp_parameters,
+    fit_dev_promotion_ranker,
 )
 from vmp_memos.longmemeval.validation import validate_longmemeval_dates
 from vmp_memos.schemas.base import NonNegativeInt, SchemaModel
@@ -70,6 +76,19 @@ class HierarchicalTuningExample:
     skipped_empty_turn_count: int
 
 
+@dataclass(frozen=True)
+class HierarchicalPromotionResult:
+    """Cross-validated single-slot promotion fitted on hierarchical geometry."""
+
+    ranker: PromotionPrototypeRanker
+    margin: float
+    oof_metrics: dict[str, float]
+    fit_metrics: dict[str, float]
+    diagnostics: dict[str, JsonValue]
+    trial_summaries: list[dict[str, JsonValue]]
+    dev_audit: list[dict[str, JsonValue]]
+
+
 class VMPHierarchicalTuningResult(SchemaModel):
     """Frozen V5 model plus the complete deterministic grid report."""
 
@@ -78,6 +97,8 @@ class VMPHierarchicalTuningResult(SchemaModel):
     candidate_examples: NonNegativeInt
     skipped_examples: NonNegativeInt
     trial_summaries: list[dict[str, JsonValue]] = Field(default_factory=list)
+    promotion_trial_summaries: list[dict[str, JsonValue]] = Field(default_factory=list)
+    dev_audit: list[dict[str, JsonValue]] = Field(default_factory=list)
 
 
 def train_vmp_hierarchical(
@@ -92,6 +113,17 @@ def train_vmp_hierarchical(
     qa_top_k: int = 5,
     token_budget: int = 2048,
     stability_folds: int = 5,
+    enable_promotion: bool = False,
+    promotion_margins: tuple[float, ...] = (
+        0.0,
+        0.05,
+        0.10,
+        0.20,
+        0.30,
+        0.50,
+        0.75,
+        1.0,
+    ),
 ) -> VMPHierarchicalTuningResult:
     """Tune hierarchy weights on Dev while keeping Test completely inaccessible."""
 
@@ -101,6 +133,10 @@ def train_vmp_hierarchical(
         raise ValueError("VMP-v5 currently requires qa_top_k=5")
     if token_budget < 1 or stability_folds < 2:
         raise ValueError("token_budget must be positive and stability_folds >= 2")
+    if enable_promotion and (
+        not promotion_margins or any(not 0.0 <= margin <= 1.0 for margin in promotion_margins)
+    ):
+        raise ValueError("promotion margins must be non-empty values in [0, 1]")
 
     samples, manifest = load_split_samples(data_path, split_manifest_path, "dev")
     validate_longmemeval_dates(samples)
@@ -143,8 +179,7 @@ def train_vmp_hierarchical(
         turn_pooling_options=turn_pooling_options,
     )
     max_memory_count = max(
-        example.base.memory_count + example.turn_count
-        for example in hierarchical_examples
+        example.base.memory_count + example.turn_count for example in hierarchical_examples
     )
 
     best_parameters: HierarchicalFusionParameters | None = None
@@ -170,8 +205,7 @@ def train_vmp_hierarchical(
             stability_folds=stability_folds,
         )
         objective = sum(
-            DEFAULT_OBJECTIVE_WEIGHTS[name] * metrics[name]
-            for name in DEFAULT_OBJECTIVE_WEIGHTS
+            DEFAULT_OBJECTIVE_WEIGHTS[name] * metrics[name] for name in DEFAULT_OBJECTIVE_WEIGHTS
         )
         parameter_hash = sha256_json(candidate_parameters.as_payload())
         key = hierarchical_trial_selection_key(
@@ -206,8 +240,7 @@ def train_vmp_hierarchical(
         completed = trial + 1
         if completed == 1 or completed % 10 == 0 or completed == len(parameters):
             LOGGER.info(
-                "Hierarchical search %d/%d: recall@5=%.6f best=%.6f "
-                "elapsed=%.1fs",
+                "Hierarchical search %d/%d: recall@5=%.6f best=%.6f elapsed=%.1fs",
                 completed,
                 len(parameters),
                 metrics["recall_all@5"],
@@ -230,11 +263,51 @@ def train_vmp_hierarchical(
         preserve_dense_top_n=retrieval_depth,
         protected_dense_count=max(1, qa_top_k - 1),
     )
+    pre_promotion_metrics = dict(best_metrics)
+    promotion_result = (
+        _fit_hierarchical_promotion(
+            best_examples,
+            base_examples=base_examples,
+            base_model=base_model,
+            margins=tuple(sorted(set(promotion_margins))),
+            retrieval_depth=retrieval_depth,
+            qa_top_k=qa_top_k,
+            token_budget=token_budget,
+            max_memory_count=max_memory_count,
+            stability_folds=stability_folds,
+        )
+        if enable_promotion
+        else None
+    )
+    if promotion_result is not None:
+        best_metrics = promotion_result.oof_metrics
+        best_objective = _objective(best_metrics)
     safe_base_model = _hierarchical_base_model(
         base_model,
         dev_metrics=best_metrics,
+        promotion_ranker=(promotion_result.ranker if promotion_result is not None else None),
+        promotion_margin=(promotion_result.margin if promotion_result is not None else 0.0),
+    )
+    schema_version = "2.1" if promotion_result is not None else "2.0"
+    model_type = (
+        "vmp_v5_1_hierarchical_guarded_promotion_ranker"
+        if promotion_result is not None
+        else "vmp_v5_hierarchical_session_turn_ranker"
+    )
+    ranking_pipeline = (
+        "session_embedding + pooled_turn_embedding + turn_bm25 -> "
+        "hierarchical_dense_top10 -> guarded_single_slot_promotion -> "
+        "frozen_vmp_policy_ordering -> cached_non_destructive_lifecycle"
+        if promotion_result is not None
+        else (
+            "session_embedding + pooled_turn_embedding + turn_bm25 -> "
+            "hierarchical_dense_top10 -> frozen_vmp_policy_ordering -> "
+            "cached_non_destructive_lifecycle"
+        )
     )
     model = VMPHierarchicalModel(
+        schema_version=schema_version,
+        model_type=model_type,
         base_model=safe_base_model,
         session_semantic_weight=best_parameters.session_semantic_weight,
         turn_semantic_weight=best_parameters.turn_semantic_weight,
@@ -261,22 +334,60 @@ def train_vmp_hierarchical(
             "stability_folds": stability_folds,
             "turn_representation": "role_prefixed_raw_turn",
             "skipped_empty_turn_count": sum(
-                example.skipped_empty_turn_count
-                for example in hierarchical_examples
+                example.skipped_empty_turn_count for example in hierarchical_examples
             ),
-            "promotion_ranker": "disabled_after_semantic_geometry_change",
-            "membership_strategy": "hierarchical_dense_top5",
+            "promotion_ranker": (
+                promotion_result.ranker.model_type
+                if promotion_result is not None
+                else "disabled_after_semantic_geometry_change"
+            ),
+            "promotion_geometry": (
+                "hierarchical_fused_session_turn" if promotion_result is not None else None
+            ),
+            "promotion_oof_evaluated": promotion_result is not None,
+            "promotion_margin": (promotion_result.margin if promotion_result is not None else 0.0),
+            "promotion_ranker_diagnostics": (
+                cast(JsonValue, promotion_result.diagnostics)
+                if promotion_result is not None
+                else None
+            ),
+            "pre_promotion_dev_metrics": cast(
+                JsonValue,
+                pre_promotion_metrics,
+            ),
+            "promotion_fit_dev_metrics": (
+                cast(JsonValue, promotion_result.fit_metrics)
+                if promotion_result is not None
+                else None
+            ),
+            "promotion_oof_dev_metrics": (
+                cast(JsonValue, promotion_result.oof_metrics)
+                if promotion_result is not None
+                else None
+            ),
+            "dev_metrics_source": (
+                "leave_one_question_out_promotion"
+                if promotion_result is not None
+                else "hierarchical_grid_fit"
+            ),
+            "membership_strategy": (
+                "hierarchical_top10_guarded_single_slot_promotion"
+                if promotion_result is not None
+                else "hierarchical_dense_top5"
+            ),
             "ordering_strategy": "frozen_vmp_base_policy_score",
             "baseline_session_only_metrics": cast(JsonValue, baseline_metrics),
             "base_v43_dev_metrics": cast(JsonValue, base_model.dev_metrics),
             "dev_oracle_ceiling_metrics": cast(JsonValue, oracle_metrics),
             "dev_recall_all_at_5_delta_vs_session_only": (
-                best_metrics["recall_all@5"]
-                - baseline_metrics["recall_all@5"]
+                best_metrics["recall_all@5"] - baseline_metrics["recall_all@5"]
             ),
             "dev_recall_all_at_5_delta_vs_v43": (
                 best_metrics["recall_all@5"]
                 - float(base_model.dev_metrics.get("recall_all@5", 0.0))
+            ),
+            "dev_recall_all_at_5_delta_vs_pre_promotion": (
+                best_metrics["recall_all@5"] - pre_promotion_metrics["recall_all@5"]
             ),
             "base_model_path": str(Path(base_model_path)),
             "base_model_sha256": sha256_file(base_model_path),
@@ -285,11 +396,7 @@ def train_vmp_hierarchical(
                 manifest_sha256 == base_model.split_manifest_sha256
             ),
             "split_assignment_sha256": assignment_sha256,
-            "ranking_pipeline": (
-                "session_embedding + pooled_turn_embedding + turn_bm25 -> "
-                "hierarchical_dense_top10 -> frozen_vmp_policy_ordering -> "
-                "cached_non_destructive_lifecycle"
-            ),
+            "ranking_pipeline": ranking_pipeline,
             "test_labels_used": False,
         },
     )
@@ -299,6 +406,10 @@ def train_vmp_hierarchical(
         candidate_examples=len(hierarchical_examples),
         skipped_examples=skipped,
         trial_summaries=trial_summaries,
+        promotion_trial_summaries=(
+            promotion_result.trial_summaries if promotion_result is not None else []
+        ),
+        dev_audit=(promotion_result.dev_audit if promotion_result is not None else []),
     )
 
 
@@ -318,9 +429,7 @@ def build_hierarchical_tuning_examples(
         sample = samples_by_id[base_example.question_id]
         events = sample_to_events(sample)
         turn_chunks = [
-            chunk
-            for event in events
-            if (chunk := contextual_turn_chunk(event)) is not None
+            chunk for event in events if (chunk := contextual_turn_chunk(event)) is not None
         ]
         sample_skipped_empty_turn_count = len(events) - len(turn_chunks)
         skipped_empty_turn_count += sample_skipped_empty_turn_count
@@ -382,8 +491,7 @@ def build_hierarchical_tuning_examples(
                 perf_counter() - started_at,
             )
     LOGGER.info(
-        "Turn feature construction complete: examples=%d "
-        "skipped_empty_turns=%d elapsed=%.1fs",
+        "Turn feature construction complete: examples=%d skipped_empty_turns=%d elapsed=%.1fs",
         len(examples),
         skipped_empty_turn_count,
         perf_counter() - started_at,
@@ -411,9 +519,7 @@ def apply_hierarchical_fusion(
                 top_n=parameters.turn_pooling_top_n,
             )
             fused = hierarchical_fusion_score(
-                session_semantic=float(
-                    candidate.policy_features.semantic_relevance
-                ),
+                session_semantic=float(candidate.policy_features.semantic_relevance),
                 turn_semantic=turn_semantic,
                 turn_lexical=turn_lexical,
                 session_semantic_weight=parameters.session_semantic_weight,
@@ -433,12 +539,8 @@ def apply_hierarchical_fusion(
             example.base.model_copy(
                 update={
                     "candidates": candidates,
-                    "memory_count": (
-                        example.base.memory_count + example.turn_count
-                    ),
-                    "memory_tokens": (
-                        example.base.memory_tokens + example.turn_tokens
-                    ),
+                    "memory_count": (example.base.memory_count + example.turn_count),
+                    "memory_tokens": (example.base.memory_tokens + example.turn_tokens),
                 }
             )
         )
@@ -496,6 +598,284 @@ def hierarchical_trial_selection_key(
     )
 
 
+def _fit_hierarchical_promotion(
+    examples: list[VMPTuningExample],
+    *,
+    base_examples: list[VMPTuningExample],
+    base_model: VMPTunedModel,
+    margins: tuple[float, ...],
+    retrieval_depth: int,
+    qa_top_k: int,
+    token_budget: int,
+    max_memory_count: int,
+    stability_folds: int,
+) -> HierarchicalPromotionResult:
+    parameters = _base_tuning_parameters(base_model)
+    ranker, raw_diagnostics = fit_dev_promotion_ranker(
+        examples,
+        parameters=parameters,
+        preserve_dense_top_n=retrieval_depth,
+        safety_top_k=qa_top_k,
+    )
+    if ranker is None:
+        raise ValueError("VMP-v5.1 could not build hierarchical promotion training groups")
+
+    best_margin: float | None = None
+    best_metrics: dict[str, float] | None = None
+    best_key: tuple[float, ...] | None = None
+    trial_summaries: list[dict[str, JsonValue]] = []
+    for trial, margin in enumerate(margins):
+        metrics = _evaluate_frozen_base(
+            examples,
+            base_model=base_model,
+            retrieval_depth=retrieval_depth,
+            qa_top_k=qa_top_k,
+            token_budget=token_budget,
+            max_memory_count=max_memory_count,
+            stability_folds=stability_folds,
+            protected_dense_count=max(1, qa_top_k - 1),
+            promotion_margin=margin,
+            promotion_ranker=ranker,
+            promotion_exclude_own_group=True,
+        )
+        objective = _objective(metrics)
+        key = _promotion_trial_selection_key(
+            metrics,
+            objective=objective,
+            margin=margin,
+        )
+        trial_summaries.append(
+            {
+                "trial": trial,
+                "promotion_margin": margin,
+                "evaluation": "leave_one_question_out",
+                "objective": objective,
+                "metrics": cast(JsonValue, metrics),
+                "test_labels_used": False,
+            }
+        )
+        if best_key is None or key > best_key:
+            best_key = key
+            best_margin = margin
+            best_metrics = metrics
+    if best_margin is None or best_metrics is None:
+        raise RuntimeError("VMP-v5.1 promotion search produced no model")
+
+    pre_audit: list[dict[str, JsonValue]] = []
+    _evaluate_frozen_base(
+        examples,
+        base_model=base_model,
+        retrieval_depth=retrieval_depth,
+        qa_top_k=qa_top_k,
+        token_budget=token_budget,
+        max_memory_count=max_memory_count,
+        stability_folds=stability_folds,
+        audit_rows=pre_audit,
+    )
+    oof_audit: list[dict[str, JsonValue]] = []
+    oof_metrics = _evaluate_frozen_base(
+        examples,
+        base_model=base_model,
+        retrieval_depth=retrieval_depth,
+        qa_top_k=qa_top_k,
+        token_budget=token_budget,
+        max_memory_count=max_memory_count,
+        stability_folds=stability_folds,
+        protected_dense_count=max(1, qa_top_k - 1),
+        promotion_margin=best_margin,
+        promotion_ranker=ranker,
+        promotion_exclude_own_group=True,
+        audit_rows=oof_audit,
+    )
+    fit_audit: list[dict[str, JsonValue]] = []
+    fit_metrics = _evaluate_frozen_base(
+        examples,
+        base_model=base_model,
+        retrieval_depth=retrieval_depth,
+        qa_top_k=qa_top_k,
+        token_budget=token_budget,
+        max_memory_count=max_memory_count,
+        stability_folds=stability_folds,
+        protected_dense_count=max(1, qa_top_k - 1),
+        promotion_margin=best_margin,
+        promotion_ranker=ranker,
+        audit_rows=fit_audit,
+    )
+    v43_audit: list[dict[str, JsonValue]] = []
+    _evaluate_frozen_base(
+        base_examples,
+        base_model=base_model,
+        retrieval_depth=retrieval_depth,
+        qa_top_k=qa_top_k,
+        token_budget=token_budget,
+        max_memory_count=max(example.memory_count for example in base_examples),
+        stability_folds=stability_folds,
+        protected_dense_count=base_model.protected_dense_count,
+        promotion_margin=float(base_model.promotion_margin),
+        promotion_ranker=base_model.promotion_ranker,
+        audit_rows=v43_audit,
+    )
+    dev_audit = _merge_dev_audits(
+        v43_audit=v43_audit,
+        pre_audit=pre_audit,
+        oof_audit=oof_audit,
+        fit_audit=fit_audit,
+    )
+    transition_counts: dict[str, int] = {}
+    for row in dev_audit:
+        transition = str(row["transition_vs_v43"])
+        transition_counts[transition] = transition_counts.get(transition, 0) + 1
+    diagnostics = dict(raw_diagnostics)
+    diagnostics.update(
+        {
+            "geometry": "hierarchical_fused_session_turn",
+            "selected_margin": best_margin,
+            "margin_trials": len(margins),
+            "selection_metrics_source": "leave_one_question_out",
+            "oof_recall_all@5": oof_metrics["recall_all@5"],
+            "fit_recall_all@5": fit_metrics["recall_all@5"],
+            "oof_transition_counts_vs_v43": cast(
+                JsonValue,
+                transition_counts,
+            ),
+            "hierarchical_top10_oracle_recoverable_questions": sum(
+                row["hierarchical_top10_oracle_recoverable"] is True for row in dev_audit
+            ),
+            "test_labels_used": False,
+        }
+    )
+    LOGGER.info(
+        "V5.1 promotion search complete: margin=%.3f oof_recall@5=%.6f fit_recall@5=%.6f",
+        best_margin,
+        oof_metrics["recall_all@5"],
+        fit_metrics["recall_all@5"],
+    )
+    return HierarchicalPromotionResult(
+        ranker=ranker,
+        margin=best_margin,
+        oof_metrics=oof_metrics,
+        fit_metrics=fit_metrics,
+        diagnostics=diagnostics,
+        trial_summaries=trial_summaries,
+        dev_audit=dev_audit,
+    )
+
+
+def _base_tuning_parameters(model: VMPTunedModel) -> VMPTuningParameters:
+    return VMPTuningParameters(
+        weights={name: float(value) for name, value in model.weights.items()},
+        retrieve_threshold=float(model.retrieve_threshold),
+        semantic_anchor_weight=float(model.semantic_anchor_weight),
+        lexical_anchor_weight=float(model.lexical_anchor_weight),
+        policy_adjustment_limit=float(model.policy_adjustment_limit),
+        archive_score_penalty=float(model.archive_score_penalty),
+        protected_dense_count=max(1, model.safety_top_k - 1),
+        promotion_margin=0.0,
+        source="v5_1_hierarchical_geometry_refit",
+    )
+
+
+def _promotion_trial_selection_key(
+    metrics: dict[str, float],
+    *,
+    objective: float,
+    margin: float,
+) -> tuple[float, ...]:
+    return (
+        metrics["recall_all@5"],
+        metrics["macro_type_recall_all@5"],
+        metrics["worst_type_recall_all@5"],
+        metrics["min_fold_recall_all@5"],
+        -metrics["fold_recall_stddev"],
+        metrics["mrr"],
+        objective,
+        margin,
+    )
+
+
+def _objective(metrics: dict[str, float]) -> float:
+    return sum(
+        DEFAULT_OBJECTIVE_WEIGHTS[name] * metrics[name] for name in DEFAULT_OBJECTIVE_WEIGHTS
+    )
+
+
+def _merge_dev_audits(
+    *,
+    v43_audit: list[dict[str, JsonValue]],
+    pre_audit: list[dict[str, JsonValue]],
+    oof_audit: list[dict[str, JsonValue]],
+    fit_audit: list[dict[str, JsonValue]],
+) -> list[dict[str, JsonValue]]:
+    v43_by_id = {str(row["question_id"]): row for row in v43_audit}
+    pre_by_id = {str(row["question_id"]): row for row in pre_audit}
+    oof_by_id = {str(row["question_id"]): row for row in oof_audit}
+    fit_by_id = {str(row["question_id"]): row for row in fit_audit}
+    merged: list[dict[str, JsonValue]] = []
+    for question_id in sorted(pre_by_id):
+        pre = pre_by_id[question_id]
+        v43 = v43_by_id[question_id]
+        oof = oof_by_id[question_id]
+        fit = fit_by_id[question_id]
+        v43_recall = _audit_float(v43, "recall_all@5")
+        pre_recall = _audit_float(pre, "recall_all@5")
+        oof_recall = _audit_float(oof, "recall_all@5")
+        fit_recall = _audit_float(fit, "recall_all@5")
+        v43_success = v43_recall == 1.0
+        pre_success = pre_recall == 1.0
+        oof_success = oof_recall == 1.0
+        dense_top10 = set(_audit_str_list(pre, "dense_top10_session_ids"))
+        gold = set(_audit_str_list(pre, "gold_session_ids"))
+        merged.append(
+            {
+                "question_id": question_id,
+                "question_type": str(pre["question_type"]),
+                "gold_session_ids": pre["gold_session_ids"],
+                "v43_top5_session_ids": v43["retrieved_top5_session_ids"],
+                "hierarchical_top5_session_ids": (pre["retrieved_top5_session_ids"]),
+                "hierarchical_top10_session_ids": (pre["dense_top10_session_ids"]),
+                "promotion_oof_top5_session_ids": (oof["retrieved_top5_session_ids"]),
+                "promotion_fit_top5_session_ids": (fit["retrieved_top5_session_ids"]),
+                "v43_recall_all@5": v43_recall,
+                "hierarchical_recall_all@5": pre_recall,
+                "promotion_oof_recall_all@5": oof_recall,
+                "promotion_fit_recall_all@5": fit_recall,
+                "transition_vs_v43": _audit_transition(
+                    before=v43_success,
+                    after=oof_success,
+                ),
+                "transition_vs_pre_promotion": _audit_transition(
+                    before=pre_success,
+                    after=oof_success,
+                ),
+                "hierarchical_top10_oracle_recoverable": (gold.issubset(dense_top10)),
+                "test_labels_used": False,
+            }
+        )
+    return merged
+
+
+def _audit_float(row: dict[str, JsonValue], key: str) -> float:
+    value = row[key]
+    if not isinstance(value, int | float):
+        raise TypeError(f"Dev audit field {key!r} is not numeric")
+    return float(value)
+
+
+def _audit_str_list(row: dict[str, JsonValue], key: str) -> list[str]:
+    value = row[key]
+    if not isinstance(value, list):
+        raise TypeError(f"Dev audit field {key!r} is not a list")
+    return [str(item) for item in value]
+
+
+def _audit_transition(*, before: bool, after: bool) -> str:
+    if not before and after:
+        return "recovered"
+    if before and not after:
+        return "regressed"
+    return "stable_success" if before else "stable_failure"
+
+
 def _evaluate_frozen_base(
     examples: list[VMPTuningExample],
     *,
@@ -505,25 +885,32 @@ def _evaluate_frozen_base(
     token_budget: int,
     max_memory_count: int,
     stability_folds: int,
+    protected_dense_count: int | None = None,
+    promotion_margin: float = 0.0,
+    promotion_ranker: PromotionPrototypeRanker | None = None,
+    promotion_exclude_own_group: bool = False,
+    audit_rows: list[dict[str, JsonValue]] | None = None,
 ) -> dict[str, float]:
     return evaluate_vmp_parameters(
         examples,
-        weights={
-            name: float(value) for name, value in base_model.weights.items()
-        },
+        weights={name: float(value) for name, value in base_model.weights.items()},
         retrieve_threshold=float(base_model.retrieve_threshold),
         semantic_anchor_weight=float(base_model.semantic_anchor_weight),
         lexical_anchor_weight=float(base_model.lexical_anchor_weight),
         policy_adjustment_limit=float(base_model.policy_adjustment_limit),
         archive_score_penalty=float(base_model.archive_score_penalty),
-        protected_dense_count=qa_top_k,
-        promotion_margin=0.0,
-        promotion_ranker=None,
+        protected_dense_count=(
+            qa_top_k if protected_dense_count is None else protected_dense_count
+        ),
+        promotion_margin=promotion_margin,
+        promotion_ranker=promotion_ranker,
         retrieval_depth=retrieval_depth,
         qa_top_k=qa_top_k,
         token_budget=token_budget,
         max_memory_count=max_memory_count,
         stability_folds=stability_folds,
+        promotion_exclude_own_group=promotion_exclude_own_group,
+        audit_rows=audit_rows,
     )
 
 
@@ -531,22 +918,36 @@ def _hierarchical_base_model(
     base_model: VMPTunedModel,
     *,
     dev_metrics: dict[str, float],
+    promotion_ranker: PromotionPrototypeRanker | None = None,
+    promotion_margin: float = 0.0,
 ) -> VMPTunedModel:
     payload = base_model.model_dump(mode="python")
     metadata = dict(base_model.metadata)
     metadata.update(
         {
-            "ranking_semantics_version": "5.0",
-            "promotion_ranker": "disabled_after_semantic_geometry_change",
-            "membership_strategy": "hierarchical_dense_top5",
+            "ranking_semantics_version": ("5.1" if promotion_ranker is not None else "5.0"),
+            "promotion_ranker": (
+                promotion_ranker.model_type
+                if promotion_ranker is not None
+                else "disabled_after_semantic_geometry_change"
+            ),
+            "membership_strategy": (
+                "hierarchical_top10_guarded_single_slot_promotion"
+                if promotion_ranker is not None
+                else "hierarchical_dense_top5"
+            ),
             "test_labels_used": False,
         }
     )
     payload.update(
         {
-            "protected_dense_count": base_model.safety_top_k,
-            "promotion_margin": 0.0,
-            "promotion_ranker": None,
+            "protected_dense_count": (
+                base_model.safety_top_k - 1
+                if promotion_ranker is not None
+                else base_model.safety_top_k
+            ),
+            "promotion_margin": promotion_margin,
+            "promotion_ranker": promotion_ranker,
             "dev_metrics": dev_metrics,
             "metadata": metadata,
         }

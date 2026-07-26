@@ -51,7 +51,7 @@ class VMPHierarchicalModel(SchemaModel):
     def validate_frozen_model(self) -> VMPHierarchicalModel:
         """Reject stale, test-trained, or provenance-inconsistent artifacts."""
 
-        if self.schema_version != "2.0":
+        if self.schema_version not in {"2.0", "2.1"}:
             raise ValueError("VMP-v5 model schema is obsolete; retrain the model")
         if self.training_split != "dev":
             raise ValueError("VMP-v5 artifacts must be trained only on the dev split")
@@ -65,15 +65,25 @@ class VMPHierarchicalModel(SchemaModel):
             raise ValueError("VMP-v5 and base VMP datasets differ")
         if self.embedding_identifier != self.base_model.embedding_identifier:
             raise ValueError("VMP-v5 and base VMP embedding identifiers differ")
-        if self.base_model.promotion_ranker is not None:
-            raise ValueError(
-                "VMP-v5 must refit or disable the V4 promotion ranker after "
-                "changing semantic-score geometry"
-            )
-        if self.base_model.protected_dense_count != self.base_model.safety_top_k:
-            raise ValueError(
-                "VMP-v5 must freeze Top-5 membership to the hierarchical dense head"
-            )
+        if self.schema_version == "2.0":
+            if self.base_model.promotion_ranker is not None:
+                raise ValueError(
+                    "VMP-v5 must disable the V4 promotion ranker after "
+                    "changing semantic-score geometry"
+                )
+            if self.base_model.protected_dense_count != self.base_model.safety_top_k:
+                raise ValueError(
+                    "VMP-v5 must freeze Top-5 membership to the hierarchical dense head"
+                )
+        else:
+            if self.base_model.promotion_ranker is None:
+                raise ValueError("VMP-v5.1 requires a hierarchical-geometry promotion ranker")
+            if self.base_model.protected_dense_count != self.base_model.safety_top_k - 1:
+                raise ValueError("VMP-v5.1 must protect exactly four hierarchical Top-5 items")
+            if self.metadata.get("promotion_geometry") != ("hierarchical_fused_session_turn"):
+                raise ValueError("VMP-v5.1 promotion geometry provenance is missing")
+            if self.metadata.get("promotion_oof_evaluated") is not True:
+                raise ValueError("VMP-v5.1 must record out-of-fold promotion evaluation")
         if self.fusion_weight_sum <= 0.0:
             raise ValueError("VMP-v5 fusion weights must have a positive sum")
         return self
@@ -158,9 +168,7 @@ class VMPHierarchicalAdapter(VMPTunedAdapter):
     def total_tokens(self) -> int:
         """Report physical indexed tokens, including the auxiliary turn index."""
 
-        return sum(
-            chunk.token_count for chunk in [*self.chunks, *self.turn_chunks]
-        )
+        return sum(chunk.token_count for chunk in [*self.chunks, *self.turn_chunks])
 
     @property
     def storage_size_bytes(self) -> int:
@@ -287,12 +295,8 @@ class VMPHierarchicalAdapter(VMPTunedAdapter):
                     "base_model_type": item_metadata.get("model_type"),
                     "model_type": self.hierarchical_model.model_type,
                     "hierarchical_model_type": self.hierarchical_model.model_type,
-                    "hierarchical_schema_version": (
-                        self.hierarchical_model.schema_version
-                    ),
-                    "turn_pooling_top_n": (
-                        self.hierarchical_model.turn_pooling_top_n
-                    ),
+                    "hierarchical_schema_version": (self.hierarchical_model.schema_version),
+                    "turn_pooling_top_n": (self.hierarchical_model.turn_pooling_top_n),
                 }
             )
             enriched.append(memory.model_copy(update={"metadata": item_metadata}))
@@ -309,27 +313,22 @@ class VMPHierarchicalAdapter(VMPTunedAdapter):
         stats["physical_memory_count"] = self.memory_count
         stats["model_type"] = self.hierarchical_model.model_type
         stats["model_schema_version"] = self.hierarchical_model.schema_version
-        stats["ranking_pipeline"] = (
-            "session_embedding + pooled_turn_embedding + turn_bm25 -> "
-            "hierarchical_dense_top10 -> frozen_vmp_policy_ordering -> "
-            "cached_non_destructive_lifecycle"
+        stats["ranking_pipeline"] = self.hierarchical_model.metadata.get(
+            "ranking_pipeline",
+            (
+                "session_embedding + pooled_turn_embedding + turn_bm25 -> "
+                "hierarchical_dense_top10 -> frozen_vmp_policy_ordering -> "
+                "cached_non_destructive_lifecycle"
+            ),
         )
         stats["hierarchical_fusion"] = cast(
             JsonValue,
             {
                 "schema_version": self.hierarchical_model.schema_version,
-                "session_semantic_weight": float(
-                    self.hierarchical_model.session_semantic_weight
-                ),
-                "turn_semantic_weight": float(
-                    self.hierarchical_model.turn_semantic_weight
-                ),
-                "turn_lexical_weight": float(
-                    self.hierarchical_model.turn_lexical_weight
-                ),
-                "turn_pooling_top_n": (
-                    self.hierarchical_model.turn_pooling_top_n
-                ),
+                "session_semantic_weight": float(self.hierarchical_model.session_semantic_weight),
+                "turn_semantic_weight": float(self.hierarchical_model.turn_semantic_weight),
+                "turn_lexical_weight": float(self.hierarchical_model.turn_lexical_weight),
+                "turn_pooling_top_n": (self.hierarchical_model.turn_pooling_top_n),
                 "turn_representation": "role_prefixed_raw_turn",
             },
         )
@@ -338,9 +337,7 @@ class VMPHierarchicalAdapter(VMPTunedAdapter):
     def _embed_turn_chunks(self) -> None:
         if self.embedder is None:
             return
-        pending = [
-            chunk for chunk in self.turn_chunks if not chunk.content_embedding
-        ]
+        pending = [chunk for chunk in self.turn_chunks if not chunk.content_embedding]
         if not pending:
             return
         vectors = self.embedder.embed([chunk.content for chunk in pending])

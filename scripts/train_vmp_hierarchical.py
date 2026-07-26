@@ -44,6 +44,7 @@ def main() -> int:
         type=Path,
         default=Path("outputs/longmemeval/models/vmp_v5_seed42_search.json"),
     )
+    parser.add_argument("--audit-output", type=Path, default=None)
     parser.add_argument("--embedding-model", default="BAAI/bge-m3")
     parser.add_argument("--embedding-device", default="cuda")
     parser.add_argument("--embedding-cache-dir", type=Path, default=None)
@@ -51,6 +52,15 @@ def main() -> int:
     parser.add_argument("--embedding-batch-size", type=int, default=4)
     parser.add_argument("--grid-step", type=float, default=0.2)
     parser.add_argument("--turn-pooling", default="1,2,3")
+    parser.add_argument(
+        "--enable-promotion",
+        action="store_true",
+        help=("Fit the V5.1 hierarchical-geometry guarded promotion head using Dev only."),
+    )
+    parser.add_argument(
+        "--promotion-margins",
+        default="0,0.05,0.10,0.20,0.30,0.50,0.75,1.0",
+    )
     parser.add_argument("--retrieval-depth", type=int, default=10)
     parser.add_argument("--qa-top-k", type=int, default=5)
     parser.add_argument("--token-budget", type=int, default=2048)
@@ -62,9 +72,10 @@ def main() -> int:
     )
     args = parser.parse_args()
     turn_pooling = tuple(
-        int(value.strip())
-        for value in args.turn_pooling.split(",")
-        if value.strip()
+        int(value.strip()) for value in args.turn_pooling.split(",") if value.strip()
+    )
+    promotion_margins = tuple(
+        float(value.strip()) for value in args.promotion_margins.split(",") if value.strip()
     )
 
     embedder = None
@@ -85,11 +96,13 @@ def main() -> int:
         )
     LOGGER.info(
         "Starting VMP-v5 Dev tuning: data=%s base=%s grid_step=%.3f "
-        "turn_pooling=%s device=%s",
+        "turn_pooling=%s promotion=%s margins=%s device=%s",
         args.data,
         args.base_model,
         args.grid_step,
         turn_pooling,
+        args.enable_promotion,
+        promotion_margins,
         args.embedding_device,
     )
     try:
@@ -104,6 +117,8 @@ def main() -> int:
             qa_top_k=args.qa_top_k,
             token_budget=args.token_budget,
             stability_folds=args.stability_folds,
+            enable_promotion=args.enable_promotion,
+            promotion_margins=promotion_margins,
         )
     finally:
         if embedder is not None:
@@ -116,44 +131,54 @@ def main() -> int:
         result.model_dump_json(indent=2) + "\n",
         encoding="utf-8",
     )
+    audit_path = None
+    if result.dev_audit:
+        audit_path = (
+            args.audit_output.expanduser().resolve()
+            if args.audit_output is not None
+            else report_path.with_name(report_path.stem.replace("_search", "") + "_dev_audit.jsonl")
+        )
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+        audit_path.write_text(
+            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in result.dev_audit),
+            encoding="utf-8",
+        )
     print(
         json.dumps(
             {
                 "model": str(model_path),
                 "search_report": str(report_path),
+                "dev_audit": str(audit_path) if audit_path is not None else None,
                 "schema_version": result.model.schema_version,
                 "model_type": result.model.model_type,
                 "split_id": result.model.split_id,
-                "split_assignment_sha256": (
-                    result.model.split_assignment_sha256
-                ),
+                "split_assignment_sha256": (result.model.split_assignment_sha256),
                 "split_manifest_file_sha256_matches_base": (
-                    result.model.metadata.get(
-                        "split_manifest_file_sha256_matches_base"
-                    )
+                    result.model.metadata.get("split_manifest_file_sha256_matches_base")
                 ),
                 "training_split": result.model.training_split,
                 "best_objective": result.model.best_objective,
                 "dev_metrics": result.model.dev_metrics,
                 "fusion": {
-                    "session_semantic_weight": (
-                        result.model.session_semantic_weight
-                    ),
-                    "turn_semantic_weight": (
-                        result.model.turn_semantic_weight
-                    ),
+                    "session_semantic_weight": (result.model.session_semantic_weight),
+                    "turn_semantic_weight": (result.model.turn_semantic_weight),
                     "turn_lexical_weight": result.model.turn_lexical_weight,
                     "turn_pooling_top_n": result.model.turn_pooling_top_n,
                 },
                 "delta_vs_session_only": result.model.metadata.get(
                     "dev_recall_all_at_5_delta_vs_session_only"
                 ),
-                "delta_vs_v43": result.model.metadata.get(
-                    "dev_recall_all_at_5_delta_vs_v43"
-                ),
+                "delta_vs_v43": result.model.metadata.get("dev_recall_all_at_5_delta_vs_v43"),
                 "dev_oracle_ceiling_metrics": result.model.metadata.get(
                     "dev_oracle_ceiling_metrics"
                 ),
+                "dev_metrics_source": result.model.metadata.get("dev_metrics_source"),
+                "promotion_margin": result.model.metadata.get("promotion_margin"),
+                "promotion_ranker_diagnostics": result.model.metadata.get(
+                    "promotion_ranker_diagnostics"
+                ),
+                "promotion_trials": len(result.promotion_trial_summaries),
+                "dev_audit_questions": len(result.dev_audit),
                 "trials": result.trials_evaluated,
                 "test_labels_used": False,
             },

@@ -204,12 +204,8 @@ def vmp_trial_selection_key(
     """
 
     baseline_recall = float(baseline_metrics.get("recall_all@5", 0.0))
-    baseline_macro = float(
-        baseline_metrics.get("macro_type_recall_all@5", 0.0)
-    )
-    baseline_worst = float(
-        baseline_metrics.get("worst_type_recall_all@5", 0.0)
-    )
+    baseline_macro = float(baseline_metrics.get("macro_type_recall_all@5", 0.0))
+    baseline_worst = float(baseline_metrics.get("worst_type_recall_all@5", 0.0))
     robust_non_regression = (
         metrics["recall_all@5"] >= baseline_recall
         and metrics["macro_type_recall_all@5"] >= baseline_macro
@@ -217,14 +213,11 @@ def vmp_trial_selection_key(
     )
     clears_quality_gate = (
         metrics["recall_all@5"] >= min_required_recall_all_at_5
-        and metrics["recall_all@5"] - baseline_recall
-        >= min_required_delta_vs_dense
-        and metrics["macro_type_recall_all@5"] - baseline_macro
-        >= min_required_macro_delta_vs_dense
+        and metrics["recall_all@5"] - baseline_recall >= min_required_delta_vs_dense
+        and metrics["macro_type_recall_all@5"] - baseline_macro >= min_required_macro_delta_vs_dense
         and metrics["worst_type_recall_all@5"] - baseline_worst
         >= min_required_worst_type_delta_vs_dense
-        and metrics.get("fold_recall_stddev", 0.0)
-        <= max_allowed_fold_recall_stddev
+        and metrics.get("fold_recall_stddev", 0.0) <= max_allowed_fold_recall_stddev
     )
     key: TrialSelectionKey = (
         float(clears_quality_gate),
@@ -301,10 +294,7 @@ def train_vmp_tuned(
         )
     LOGGER.info(
         "Search schedule: %s",
-        ", ".join(
-            f"{source}={count}"
-            for source, count in sorted(parameter_source_counts.items())
-        ),
+        ", ".join(f"{source}={count}" for source, count in sorted(parameter_source_counts.items())),
     )
     max_memory_count = max(example.memory_count for example in examples)
     summaries: list[dict[str, JsonValue]] = []
@@ -339,8 +329,7 @@ def train_vmp_tuned(
             stability_folds=stability_folds,
         )
         objective = sum(
-            DEFAULT_OBJECTIVE_WEIGHTS[name] * metrics[name]
-            for name in DEFAULT_OBJECTIVE_WEIGHTS
+            DEFAULT_OBJECTIVE_WEIGHTS[name] * metrics[name] for name in DEFAULT_OBJECTIVE_WEIGHTS
         )
         if index == 0:
             baseline_metrics = dict(metrics)
@@ -353,12 +342,8 @@ def train_vmp_tuned(
             parameter_hash=parameter_hash,
             min_required_recall_all_at_5=min_required_recall_all_at_5,
             min_required_delta_vs_dense=min_required_delta_vs_dense,
-            min_required_macro_delta_vs_dense=(
-                min_required_macro_delta_vs_dense
-            ),
-            min_required_worst_type_delta_vs_dense=(
-                min_required_worst_type_delta_vs_dense
-            ),
+            min_required_macro_delta_vs_dense=(min_required_macro_delta_vs_dense),
+            min_required_worst_type_delta_vs_dense=(min_required_worst_type_delta_vs_dense),
             max_allowed_fold_recall_stddev=max_allowed_fold_recall_stddev,
         )
         recall_key = (
@@ -401,11 +386,7 @@ def train_vmp_tuned(
             max_recall_objective = objective
         completed = index + 1
         if completed == 1 or completed % 8 == 0 or completed == len(trial_parameters):
-            if (
-                best_objective is None
-                or best_metrics is None
-                or max_recall_metrics is None
-            ):
+            if best_objective is None or best_metrics is None or max_recall_metrics is None:
                 raise RuntimeError("trial diagnostics were not initialized")
             LOGGER.info(
                 "Parameter search %d/%d: objective=%.6f selected=%.6f "
@@ -463,37 +444,29 @@ def train_vmp_tuned(
         DEFAULT_OBJECTIVE_WEIGHTS[name] * promoted_metrics[name]
         for name in DEFAULT_OBJECTIVE_WEIGHTS
     )
-    promoted_key, promoted_robust, promoted_clears_gate = (
-        vmp_trial_selection_key(
-            promoted_metrics,
-            baseline_metrics=baseline_metrics,
-            objective=promoted_objective,
-            policy_adjustment_limit=best_parameters.policy_adjustment_limit,
-            parameter_hash=sha256_json(
-                {
-                    "base": best_parameters.as_payload(),
-                    "promotion_ranker": (
-                        promotion_ranker.model_dump(mode="json")
-                        if promotion_ranker is not None
-                        else None
-                    ),
-                }
-            ),
-            min_required_recall_all_at_5=min_required_recall_all_at_5,
-            min_required_delta_vs_dense=min_required_delta_vs_dense,
-            min_required_macro_delta_vs_dense=(
-                min_required_macro_delta_vs_dense
-            ),
-            min_required_worst_type_delta_vs_dense=(
-                min_required_worst_type_delta_vs_dense
-            ),
-            max_allowed_fold_recall_stddev=max_allowed_fold_recall_stddev,
-        )
+    promoted_key, promoted_robust, promoted_clears_gate = vmp_trial_selection_key(
+        promoted_metrics,
+        baseline_metrics=baseline_metrics,
+        objective=promoted_objective,
+        policy_adjustment_limit=best_parameters.policy_adjustment_limit,
+        parameter_hash=sha256_json(
+            {
+                "base": best_parameters.as_payload(),
+                "promotion_ranker": (
+                    promotion_ranker.model_dump(mode="json")
+                    if promotion_ranker is not None
+                    else None
+                ),
+            }
+        ),
+        min_required_recall_all_at_5=min_required_recall_all_at_5,
+        min_required_delta_vs_dense=min_required_delta_vs_dense,
+        min_required_macro_delta_vs_dense=(min_required_macro_delta_vs_dense),
+        min_required_worst_type_delta_vs_dense=(min_required_worst_type_delta_vs_dense),
+        max_allowed_fold_recall_stddev=max_allowed_fold_recall_stddev,
     )
     use_promotion_ranker = (
-        promotion_ranker is not None
-        and promoted_robust
-        and promoted_key >= best_key
+        promotion_ranker is not None and promoted_robust and promoted_key >= best_key
     )
     if use_promotion_ranker:
         best_metrics = promoted_metrics
@@ -501,14 +474,9 @@ def train_vmp_tuned(
         best_key = promoted_key
     promotion_is_max = (
         use_promotion_ranker
-        and promoted_metrics["recall_all@5"]
-        > max_recall_metrics["recall_all@5"]
+        and promoted_metrics["recall_all@5"] > max_recall_metrics["recall_all@5"]
     )
-    max_seen_metrics = (
-        promoted_metrics
-        if promotion_is_max
-        else max_recall_metrics
-    )
+    max_seen_metrics = promoted_metrics if promotion_is_max else max_recall_metrics
     LOGGER.info(
         "Pairwise promotion: enabled=%s fit_accuracy=%.6f loo_accuracy=%.6f "
         "recall=%.6f clears_gate=%s",
@@ -529,9 +497,7 @@ def train_vmp_tuned(
         policy_adjustment_limit=best_parameters.policy_adjustment_limit,
         archive_score_penalty=best_parameters.archive_score_penalty,
         protected_dense_count=(
-            max(1, qa_top_k - 1)
-            if use_promotion_ranker
-            else best_parameters.protected_dense_count
+            max(1, qa_top_k - 1) if use_promotion_ranker else best_parameters.protected_dense_count
         ),
         promotion_margin=0.0 if use_promotion_ranker else best_parameters.promotion_margin,
         promotion_ranker=promotion_ranker if use_promotion_ranker else None,
@@ -554,12 +520,8 @@ def train_vmp_tuned(
             "stability_folds": stability_folds,
             "min_required_recall_all_at_5": min_required_recall_all_at_5,
             "min_required_delta_vs_dense": min_required_delta_vs_dense,
-            "min_required_macro_delta_vs_dense": (
-                min_required_macro_delta_vs_dense
-            ),
-            "min_required_worst_type_delta_vs_dense": (
-                min_required_worst_type_delta_vs_dense
-            ),
+            "min_required_macro_delta_vs_dense": (min_required_macro_delta_vs_dense),
+            "min_required_worst_type_delta_vs_dense": (min_required_worst_type_delta_vs_dense),
             "max_allowed_fold_recall_stddev": max_allowed_fold_recall_stddev,
             "search": "seeded_guarded_policy_search_with_fold_and_group_stability",
             "search_parameter_source_counts": cast(
@@ -568,9 +530,7 @@ def train_vmp_tuned(
             ),
             "selected_parameter_source": best_parameters.source,
             "selection_stage": (
-                "dev_pairwise_promotion"
-                if use_promotion_ranker
-                else "guarded_parameter_search"
+                "dev_pairwise_promotion" if use_promotion_ranker else "guarded_parameter_search"
             ),
             "pre_promotion_ranker_dev_metrics": cast(
                 JsonValue,
@@ -585,9 +545,7 @@ def train_vmp_tuned(
                 "source_model_schema": "1.3",
                 "source_training_split": "dev",
                 "source_split_id": manifest.split_id,
-                "selection_rule": (
-                    "re-evaluated under V4 Dev metrics and quality gates"
-                ),
+                "selection_rule": ("re-evaluated under V4 Dev metrics and quality gates"),
                 "test_labels_used": False,
             },
             "feature_semantics_version": "4",
@@ -600,15 +558,12 @@ def train_vmp_tuned(
             "max_recall_trial": max_recall_trial,
             "max_dev_recall_all_at_5_seen": max_seen_metrics["recall_all@5"],
             "max_recall_stage": (
-                "dev_pairwise_promotion"
-                if promotion_is_max
-                else "guarded_parameter_search"
+                "dev_pairwise_promotion" if promotion_is_max else "guarded_parameter_search"
             ),
             "max_recall_trial_objective": max_recall_objective,
             "max_recall_trial_metrics": cast(JsonValue, max_recall_metrics),
             "dev_recall_all_at_5_delta_vs_dense": (
-                best_metrics["recall_all@5"]
-                - float(baseline_metrics.get("recall_all@5", 0.0))
+                best_metrics["recall_all@5"] - float(baseline_metrics.get("recall_all@5", 0.0))
             ),
             "abstention_rule": "question_id_suffix_abs",
             "date_format": "longmemeval_timestamp_or_iso8601",
@@ -722,10 +677,7 @@ def build_vmp_tuning_examples(
                 )
                 superseded = set(
                     superseded_candidate_indices(
-                        [
-                            (chunk.content, chunk.source_date, features)
-                            for chunk, features in rows
-                        ],
+                        [(chunk.content, chunk.source_date, features) for chunk, features in rows],
                         model=lifecycle_model,
                     )
                 )
@@ -739,9 +691,7 @@ def build_vmp_tuning_examples(
                         token_count=chunk.token_count,
                         policy_features=features,
                         lexical_score=lexical_score,
-                        lifecycle_status=(
-                            "superseded" if index in superseded else "active"
-                        ),
+                        lifecycle_status=("superseded" if index in superseded else "active"),
                         policy_values=vmp_tuned_feature_values(
                             features,
                             temporal_intent=temporal_intent,
@@ -813,23 +763,14 @@ def dense_guard_oracle_metrics(
             ),
         )
         gold = set(example.gold_session_ids)
-        dense_head = {
-            candidate.session_id for candidate in dense_ranked[:safety_top_k]
-        }
-        preserved = {
-            candidate.session_id
-            for candidate in dense_ranked[:preserve_dense_top_n]
-        }
-        protected = {
-            candidate.session_id
-            for candidate in dense_ranked[:protected_dense_count]
-        }
+        dense_head = {candidate.session_id for candidate in dense_ranked[:safety_top_k]}
+        preserved = {candidate.session_id for candidate in dense_ranked[:preserve_dense_top_n]}
+        protected = {candidate.session_id for candidate in dense_ranked[:protected_dense_count]}
         dense_head_successes += int(gold.issubset(dense_head))
         dense_set_successes += int(gold.issubset(preserved))
         remaining_gold = gold - protected
         guarded_successes += int(
-            remaining_gold.issubset(preserved)
-            and len(remaining_gold) <= open_slots
+            remaining_gold.issubset(preserved) and len(remaining_gold) <= open_slots
         )
 
     denominator = len(examples)
@@ -864,27 +805,17 @@ def fit_dev_promotion_ranker(
             "leave_one_out_target_accuracy": 0.0,
             "test_labels_used": False,
         }
-    raw_vectors = [
-        vector
-        for group in groups
-        for vector in group.vectors
-    ]
+    raw_vectors = [vector for group in groups for vector in group.vectors]
     dimensions = len(PROMOTION_FEATURES)
-    means = [
-        _mean([vector[index] for vector in raw_vectors])
-        for index in range(dimensions)
-    ]
+    means = [_mean([vector[index] for vector in raw_vectors]) for index in range(dimensions)]
     scales = []
     for index, mean in enumerate(means):
-        variance = _mean(
-            [(vector[index] - mean) ** 2 for vector in raw_vectors]
-        )
+        variance = _mean([(vector[index] - mean) ** 2 for vector in raw_vectors])
         scales.append(max(math.sqrt(variance), 1e-6))
 
     def normalize(vector: tuple[float, ...]) -> list[float]:
         return [
-            (value - mean) / scale
-            for value, mean, scale in zip(vector, means, scales, strict=True)
+            (value - mean) / scale for value, mean, scale in zip(vector, means, scales, strict=True)
         ]
 
     positives: list[PromotionPrototype] = []
@@ -924,21 +855,13 @@ def fit_dev_promotion_ranker(
         "positive_prototype_count": len(positives),
         "negative_prototype_count": len(negatives),
         "fit_target_accuracy": fit_diagnostics["target_accuracy"],
-        "fit_useful_promotion_accuracy": fit_diagnostics[
-            "useful_promotion_accuracy"
-        ],
-        "fit_unsafe_promotion_rate": fit_diagnostics[
-            "unsafe_promotion_rate"
-        ],
-        "leave_one_out_target_accuracy": leave_one_out_diagnostics[
-            "target_accuracy"
-        ],
+        "fit_useful_promotion_accuracy": fit_diagnostics["useful_promotion_accuracy"],
+        "fit_unsafe_promotion_rate": fit_diagnostics["unsafe_promotion_rate"],
+        "leave_one_out_target_accuracy": leave_one_out_diagnostics["target_accuracy"],
         "leave_one_out_useful_promotion_accuracy": (
             leave_one_out_diagnostics["useful_promotion_accuracy"]
         ),
-        "leave_one_out_unsafe_promotion_rate": leave_one_out_diagnostics[
-            "unsafe_promotion_rate"
-        ],
+        "leave_one_out_unsafe_promotion_rate": leave_one_out_diagnostics["unsafe_promotion_rate"],
         "test_labels_used": False,
     }
     return ranker, diagnostics
@@ -971,9 +894,7 @@ def _promotion_training_groups(
         dense_ranked = sorted(
             range(len(example.candidates)),
             key=lambda index: (
-                -float(
-                    example.candidates[index].policy_features.semantic_relevance
-                ),
+                -float(example.candidates[index].policy_features.semantic_relevance),
                 example.candidates[index].memory_id,
             ),
         )
@@ -1021,8 +942,7 @@ def _promotion_training_groups(
             )
         )
         protected_sessions = {
-            example.candidates[index].session_id
-            for index in dense_ranked[:boundary_position]
+            example.candidates[index].session_id for index in dense_ranked[:boundary_position]
         }
         remaining_gold = set(example.gold_session_ids) - protected_sessions
         target_position = 0
@@ -1097,6 +1017,8 @@ def evaluate_vmp_parameters(
     token_budget: int,
     max_memory_count: int,
     stability_folds: int = 5,
+    promotion_exclude_own_group: bool = False,
+    audit_rows: list[dict[str, JsonValue]] | None = None,
 ) -> dict[str, float]:
     """Evaluate one parameter set with dense guards and stability slices."""
 
@@ -1125,11 +1047,7 @@ def evaluate_vmp_parameters(
         dense_ranked = sorted(
             range(len(example.candidates)),
             key=lambda candidate_index: (
-                -float(
-                    example.candidates[
-                        candidate_index
-                    ].policy_features.semantic_relevance
-                ),
+                -float(example.candidates[candidate_index].policy_features.semantic_relevance),
                 example.candidates[candidate_index].memory_id,
             ),
         )
@@ -1165,8 +1083,7 @@ def evaluate_vmp_parameters(
                 temporal_intent=temporal_intent,
             )
             raw_policy_score = sum(
-                float(weights[name]) * float(values[name])
-                for name in VMP_TUNED_FEATURES
+                float(weights[name]) * float(values[name]) for name in VMP_TUNED_FEATURES
             )
             policy_delta = policy_adjustment_limit * math.tanh(raw_policy_score)
             policy_scores[index] = clamp01(
@@ -1179,24 +1096,18 @@ def evaluate_vmp_parameters(
             boundary_index = dense_ranked[qa_top_k - 1]
             boundary = example.candidates[boundary_index]
             boundary_anchor = anchor_scores[boundary_index]
-            promotion_indices = list(
-                dense_ranked[: search_model.preserve_dense_top_n]
-            )
+            promotion_indices = list(dense_ranked[: search_model.preserve_dense_top_n])
             promotion_vectors = [
                 promotion_feature_vector(
                     example.candidates[index].policy_features,
-                    lexical_score=float(
-                        example.candidates[index].lexical_score
-                    ),
+                    lexical_score=float(example.candidates[index].lexical_score),
                     anchor_score=anchor_scores[index],
                     dense_rank=dense_rank,
                     boundary_features=boundary.policy_features,
                     boundary_lexical_score=float(boundary.lexical_score),
                     boundary_anchor_score=boundary_anchor,
                     temporal_intent=temporal_intent,
-                    lifecycle_status=(
-                        example.candidates[index].lifecycle_status
-                    ),
+                    lifecycle_status=(example.candidates[index].lifecycle_status),
                     boundary_lifecycle_status=boundary.lifecycle_status,
                 )
                 for dense_rank, index in enumerate(promotion_indices)
@@ -1204,7 +1115,12 @@ def evaluate_vmp_parameters(
             promotion_scores.update(
                 zip(
                     promotion_indices,
-                    promotion_ranker.score_many(promotion_vectors),
+                    promotion_ranker.score_many(
+                        promotion_vectors,
+                        exclude_group_id=(
+                            example.question_id if promotion_exclude_own_group else None
+                        ),
+                    ),
                     strict=True,
                 )
             )
@@ -1222,9 +1138,46 @@ def evaluate_vmp_parameters(
             if policy_scores[index] >= retrieve_threshold
         ]
         retrieved_ids = [candidate.session_id for candidate in retrieved]
-        metric_rows.append(
-            compute_retrieval_metrics(retrieved_ids, example.gold_session_ids)
+        sample_metrics = compute_retrieval_metrics(
+            retrieved_ids,
+            example.gold_session_ids,
         )
+        metric_rows.append(sample_metrics)
+        if audit_rows is not None:
+            audit_rows.append(
+                {
+                    "question_id": example.question_id,
+                    "question_type": example.question_type,
+                    "gold_session_ids": cast(
+                        JsonValue,
+                        list(example.gold_session_ids),
+                    ),
+                    "dense_top5_session_ids": cast(
+                        JsonValue,
+                        [example.candidates[index].session_id for index in dense_ranked[:qa_top_k]],
+                    ),
+                    "dense_top10_session_ids": cast(
+                        JsonValue,
+                        [
+                            example.candidates[index].session_id
+                            for index in dense_ranked[: search_model.preserve_dense_top_n]
+                        ],
+                    ),
+                    "retrieved_top5_session_ids": cast(
+                        JsonValue,
+                        retrieved_ids[:qa_top_k],
+                    ),
+                    "retrieved_top10_session_ids": cast(
+                        JsonValue,
+                        retrieved_ids[: search_model.preserve_dense_top_n],
+                    ),
+                    "recall_all@5": sample_metrics["recall_all@5"],
+                    "recall_all@10": sample_metrics["recall_all@10"],
+                    "mrr": sample_metrics["mrr"],
+                    "promotion_excluded_own_group": (promotion_exclude_own_group),
+                    "test_labels_used": False,
+                }
+            )
         qa_evidence = retrieved[:qa_top_k]
         token_costs.append(
             min(1.0, sum(candidate.token_count for candidate in qa_evidence) / token_budget)
@@ -1235,9 +1188,7 @@ def evaluate_vmp_parameters(
         conflict_rates.append(conflict_rate)
         dense_head = set(dense_ranked[:qa_top_k])
         selected_head = set(selected_indices[:qa_top_k])
-        retained_dense_head.append(
-            len(dense_head & selected_head) / max(1, len(dense_head))
-        )
+        retained_dense_head.append(len(dense_head & selected_head) / max(1, len(dense_head)))
 
     retrieval_metrics = aggregate_retrieval_metrics(metric_rows)
     robust_metrics = _stability_metrics(
@@ -1269,13 +1220,9 @@ def _stability_metrics(
         by_type.setdefault(example.question_type, []).append(row)
         fold = int(sha256_json(example.question_id)[:8], 16) % folds
         by_fold.setdefault(fold, []).append(row)
-    type_recalls = [
-        aggregate_retrieval_metrics(rows)["recall_all@5"]
-        for rows in by_type.values()
-    ]
+    type_recalls = [aggregate_retrieval_metrics(rows)["recall_all@5"] for rows in by_type.values()]
     fold_recalls = [
-        aggregate_retrieval_metrics(rows)["recall_all@5"]
-        for _, rows in sorted(by_fold.items())
+        aggregate_retrieval_metrics(rows)["recall_all@5"] for _, rows in sorted(by_fold.items())
     ]
     fold_mean = _mean(fold_recalls)
     fold_variance = _mean([(value - fold_mean) ** 2 for value in fold_recalls])
@@ -1328,10 +1275,7 @@ def _trial_parameters(
         parameters.append(warm_start)
     rng = random.Random(seed)
     while len(parameters) < trials:
-        weights = {
-            name: rng.uniform(*_WEIGHT_BOUNDS[name])
-            for name in VMP_TUNED_FEATURES
-        }
+        weights = {name: rng.uniform(*_WEIGHT_BOUNDS[name]) for name in VMP_TUNED_FEATURES}
         semantic_anchor_weight = rng.uniform(0.70, 1.0)
         parameters.append(
             VMPTuningParameters(
@@ -1408,11 +1352,7 @@ def _update_error_rates(
         and (candidate_date := parse_date(candidate.source_date)) is not None
         and candidate_date < newest_gold_date
     ]
-    conflict = [
-        candidate
-        for candidate in stale
-        if candidate.policy_features.contradiction >= 0.45
-    ]
+    conflict = [candidate for candidate in stale if candidate.policy_features.contradiction >= 0.45]
     denominator = len(retrieved)
     return len(stale) / denominator, len(conflict) / denominator
 

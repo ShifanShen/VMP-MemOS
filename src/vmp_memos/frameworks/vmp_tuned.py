@@ -260,12 +260,10 @@ class PromotionPrototypeRanker(SchemaModel):
         if not positives or not negatives:
             return 0.0
         positive_distance = min(
-            _squared_distance(normalized, prototype.vector)
-            for prototype in positives
+            _squared_distance(normalized, prototype.vector) for prototype in positives
         )
         negative_distance = min(
-            _squared_distance(normalized, prototype.vector)
-            for prototype in negatives
+            _squared_distance(normalized, prototype.vector) for prototype in negatives
         )
         return math.tanh(negative_distance - positive_distance)
 
@@ -280,10 +278,7 @@ class PromotionPrototypeRanker(SchemaModel):
         if not vectors:
             return []
         if exclude_group_id is not None:
-            return [
-                self.score(vector, exclude_group_id=exclude_group_id)
-                for vector in vectors
-            ]
+            return [self.score(vector, exclude_group_id=exclude_group_id) for vector in vectors]
         try:
             import numpy as np  # type: ignore[import-not-found]
         except ImportError:
@@ -324,12 +319,7 @@ class PromotionPrototypeRanker(SchemaModel):
             + self._negative_norms[np.newaxis, :]
             - 2.0 * normalized @ self._negative_matrix.T
         ).min(axis=1)
-        return [
-            float(value)
-            for value in np.tanh(
-                negative_distances - positive_distances
-            ).tolist()
-        ]
+        return [float(value) for value in np.tanh(negative_distances - positive_distances).tolist()]
 
     @staticmethod
     def _matching_prototypes(
@@ -337,11 +327,7 @@ class PromotionPrototypeRanker(SchemaModel):
         *,
         exclude_group_id: str | None,
     ) -> list[PromotionPrototype]:
-        return [
-            prototype
-            for prototype in prototypes
-            if prototype.group_id != exclude_group_id
-        ]
+        return [prototype for prototype in prototypes if prototype.group_id != exclude_group_id]
 
 
 class VMPTunedModel(SchemaModel):
@@ -382,9 +368,7 @@ class VMPTunedModel(SchemaModel):
         """Require a complete V4 model trained on dev, never on test."""
 
         if self.schema_version != "1.6":
-            raise ValueError(
-                "VMP-Tuned model schema is obsolete; retrain the frozen dev model"
-            )
+            raise ValueError("VMP-Tuned model schema is obsolete; retrain the frozen dev model")
         if self.training_split != "dev":
             raise ValueError("VMP-Tuned artifacts must be trained only on the dev split")
         missing = set(VMP_TUNED_FEATURES) - set(self.weights)
@@ -408,20 +392,12 @@ class VMPTunedModel(SchemaModel):
         if self.retrieve_threshold != 0.0:
             raise ValueError("VMP-v4 retrieve_threshold must be zero for dense safety")
         if self.ordering_strategy != "base_policy_score":
-            raise ValueError(
-                "VMP-v4.3 must order selected evidence by base policy score"
-            )
+            raise ValueError("VMP-v4.3 must order selected evidence by base policy score")
         if self.promotion_ranker is not None:
             if tuple(self.promotion_ranker.feature_names) != PROMOTION_FEATURES:
                 raise ValueError("promotion ranker feature schema is obsolete")
             if self.protected_dense_count != self.safety_top_k - 1:
-                raise ValueError(
-                    "pairwise promotion must expose exactly one guarded Top-5 slot"
-                )
-            if self.promotion_margin != 0.0:
-                raise ValueError(
-                    "pairwise prototype scores require a zero promotion margin"
-                )
+                raise ValueError("pairwise promotion must expose exactly one guarded Top-5 slot")
         return self
 
     def anchor_score(self, semantic_score: float, lexical_score: float) -> float:
@@ -624,9 +600,7 @@ class VMPTunedAdapter(VMPRuleAdapter):
             anchor_rows,
             key=lambda row: (-float(row[3].semantic_relevance), row[2].memory_id),
         )
-        dense_rank_by_index = {
-            row[1]: dense_rank for dense_rank, row in enumerate(dense_rows)
-        }
+        dense_rank_by_index = {row[1]: dense_rank for dense_rank, row in enumerate(dense_rows)}
         boundary_row = (
             dense_rows[self.model.safety_top_k - 1]
             if len(dense_rows) >= self.model.safety_top_k
@@ -746,17 +720,13 @@ class VMPTunedAdapter(VMPRuleAdapter):
                             "model_type": self.model.model_type,
                             "split_id": self.model.split_id,
                             "ablation": self.ablation.model_dump(mode="json"),
-                            "semantic_anchor_score": float(
-                                features.semantic_relevance
-                            ),
+                            "semantic_anchor_score": float(features.semantic_relevance),
                             "lexical_anchor_score": lexical_score,
                             "hybrid_anchor_score": anchor_score,
                             "policy_delta": policy_delta,
                             "lifecycle_penalty": lifecycle_penalty,
                             "net_score_delta": score - anchor_score,
-                            "policy_adjustment_limit": float(
-                                self.model.policy_adjustment_limit
-                            ),
+                            "policy_adjustment_limit": float(self.model.policy_adjustment_limit),
                             "promotion_score": promotion_score,
                             "promotion_ranker": (
                                 self.model.promotion_ranker.model_type
@@ -793,8 +763,7 @@ class VMPTunedAdapter(VMPRuleAdapter):
         return [
             ranked_memory[index]
             for index in selected_indices
-            if index in ranked_memory
-            and scores_by_index[index] >= self.model.retrieve_threshold
+            if index in ranked_memory and scores_by_index[index] >= self.model.retrieve_threshold
         ]
 
     def _semantic_relevance_scores(
@@ -865,9 +834,7 @@ def guarded_ranked_indices(
 
     if requested_top_k < 1:
         return []
-    available_dense = [
-        index for index in dense_ranked_indices if index in policy_scores
-    ]
+    available_dense = [index for index in dense_ranked_indices if index in policy_scores]
     final_scores = ordering_scores if ordering_scores is not None else policy_scores
     final_order = sorted(
         policy_scores,
@@ -895,8 +862,7 @@ def guarded_ranked_indices(
     promotion_candidates = [
         index
         for index in preserved[head_size:]
-        if policy_scores[index]
-        >= promotion_floor + float(model.promotion_margin)
+        if policy_scores[index] >= promotion_floor + float(model.promotion_margin)
     ]
     eligible = _ordered_unique_indices(unprotected_head, promotion_candidates)
     eligible.sort(
@@ -908,11 +874,7 @@ def guarded_ranked_indices(
     )
     selected_head = protected + eligible[:open_slots]
     if len(selected_head) < head_size:
-        selected_head.extend(
-            index
-            for index in dense_head
-            if index not in selected_head
-        )
+        selected_head.extend(index for index in dense_head if index not in selected_head)
         selected_head = selected_head[:head_size]
     selected_head.sort(
         key=lambda index: (
@@ -932,9 +894,7 @@ def guarded_ranked_indices(
     )
     selected = selected_head + tail
     if len(selected) < requested_top_k:
-        selected.extend(
-            index for index in final_order if index not in selected
-        )
+        selected.extend(index for index in final_order if index not in selected)
     return selected[:requested_top_k]
 
 
@@ -957,9 +917,7 @@ def build_static_vmp_features(chunks: Sequence[MemoryChunk]) -> list[PolicyFeatu
                 confidence=0.85,
                 novelty=clamp01(1.0 - redundancy),
                 redundancy=redundancy,
-                contradiction=(
-                    0.90 if explicit_update else clamp01(0.10 * redundancy)
-                ),
+                contradiction=(0.90 if explicit_update else clamp01(0.10 * redundancy)),
                 token_cost=clamp01(chunk.token_count / 2048.0),
                 actionability=clamp01(actionability),
             )
@@ -980,9 +938,7 @@ def build_vmp_feature_rows(
     """Build V4 query features in O(chunks) after static precomputation."""
 
     cached = (
-        list(static_features)
-        if static_features is not None
-        else build_static_vmp_features(chunks)
+        list(static_features) if static_features is not None else build_static_vmp_features(chunks)
     )
     if len(cached) != len(chunks):
         raise ValueError("static VMP feature count must match chunk count")
@@ -1006,9 +962,7 @@ def build_vmp_feature_rows(
         )
         recency = _episodic_recency(chunk.source_date, question_date)
         lowered = chunk.content.casefold()
-        keyword_staleness = (
-            0.75 if any(marker in lowered for marker in _STALE_MARKERS) else 0.0
-        )
+        keyword_staleness = 0.75 if any(marker in lowered for marker in _STALE_MARKERS) else 0.0
         chunk_scope = chunk.metadata.get("question_id")
         scope_match = (
             1.0
@@ -1124,9 +1078,7 @@ def vmp_tuned_feature_values(
         **base,
         "update_signal": update_signal,
         "action_signal": (
-            float(features.actionability) * base["recency"]
-            if temporal_intent
-            else 0.0
+            float(features.actionability) * base["recency"] if temporal_intent else 0.0
         ),
     }
 
@@ -1170,14 +1122,9 @@ def promotion_feature_vector(
         "is_dense_boundary": float(dense_rank == 4),
         "lifecycle_superseded": float(lifecycle_status == "superseded"),
         "lifecycle_duplicate": float(lifecycle_status == "duplicate"),
-        **{
-            f"delta_{name}": values[name] - boundary_values[name]
-            for name in VMP_TUNED_FEATURES
-        },
-        "delta_lexical_score": clamp01(lexical_score)
-        - clamp01(boundary_lexical_score),
-        "delta_anchor_score": clamp01(anchor_score)
-        - clamp01(boundary_anchor_score),
+        **{f"delta_{name}": values[name] - boundary_values[name] for name in VMP_TUNED_FEATURES},
+        "delta_lexical_score": clamp01(lexical_score) - clamp01(boundary_lexical_score),
+        "delta_anchor_score": clamp01(anchor_score) - clamp01(boundary_anchor_score),
         "delta_lifecycle_superseded": float(lifecycle_status == "superseded")
         - float(boundary_lifecycle_status == "superseded"),
         "delta_lifecycle_duplicate": float(lifecycle_status == "duplicate")
@@ -1202,9 +1149,7 @@ def normalized_bm25_scores(query: str, documents: Sequence[str]) -> list[float]:
     counts_by_document = [term_counts(document) for document in documents]
     lengths = [sum(counts.values()) for counts in counts_by_document]
     average_length = sum(lengths) / max(1, len(lengths))
-    document_frequency = Counter(
-        term for counts in counts_by_document for term in set(counts)
-    )
+    document_frequency = Counter(term for counts in counts_by_document for term in set(counts))
     scores: list[float] = []
     k1 = 1.5
     b = 0.75
@@ -1215,12 +1160,8 @@ def normalized_bm25_scores(query: str, documents: Sequence[str]) -> list[float]:
             if frequency <= 0:
                 continue
             df = document_frequency[term]
-            idf = math.log(
-                1.0 + (len(documents) - df + 0.5) / (df + 0.5)
-            )
-            denominator = frequency + k1 * (
-                1.0 - b + b * max(1, length) / max(1.0, average_length)
-            )
+            idf = math.log(1.0 + (len(documents) - df + 0.5) / (df + 0.5))
+            denominator = frequency + k1 * (1.0 - b + b * max(1, length) / max(1.0, average_length))
             score += idf * frequency * (k1 + 1.0) / denominator
         scores.append(score)
     maximum = max(scores, default=0.0)
@@ -1258,9 +1199,7 @@ def superseded_candidate_indices(
         return []
     parsed_dates = [parse_date(source_date) for _, source_date, _ in candidates]
     token_sets = [set(terms(content)) for content, _, _ in candidates]
-    update_markers = [
-        _has_explicit_update_marker(content) for content, _, _ in candidates
-    ]
+    update_markers = [_has_explicit_update_marker(content) for content, _, _ in candidates]
     superseded: list[int] = []
     for index, candidate_date in enumerate(parsed_dates):
         if candidate_date is None:
@@ -1305,10 +1244,7 @@ def is_near_duplicate(
 ) -> bool:
     """Return whether content is near-duplicate of an earlier chunk."""
 
-    return any(
-        lexical_jaccard(content, selected) >= threshold
-        for selected in selected_contents
-    )
+    return any(lexical_jaccard(content, selected) >= threshold for selected in selected_contents)
 
 
 def _has_explicit_update_marker(content: str) -> bool:

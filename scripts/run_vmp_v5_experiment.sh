@@ -2,11 +2,13 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+EXPERIMENT_LABEL="${EXPERIMENT_LABEL:-VMP-v5}"
 DATA_PATH="${DATA_PATH:-data/longmemeval/longmemeval_s_cleaned.json}"
 SPLIT_PATH="${SPLIT_PATH:-outputs/longmemeval/splits/dev_test_seed42.json}"
 BASE_MODEL_PATH="${BASE_MODEL_PATH:-outputs/longmemeval/models/vmp_v43_seed42.json}"
 MODEL_PATH="${MODEL_PATH:-outputs/longmemeval/models/vmp_v5_seed42.json}"
 SEARCH_REPORT="${SEARCH_REPORT:-outputs/longmemeval/models/vmp_v5_seed42_search.json}"
+DEV_AUDIT_PATH="${DEV_AUDIT_PATH:-outputs/longmemeval/models/vmp_v5_seed42_dev_audit.jsonl}"
 EMBEDDING_MODEL="${EMBEDDING_MODEL:-BAAI/bge-m3}"
 EMBEDDING_DEVICE="${EMBEDDING_DEVICE:-cuda}"
 EMBEDDING_CACHE_DIR="${EMBEDDING_CACHE_DIR:-${HOME}/.cache/huggingface}"
@@ -16,9 +18,14 @@ RUN_ID="${RUN_ID:-lme_test_vmp_v5_$(date -u +%Y%m%dT%H%M%SZ)}"
 METHODS="${METHODS:-bm25,naive_vector,vector_importance,vmp_tuned,vmp_hierarchical}"
 GRID_STEP="${GRID_STEP:-0.2}"
 TURN_POOLING="${TURN_POOLING:-1,2,3}"
+ENABLE_PROMOTION="${ENABLE_PROMOTION:-0}"
+PROMOTION_MARGINS="${PROMOTION_MARGINS:-0,0.05,0.10,0.20,0.30,0.50,0.75,1.0}"
 MIN_DEV_RECALL_ALL_5="${MIN_DEV_RECALL_ALL_5:-0.91}"
 MIN_DEV_DELTA_VS_V43="${MIN_DEV_DELTA_VS_V43:-0.0}"
 MIN_DEV_DELTA_VS_SESSION_ONLY="${MIN_DEV_DELTA_VS_SESSION_ONLY:-0.0}"
+MIN_DEV_DELTA_VS_PRE_PROMOTION="${MIN_DEV_DELTA_VS_PRE_PROMOTION:-0.0}"
+MIN_DEV_MACRO_DELTA_VS_V43="${MIN_DEV_MACRO_DELTA_VS_V43:-0.0}"
+MAX_DEV_WORST_TYPE_REGRESSION_VS_V43="${MAX_DEV_WORST_TYPE_REGRESSION_VS_V43:-0.03}"
 MIN_TURN_WEIGHT="${MIN_TURN_WEIGHT:-0.2}"
 MAX_DEV_FOLD_RECALL_STDDEV="${MAX_DEV_FOLD_RECALL_STDDEV:-0.20}"
 VMP_LLM_BASE_URL="${VMP_LLM_BASE_URL:-http://127.0.0.1:8000/v1}"
@@ -51,10 +58,11 @@ if [[ ! -f "${BASE_MODEL_PATH}" ]]; then
   exit 2
 fi
 
-log_stage "Starting VMP-v5 hierarchical session-turn experiment."
+log_stage "Starting ${EXPERIMENT_LABEL} hierarchical session-turn experiment."
 log_stage "run_id=${RUN_ID} data=${DATA_PATH} base_model=${BASE_MODEL_PATH}"
 log_stage "embedding_model=${EMBEDDING_MODEL} device=${EMBEDDING_DEVICE} batch=${EMBEDDING_BATCH_SIZE}"
 log_stage "grid_step=${GRID_STEP} turn_pooling=${TURN_POOLING} methods=${METHODS}"
+log_stage "promotion=${ENABLE_PROMOTION} margins=${PROMOTION_MARGINS}"
 log_stage "run_qa=${RUN_QA} log=${LOG_PATH}"
 
 log_stage "Phase 1/5: creating deterministic LongMemEval split."
@@ -66,12 +74,20 @@ python scripts/create_longmemeval_split.py \
   --test-size 400
 
 log_stage "Phase 2/5: tuning hierarchical fusion on Dev only."
+PROMOTION_ARGS=()
+if [[ "${ENABLE_PROMOTION}" == "1" ]]; then
+  PROMOTION_ARGS=(
+    --enable-promotion
+    --promotion-margins "${PROMOTION_MARGINS}"
+  )
+fi
 python scripts/train_vmp_hierarchical.py \
   --data "${DATA_PATH}" \
   --split-manifest "${SPLIT_PATH}" \
   --base-model "${BASE_MODEL_PATH}" \
   --output "${MODEL_PATH}" \
   --report "${SEARCH_REPORT}" \
+  --audit-output "${DEV_AUDIT_PATH}" \
   --embedding-model "${EMBEDDING_MODEL}" \
   --embedding-device "${EMBEDDING_DEVICE}" \
   --embedding-cache-dir "${EMBEDDING_CACHE_DIR}" \
@@ -81,18 +97,22 @@ python scripts/train_vmp_hierarchical.py \
   --turn-pooling "${TURN_POOLING}" \
   --retrieval-depth 10 \
   --qa-top-k 5 \
-  --stability-folds 5
+  --stability-folds 5 \
+  "${PROMOTION_ARGS[@]}"
 
-log_stage "Phase 3/5: enforcing V5 Dev-only quality gates."
+log_stage "Phase 3/5: enforcing ${EXPERIMENT_LABEL} Dev-only quality gates."
 python scripts/check_vmp_v5_gate.py \
   --model "${MODEL_PATH}" \
   --min-recall-all-at-5 "${MIN_DEV_RECALL_ALL_5}" \
   --min-delta-vs-v43 "${MIN_DEV_DELTA_VS_V43}" \
   --min-delta-vs-session-only "${MIN_DEV_DELTA_VS_SESSION_ONLY}" \
+  --min-delta-vs-pre-promotion "${MIN_DEV_DELTA_VS_PRE_PROMOTION}" \
+  --min-macro-delta-vs-v43 "${MIN_DEV_MACRO_DELTA_VS_V43}" \
+  --max-worst-type-regression-vs-v43 "${MAX_DEV_WORST_TYPE_REGRESSION_VS_V43}" \
   --min-turn-weight "${MIN_TURN_WEIGHT}" \
   --max-fold-recall-stddev "${MAX_DEV_FOLD_RECALL_STDDEV}"
 
-log_stage "Phase 4/5: evaluating frozen V4.3 and V5 methods on Test."
+log_stage "Phase 4/5: evaluating frozen V4.3 and ${EXPERIMENT_LABEL} on Test."
 python scripts/run_longmemeval_retrieval.py \
   --data "${DATA_PATH}" \
   --split-manifest "${SPLIT_PATH}" \
@@ -131,4 +151,4 @@ python scripts/export_longmemeval_tables.py \
   --retrieval-run "outputs/longmemeval/runs/${RUN_ID}" \
   --output-dir "${TABLE_DIR}"
 
-echo "Completed VMP-v5 test run: outputs/longmemeval/runs/${RUN_ID}"
+echo "Completed ${EXPERIMENT_LABEL} test run: outputs/longmemeval/runs/${RUN_ID}"
