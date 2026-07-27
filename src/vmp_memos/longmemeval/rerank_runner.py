@@ -47,6 +47,8 @@ class EvidenceReranker(Protocol):
     def rerank(
         self,
         *,
+        question_id: str | None = None,
+        source_method: str | None = None,
         question: str,
         question_date: str | None,
         candidates: Sequence[RetrievedMemory],
@@ -412,6 +414,8 @@ def _rerank_record(
     )
     started_at = perf_counter()
     decision = reranker.rerank(
+        question_id=source.question_id,
+        source_method=source.method,
         question=source.question,
         question_date=source.question_date,
         candidates=candidates,

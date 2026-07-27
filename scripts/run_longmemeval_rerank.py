@@ -141,7 +141,7 @@ def main() -> int:
         )
         replay_client = SelectorReplayClient(live_client, replay_cache)
         client = replay_client
-        checked_prompts = validate_selector_replay_source(
+        replay_preflight = validate_selector_replay_source(
             replay_cache,
             source_run=args.source_run,
             methods=methods,
@@ -149,17 +149,22 @@ def main() -> int:
             limit=args.limit,
         )
         LOGGER.info(
-            "Selector replay preflight passed: records=%d prompts_checked=%d "
-            "unique_cached_prompts=%d",
+            "Selector replay preflight passed: records=%d samples_checked=%d "
+            "exact_prompt_matches=%d prompt_mismatches=%d",
             replay_cache.record_count,
-            checked_prompts,
-            len(replay_cache.responses),
+            replay_preflight.records_checked,
+            replay_preflight.exact_prompt_matches,
+            replay_preflight.prompt_mismatches,
         )
         replay_metadata = {
             "selector_replay": True,
             "selector_replay_run": str(replay_cache.selector_run),
             "selector_replay_manifest_sha256": replay_cache.selector_manifest_sha256,
             "selector_replay_record_count": replay_cache.record_count,
+            "selector_replay_exact_prompt_matches": (
+                replay_preflight.exact_prompt_matches
+            ),
+            "selector_replay_prompt_mismatches": replay_preflight.prompt_mismatches,
         }
     else:
         client = live_client
@@ -220,6 +225,9 @@ def main() -> int:
                         "source_run": str(replay_client.cache.selector_run),
                         "cached_records": replay_client.cache.record_count,
                         "cache_hits": replay_client.selector_replay_hits,
+                        "runtime_prompt_mismatches": (
+                            replay_client.selector_prompt_mismatches
+                        ),
                         "live_boundary_calls": replay_client.boundary_live_calls,
                     }
                     if replay_client is not None

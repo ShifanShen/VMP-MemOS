@@ -25,6 +25,8 @@ from vmp_memos.llm.reranker import (
 from vmp_memos.llm.selector_replay import (
     SelectorReplayCache,
     SelectorReplayClient,
+    SelectorReplayEntry,
+    SelectorReplayPreflight,
     load_selector_replay_cache,
     validate_selector_replay_source,
 )
@@ -46,6 +48,8 @@ __all__ = [
     "ReaderOutput",
     "SelectorReplayCache",
     "SelectorReplayClient",
+    "SelectorReplayEntry",
+    "SelectorReplayPreflight",
     "VLLMClient",
     "VLLMClientConfig",
     "build_longmemeval_boundary_prompt",

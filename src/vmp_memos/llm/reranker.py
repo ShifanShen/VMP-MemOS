@@ -307,6 +307,8 @@ class LongMemEvalEvidenceReranker:
     def rerank(
         self,
         *,
+        question_id: str | None = None,
+        source_method: str | None = None,
         question: str,
         question_date: str | None,
         candidates: Sequence[RetrievedMemory],
@@ -326,6 +328,23 @@ class LongMemEvalEvidenceReranker:
             candidates=unique_candidates,
             config=self.config,
         )
+        replay_context_setter = getattr(
+            self.client,
+            "set_selector_replay_context",
+            None,
+        )
+        if replay_context_setter is not None:
+            if question_id is None or source_method is None:
+                raise ValueError(
+                    "selector replay requires source_method and question_id context"
+                )
+            replay_context_setter(
+                source_method=source_method,
+                question_id=question_id,
+                question=question,
+                question_date=question_date,
+                candidate_session_ids=original_ids,
+            )
         response = self.client.chat(
             [
                 ChatMessage(role="system", content=LONGMEMEVAL_RERANK_SYSTEM_PROMPT),

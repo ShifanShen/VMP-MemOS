@@ -9,10 +9,11 @@ slot label，并在服务端映射回 session ID。非法标签、格式错误�
 promotion 仍然安全回退到原始 Top-5。
 
 Dev 阶段可以精确复用已完成 V5.3 中保存的第一阶段 selector 响应。复用由
-candidate manifest SHA-256 和 selector prompt SHA-256 双重校验；任何候选顺序或
-selector prompt 变化都会立即停止，不会静默发起新的 selector 请求。因此 Dev
-replay 不使用 BGE-M3，也不会重跑第一阶段的 200 次 LLM 调用，只实时执行
-boundary verifier。
+candidate manifest SHA-256、`(source_method, question_id)` 样本身份和候选 session
+集合共同校验；原 selector prompt SHA-256 保留作审计，但不要求当前代码重新序列化
+出逐字节相同的 prompt。任何样本、问题或候选集合变化都会立即停止，不会静默发起
+新的 selector 请求。因此 Dev replay 不使用 BGE-M3，也不会重跑第一阶段的 200 次
+LLM 调用，只实时执行 boundary verifier。
 
 服务器终端 A 启动与原实验相同的本地 vLLM：
 

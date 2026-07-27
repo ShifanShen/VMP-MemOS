@@ -25,17 +25,49 @@ from vmp_memos.llm.reranker import (
 
 
 @dataclass(frozen=True)
+class SelectorReplayEntry:
+    """One saved selector response bound to a benchmark sample and candidate set."""
+
+    source_method: str
+    question_id: str
+    question: str
+    question_date: str | None
+    candidate_session_ids: frozenset[str]
+    prompt_sha256: str
+    response: LLMResponse
+
+
+@dataclass(frozen=True)
 class SelectorReplayCache:
-    """Validated selector responses indexed by their exact user-prompt hash."""
+    """Validated selector responses indexed by prompt hash and sample identity."""
 
     source_run: Path
     selector_run: Path
     selector_manifest_sha256: str
     source_manifest_sha256: str
     responses: dict[str, LLMResponse]
+    entries: dict[tuple[str, str], SelectorReplayEntry]
     record_count: int
     provider: str
     model: str
+
+
+@dataclass(frozen=True)
+class SelectorReplayPreflight:
+    """Audit result produced before the first live boundary request."""
+
+    records_checked: int
+    exact_prompt_matches: int
+    prompt_mismatches: int
+
+
+@dataclass(frozen=True)
+class _SelectorReplayContext:
+    source_method: str
+    question_id: str
+    question: str
+    question_date: str | None
+    candidate_session_ids: frozenset[str]
 
 
 class SelectorReplayClient:
@@ -51,6 +83,29 @@ class SelectorReplayClient:
         self.selector_replay_hits = 0
         self.boundary_live_calls = 0
         self.used_prompt_hashes: set[str] = set()
+        self.selector_prompt_mismatches = 0
+        self._selector_context: _SelectorReplayContext | None = None
+
+    def set_selector_replay_context(
+        self,
+        *,
+        source_method: str,
+        question_id: str,
+        question: str,
+        question_date: str | None,
+        candidate_session_ids: Sequence[str],
+    ) -> None:
+        """Bind the next selector call to one validated source sample."""
+
+        if self._selector_context is not None:
+            raise RuntimeError("selector replay context was overwritten before use")
+        self._selector_context = _SelectorReplayContext(
+            source_method=_normalize_method(source_method),
+            question_id=question_id,
+            question=question,
+            question_date=question_date,
+            candidate_session_ids=frozenset(candidate_session_ids),
+        )
 
     def chat(
         self,
@@ -64,20 +119,70 @@ class SelectorReplayClient:
             raise ValueError("selector replay requires exactly one system and one user message")
         system_prompt = messages[0].content
         if system_prompt == LONGMEMEVAL_RERANK_SYSTEM_PROMPT:
-            prompt_sha256 = hashlib.sha256(messages[1].content.encode("utf-8")).hexdigest()
-            response = self.cache.responses.get(prompt_sha256)
-            if response is None:
-                raise ValueError(
-                    "Selector replay cache miss. Candidate order or selector prompt settings "
-                    f"changed (prompt_sha256={prompt_sha256})."
-                )
+            current_prompt_sha256 = hashlib.sha256(
+                messages[1].content.encode("utf-8")
+            ).hexdigest()
+            entry = self._resolve_selector_entry(current_prompt_sha256)
+            self._selector_context = None
+            if current_prompt_sha256 != entry.prompt_sha256:
+                self.selector_prompt_mismatches += 1
             self.selector_replay_hits += 1
-            self.used_prompt_hashes.add(prompt_sha256)
-            return response.model_copy(deep=True)
+            self.used_prompt_hashes.add(entry.prompt_sha256)
+            raw_response = dict(entry.response.raw_response)
+            raw_response.update(
+                {
+                    "selector_replay": True,
+                    "source_method": entry.source_method,
+                    "question_id": entry.question_id,
+                    "source_prompt_sha256": entry.prompt_sha256,
+                    "current_prompt_sha256": current_prompt_sha256,
+                    "prompt_sha256_match": current_prompt_sha256
+                    == entry.prompt_sha256,
+                }
+            )
+            return entry.response.model_copy(
+                update={"raw_response": raw_response},
+                deep=True,
+            )
         if system_prompt != LONGMEMEVAL_BOUNDARY_SYSTEM_PROMPT:
             raise ValueError("selector replay client received an unknown prompt stage")
         self.boundary_live_calls += 1
         return self.delegate.chat(messages, generation=generation)
+
+    def _resolve_selector_entry(
+        self,
+        current_prompt_sha256: str,
+    ) -> SelectorReplayEntry:
+        context = self._selector_context
+        if context is None:
+            response = self.cache.responses.get(current_prompt_sha256)
+            if response is None:
+                raise ValueError(
+                    "Selector replay call has no sample context and its prompt SHA-256 "
+                    f"is not cached: {current_prompt_sha256}"
+                )
+            for cached_entry in self.cache.entries.values():
+                if cached_entry.prompt_sha256 == current_prompt_sha256:
+                    return cached_entry
+            raise ValueError("Selector replay cache is internally inconsistent")
+        key = (context.source_method, context.question_id)
+        entry = self.cache.entries.get(key)
+        if entry is None:
+            raise ValueError(
+                "Selector replay sample is not cached: "
+                f"method={context.source_method!r}, question_id={context.question_id!r}"
+            )
+        if entry.question != context.question or entry.question_date != context.question_date:
+            raise ValueError(
+                "Selector replay question content/date differs from the saved sample: "
+                f"method={context.source_method!r}, question_id={context.question_id!r}"
+            )
+        if entry.candidate_session_ids != context.candidate_session_ids:
+            raise ValueError(
+                "Selector replay candidate-session set differs from the saved sample: "
+                f"method={context.source_method!r}, question_id={context.question_id!r}"
+            )
+        return entry
 
 
 def load_selector_replay_cache(
@@ -117,6 +222,7 @@ def load_selector_replay_cache(
         raise ValueError("selector replay source manifest has no samples")
 
     responses: dict[str, LLMResponse] = {}
+    entries: dict[tuple[str, str], SelectorReplayEntry] = {}
     record_count = 0
     observed: set[tuple[str, str]] = set()
     for method in normalized_methods:
@@ -190,6 +296,48 @@ def load_selector_replay_cache(
                         f"Conflicting selector responses for prompt {prompt_sha256}"
                     )
                 responses[prompt_sha256] = response
+                question_id = _required_nonempty_string(
+                    payload.get("question_id"),
+                    name="question_id",
+                )
+                question = _required_nonempty_string(
+                    payload.get("question"),
+                    name="question",
+                )
+                question_date_value = payload.get("question_date")
+                question_date = (
+                    question_date_value.strip()
+                    if isinstance(question_date_value, str)
+                    else None
+                )
+                memory_values = payload.get("retrieved_memories")
+                if not isinstance(memory_values, list):
+                    raise ValueError(
+                        f"Selector replay record has no candidate memories: {question_id}"
+                    )
+                candidate_session_ids = frozenset(
+                    _memory_session_id(RetrievedMemory.model_validate(value))
+                    for value in memory_values
+                )
+                if not candidate_session_ids:
+                    raise ValueError(
+                        f"Selector replay record has no candidate sessions: {question_id}"
+                    )
+                key = (method, question_id)
+                if key in entries:
+                    raise ValueError(
+                        f"Duplicate selector replay sample: method={method!r}, "
+                        f"question_id={question_id!r}"
+                    )
+                entries[key] = SelectorReplayEntry(
+                    source_method=method,
+                    question_id=question_id,
+                    question=question,
+                    question_date=question_date,
+                    candidate_session_ids=candidate_session_ids,
+                    prompt_sha256=prompt_sha256,
+                    response=response,
+                )
                 method_count += 1
                 record_count += 1
         if method_count != expected_count:
@@ -208,6 +356,7 @@ def load_selector_replay_cache(
         selector_manifest_sha256=_sha256(selector_manifest_path),
         source_manifest_sha256=source_manifest_sha256,
         responses=responses,
+        entries=entries,
         record_count=record_count,
         provider=provider,
         model=model,
@@ -221,13 +370,16 @@ def validate_selector_replay_source(
     methods: Sequence[str],
     config: LongMemEvalRerankerConfig,
     limit: int | None = None,
-) -> int:
-    """Verify every current selector prompt is cached before any live LLM call."""
+) -> SelectorReplayPreflight:
+    """Verify sample identity and candidate sets before any live LLM call."""
+
+    from vmp_memos.longmemeval.retrieval_runner import RetrievalSampleRecord
 
     source_dir = Path(source_run).expanduser().resolve()
     if source_dir != cache.source_run:
         raise ValueError("Selector replay preflight source differs from the cache source")
     checked = 0
+    exact_prompt_matches = 0
     for method in _ordered_unique(_normalize_method(method) for method in methods):
         path = source_dir / method / "retrieval.jsonl"
         if not path.exists():
@@ -239,46 +391,49 @@ def validate_selector_replay_source(
                     continue
                 if limit is not None and method_checked >= limit:
                     break
-                payload = json.loads(line)
-                if not isinstance(payload, dict):
-                    raise ValueError(f"Expected JSON object in {path}")
-                question = payload.get("question")
-                question_date_value = payload.get("question_date")
-                memory_values = payload.get("retrieved_memories")
-                if not isinstance(question, str) or not question:
-                    raise ValueError(f"Selector replay source has no question in {path}")
-                if question_date_value is not None and not isinstance(
-                    question_date_value,
-                    str,
-                ):
-                    raise ValueError(f"Selector replay source has invalid question_date in {path}")
-                if not isinstance(memory_values, list):
-                    raise ValueError(f"Selector replay source has no memories in {path}")
-                parsed_memories = [
-                    RetrievedMemory.model_validate(value)
-                    for value in memory_values
-                ]
+                record = RetrievalSampleRecord.model_validate_json(line)
                 memories = prepare_longmemeval_rerank_candidates(
-                    parsed_memories,
+                    record.retrieved_memories,
                     candidate_count=config.candidate_count,
                 )
+                key = (method, record.question_id)
+                entry = cache.entries.get(key)
+                if entry is None:
+                    raise ValueError(
+                        "Selector replay preflight sample miss for "
+                        f"method={method!r}, question_id={record.question_id!r}"
+                    )
+                candidate_session_ids = frozenset(
+                    _memory_session_id(memory) for memory in memories
+                )
+                if (
+                    entry.question != record.question
+                    or entry.question_date != record.question_date
+                ):
+                    raise ValueError(
+                        "Selector replay preflight question/date mismatch for "
+                        f"method={method!r}, question_id={record.question_id!r}"
+                    )
+                if entry.candidate_session_ids != candidate_session_ids:
+                    raise ValueError(
+                        "Selector replay preflight candidate-session mismatch for "
+                        f"method={method!r}, question_id={record.question_id!r}"
+                    )
                 prompt = build_longmemeval_rerank_prompt(
-                    question=question,
-                    question_date=question_date_value,
+                    question=record.question,
+                    question_date=record.question_date,
                     candidates=memories,
                     config=config,
                 )
                 prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-                if prompt_sha256 not in cache.responses:
-                    question_id = payload.get("question_id")
-                    raise ValueError(
-                        "Selector replay preflight cache miss for "
-                        f"method={method!r}, question_id={question_id!r}, "
-                        f"prompt_sha256={prompt_sha256}"
-                    )
+                exact_prompt_matches += prompt_sha256 == entry.prompt_sha256
                 checked += 1
                 method_checked += 1
-    return checked
+    return SelectorReplayPreflight(
+        records_checked=checked,
+        exact_prompt_matches=exact_prompt_matches,
+        prompt_mismatches=checked - exact_prompt_matches,
+    )
 
 
 def _selector_records_path(selector_run: Path, source_method: str) -> Path:
@@ -313,6 +468,16 @@ def _sha256(path: Path) -> str:
 
 def _integer(value: object) -> int:
     return int(value) if isinstance(value, int | float) else 0
+
+
+def _memory_session_id(memory: RetrievedMemory) -> str:
+    return memory.source_session_id or memory.memory_id
+
+
+def _required_nonempty_string(value: object, *, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Selector replay record has no {name}")
+    return value.strip()
 
 
 def _normalize_method(method: str) -> str:
