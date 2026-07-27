@@ -35,7 +35,29 @@ def test_v53_gate_rejects_even_one_regressed_dev_question(tmp_path) -> None:
         write_gate_receipt(report, tmp_path / "v53-gate.json")
 
 
-def _write_runs(tmp_path, *, regressed_questions: int = 0):
+def test_v531_gate_accepts_only_the_symbolic_prompt_version(tmp_path) -> None:
+    prompt_version = "vmp_v531_symbolic_boundary_v1"
+    candidate_run, rerank_run = _write_runs(
+        tmp_path,
+        boundary_prompt_version=prompt_version,
+    )
+
+    report = evaluate_v53_gate(
+        candidate_run,
+        rerank_run,
+        expected_boundary_prompt_version=prompt_version,
+    )
+
+    assert report["status"] == "passed"
+    assert report["reranker"]["expected_boundary_prompt_version"] == prompt_version
+
+
+def _write_runs(
+    tmp_path,
+    *,
+    regressed_questions: int = 0,
+    boundary_prompt_version: str = "vmp_v53_selective_boundary_v1",
+):
     candidate_run = tmp_path / "candidates"
     rerank_run = tmp_path / "reranked"
     candidate_run.mkdir()
@@ -68,12 +90,14 @@ def _write_runs(tmp_path, *, regressed_questions: int = 0):
         reranked=True,
         recovered_questions=4,
         regressed_questions=regressed_questions,
+        boundary_prompt_version=boundary_prompt_version,
     )
     _write_summary(
         rerank_run / "vmp_tuned__vllm_boundary" / "summary.json",
         0.90,
         reranked=True,
         recovered_questions=3,
+        boundary_prompt_version=boundary_prompt_version,
     )
     return candidate_run, rerank_run
 
@@ -85,6 +109,7 @@ def _write_summary(
     reranked: bool = False,
     recovered_questions: int = 0,
     regressed_questions: int = 0,
+    boundary_prompt_version: str = "vmp_v53_selective_boundary_v1",
 ) -> None:
     payload = {
         "processed_questions": 100,
@@ -101,7 +126,7 @@ def _write_summary(
                 "reranker_provider": "vllm",
                 "reranker_model": "Qwen/Qwen2.5-7B-Instruct",
                 "prompt_version": "vmp_v52_evidence_set_v1",
-                "boundary_prompt_version": "vmp_v53_selective_boundary_v1",
+                "boundary_prompt_version": boundary_prompt_version,
                 "boundary_verification": True,
                 "candidate_count": 30,
                 "min_observed_candidate_count": 30,

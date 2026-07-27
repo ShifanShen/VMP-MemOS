@@ -28,6 +28,13 @@ from vmp_memos.schemas.base import (
 
 LONGMEMEVAL_RERANK_PROMPT_VERSION = "vmp_v52_evidence_set_v1"
 LONGMEMEVAL_BOUNDARY_PROMPT_VERSION = "vmp_v53_selective_boundary_v1"
+LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION = "vmp_v531_symbolic_boundary_v1"
+LONGMEMEVAL_BOUNDARY_PROMPT_VERSIONS = frozenset(
+    {
+        LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
+        LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
+    }
+)
 LONGMEMEVAL_RERANK_SYSTEM_PROMPT = (
     "You rank long-term memory evidence. Do not answer the question. "
     "Return only the requested JSON object."
@@ -102,6 +109,47 @@ Instructions:
     "decision":"keep|replace_one|replace_two",
     "confidence":"high|low"}}
 """
+LONGMEMEVAL_SYMBOLIC_BOUNDARY_USER_PROMPT = """\
+Choose the two open slots of a Top-5 long-term-memory evidence set. The first
+{protected_top_n} sessions are locked and will always remain in the final set.
+
+Question date:
+{question_date}
+
+Question:
+{question}
+
+Locked evidence (context only; LOCKED labels are not selectable):
+{protected_context}
+
+Original open-slot options:
+{original_boundary_context}
+
+Promotion options:
+{promotion_context}
+
+Selection procedure:
+1. Decompose the question into at most four atomic evidence needs.
+2. Identify which needs are already covered by the locked evidence.
+3. Choose exactly {open_slots} distinct labels from the selectable labels
+   {selectable_labels}. The locked evidence plus those choices must cover as
+   many different evidence needs as possible.
+4. Select a P option when it supplies essential evidence that is missing from
+   the locked evidence and the retained B options. Multi-session questions may
+   require both P options when they supply two complementary missing facts.
+5. For temporal and knowledge-update questions, preserve all dated states
+   needed to infer the sequence or latest valid fact.
+6. If a P option only repeats evidence already covered, keep the B options.
+7. Use confidence "high" only when every selected P option is directly and
+   unambiguously required. Low-confidence promotions will be rejected.
+
+The labels are opaque. Never output a LOCKED label, a session ID, or an answer
+to the question. Return exactly one JSON object:
+  {{"evidence_needs":["..."],
+    "needs_missing_after_locked":["..."],
+    "selected_slots":["B1","B2"],
+    "confidence":"high|low"}}
+"""
 
 _JSON_FENCE_PATTERN = re.compile(
     r"^\s*```(?:json)?\s*(.*?)\s*```\s*$",
@@ -165,7 +213,7 @@ class LongMemEvalRerankerConfig(SchemaModel):
             raise ValueError("ranked_output_count must be at least output_top_k")
         if self.ranked_output_count > self.candidate_count:
             raise ValueError("ranked_output_count cannot exceed candidate_count")
-        if self.boundary_prompt_version != LONGMEMEVAL_BOUNDARY_PROMPT_VERSION:
+        if self.boundary_prompt_version not in LONGMEMEVAL_BOUNDARY_PROMPT_VERSIONS:
             raise ValueError("unsupported LongMemEval boundary prompt version")
         if self.boundary_verification:
             if self.boundary_protected_top_n >= self.output_top_k:
@@ -201,6 +249,10 @@ class LongMemEvalBoundaryDecision(SchemaModel):
     evidence_needs: list[str] = Field(default_factory=list)
     original_boundary_session_ids: list[NonEmptyStr] = Field(default_factory=list)
     proposed_promotion_session_ids: list[NonEmptyStr] = Field(default_factory=list)
+    slot_session_ids: dict[NonEmptyStr, NonEmptyStr] = Field(default_factory=dict)
+    raw_selected_slot_labels: list[NonEmptyStr] = Field(default_factory=list)
+    selected_slot_labels: list[NonEmptyStr] = Field(default_factory=list)
+    invalid_slot_labels: list[NonEmptyStr] = Field(default_factory=list)
     raw_selected_boundary_session_ids: list[NonEmptyStr] = Field(default_factory=list)
     selected_boundary_session_ids: list[NonEmptyStr] = Field(default_factory=list)
     invalid_session_ids: list[NonEmptyStr] = Field(default_factory=list)
@@ -371,6 +423,7 @@ class LongMemEvalEvidenceReranker:
                 LongMemEvalBoundaryDecision(
                     call_made=False,
                     skipped_reason="selector proposed no out-of-Top-5 candidates",
+                    prompt_version=self.config.boundary_prompt_version,
                     original_boundary_session_ids=original_boundary,
                     selected_boundary_session_ids=original_boundary,
                 ),
@@ -407,18 +460,61 @@ class LongMemEvalEvidenceReranker:
         ):
             raise ValueError("selector and boundary verifier must use one provider/model")
         parsed, fallback_reason = _parse_rerank_response(response.text)
-        raw_selected = _string_list(parsed.get("selected_boundary_session_ids"))
-        allowed_boundary = set([*original_boundary, *promotions])
-        invalid_ids = [
-            session_id for session_id in raw_selected if session_id not in allowed_boundary
-        ]
-        valid_selected = _ordered_unique(
-            session_id for session_id in raw_selected if session_id in allowed_boundary
-        )
         open_slots = self.config.output_top_k - self.config.boundary_protected_top_n
         confidence = _normalized_string(parsed.get("confidence"))
-        decision_name = _normalized_string(parsed.get("decision"))
-        parse_fallback = len(valid_selected) != open_slots or bool(invalid_ids)
+        slot_session_ids = _boundary_slot_map(original_boundary, promotions)
+        raw_slot_labels: list[str] = []
+        selected_slot_labels: list[str] = []
+        invalid_slot_labels: list[str] = []
+        decision_name: str | None
+        if (
+            self.config.boundary_prompt_version
+            == LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION
+        ):
+            raw_slot_labels = _string_list(parsed.get("selected_slots"))
+            normalized_labels = [
+                _normalized_slot_label(label) for label in raw_slot_labels
+            ]
+            invalid_slot_labels = [
+                raw
+                for raw, normalized in zip(
+                    raw_slot_labels,
+                    normalized_labels,
+                    strict=True,
+                )
+                if normalized not in slot_session_ids
+            ]
+            selected_slot_labels = _ordered_unique(
+                label for label in normalized_labels if label in slot_session_ids
+            )
+            raw_selected = [
+                slot_session_ids[label]
+                for label in selected_slot_labels
+            ]
+            invalid_ids: list[str] = []
+            valid_selected = list(raw_selected)
+            parse_fallback = (
+                len(selected_slot_labels) != open_slots
+                or bool(invalid_slot_labels)
+            )
+            decision_name = _boundary_decision_name(
+                selected_slot_labels,
+            )
+        else:
+            raw_selected = _string_list(parsed.get("selected_boundary_session_ids"))
+            allowed_boundary = set([*original_boundary, *promotions])
+            invalid_ids = [
+                session_id
+                for session_id in raw_selected
+                if session_id not in allowed_boundary
+            ]
+            valid_selected = _ordered_unique(
+                session_id
+                for session_id in raw_selected
+                if session_id in allowed_boundary
+            )
+            parse_fallback = len(valid_selected) != open_slots or bool(invalid_ids)
+            decision_name = _normalized_string(parsed.get("decision"))
         proposed_change = set(valid_selected) != set(original_boundary)
         policy_rejected = (
             not parse_fallback
@@ -428,7 +524,13 @@ class LongMemEvalEvidenceReranker:
         if parse_fallback:
             selected_boundary = original_boundary
             fallback_reason = fallback_reason or (
-                f"boundary response must select exactly {open_slots} valid distinct IDs"
+                f"boundary response must select exactly {open_slots} valid distinct "
+                + (
+                    "slot labels"
+                    if self.config.boundary_prompt_version
+                    == LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION
+                    else "IDs"
+                )
             )
         elif policy_rejected:
             selected_boundary = original_boundary
@@ -438,6 +540,15 @@ class LongMemEvalEvidenceReranker:
             )
         else:
             selected_boundary = valid_selected if proposed_change else original_boundary
+        if (
+            self.config.boundary_prompt_version
+            == LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION
+        ):
+            selected_slot_labels = (
+                _slot_labels_for_sessions(slot_session_ids, selected_boundary)
+                if not parse_fallback and not policy_rejected
+                else [f"B{index}" for index in range(1, len(original_boundary) + 1)]
+            )
         final_top_k = _ordered_unique([*protected, *selected_boundary])
         ranked_ids = _ordered_unique(
             [
@@ -459,6 +570,7 @@ class LongMemEvalEvidenceReranker:
         return (
             LongMemEvalBoundaryDecision(
                 call_made=True,
+                prompt_version=self.config.boundary_prompt_version,
                 prompt_sha256=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                 provider=response.provider,
                 model=response.model,
@@ -466,6 +578,10 @@ class LongMemEvalEvidenceReranker:
                 evidence_needs=_string_list(parsed.get("evidence_needs"))[:4],
                 original_boundary_session_ids=original_boundary,
                 proposed_promotion_session_ids=promotions,
+                slot_session_ids=slot_session_ids,
+                raw_selected_slot_labels=raw_slot_labels,
+                selected_slot_labels=selected_slot_labels,
+                invalid_slot_labels=invalid_slot_labels,
                 raw_selected_boundary_session_ids=raw_selected,
                 selected_boundary_session_ids=selected_boundary,
                 invalid_session_ids=invalid_ids,
@@ -522,7 +638,20 @@ def build_longmemeval_boundary_prompt(
     promotions: Sequence[RetrievedMemory],
     config: LongMemEvalRerankerConfig,
 ) -> str:
-    """Render the fixed framework-agnostic V5.3 boundary verification prompt."""
+    """Render one fixed framework-agnostic boundary verification prompt."""
+
+    if (
+        config.boundary_prompt_version
+        == LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION
+    ):
+        return _build_symbolic_boundary_prompt(
+            question=question,
+            question_date=question_date,
+            protected=protected,
+            original_boundary=original_boundary,
+            promotions=promotions,
+            config=config,
+        )
 
     def context(role: str, memories: Sequence[RetrievedMemory]) -> str:
         if not memories:
@@ -550,6 +679,110 @@ def build_longmemeval_boundary_prompt(
         promotion_context=context("proposed-promotion", promotions),
         open_slots=config.output_top_k - config.boundary_protected_top_n,
     )
+
+
+def _build_symbolic_boundary_prompt(
+    *,
+    question: str,
+    question_date: str | None,
+    protected: Sequence[RetrievedMemory],
+    original_boundary: Sequence[RetrievedMemory],
+    promotions: Sequence[RetrievedMemory],
+    config: LongMemEvalRerankerConfig,
+) -> str:
+    """Render V5.3.1 without exposing selectable session IDs to the model."""
+
+    def context(
+        prefix: str,
+        memories: Sequence[RetrievedMemory],
+        *,
+        description: str,
+    ) -> str:
+        if not memories:
+            return "(none)"
+        blocks: list[str] = []
+        for index, memory in enumerate(memories, start=1):
+            excerpt = candidate_excerpt(
+                question,
+                memory.content,
+                max_chars=config.max_candidate_chars,
+                max_turns=config.max_excerpt_turns,
+            )
+            blocks.append(
+                f"[{prefix}{index} | {description} | "
+                f"date={memory.source_date or 'unknown'}]\n{excerpt}"
+            )
+        return "\n\n".join(blocks)
+
+    slot_labels = [
+        *[f"B{index}" for index in range(1, len(original_boundary) + 1)],
+        *[f"P{index}" for index in range(1, len(promotions) + 1)],
+    ]
+    return LONGMEMEVAL_SYMBOLIC_BOUNDARY_USER_PROMPT.format(
+        question_date=question_date or "unknown",
+        question=question,
+        protected_top_n=config.boundary_protected_top_n,
+        protected_context=context(
+            "LOCKED-",
+            protected,
+            description="already retained",
+        ),
+        original_boundary_context=context(
+            "B",
+            original_boundary,
+            description="selectable original",
+        ),
+        promotion_context=context(
+            "P",
+            promotions,
+            description="selectable promotion",
+        ),
+        open_slots=config.output_top_k - config.boundary_protected_top_n,
+        selectable_labels=", ".join(slot_labels),
+    )
+
+
+def _boundary_slot_map(
+    original_boundary: Sequence[str],
+    promotions: Sequence[str],
+) -> dict[str, str]:
+    return {
+        **{
+            f"B{index}": session_id
+            for index, session_id in enumerate(original_boundary, start=1)
+        },
+        **{
+            f"P{index}": session_id
+            for index, session_id in enumerate(promotions, start=1)
+        },
+    }
+
+
+def _normalized_slot_label(value: str) -> str:
+    return re.sub(r"\s+", "", value).upper()
+
+
+def _slot_labels_for_sessions(
+    slot_session_ids: dict[str, str],
+    selected_session_ids: Sequence[str],
+) -> list[str]:
+    by_session = {
+        session_id: label for label, session_id in slot_session_ids.items()
+    }
+    return [
+        by_session[session_id]
+        for session_id in selected_session_ids
+        if session_id in by_session
+    ]
+
+
+def _boundary_decision_name(
+    selected_slot_labels: Sequence[str],
+) -> str:
+    promotions = sum(label.startswith("P") for label in selected_slot_labels)
+    if promotions == 0:
+        return "keep"
+    return "replace_one" if promotions == 1 else "replace_two"
 
 
 def guarded_session_ranking(

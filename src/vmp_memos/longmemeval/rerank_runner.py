@@ -83,6 +83,7 @@ class RerankMethodSummary(RetrievalMethodSummary):
     boundary_parse_fallbacks: NonNegativeInt = 0
     boundary_parse_fallback_rate: NonNegativeFloat = 0.0
     boundary_invalid_session_id_count: NonNegativeInt = 0
+    boundary_invalid_slot_label_count: NonNegativeInt = 0
     boundary_policy_rejections: NonNegativeInt = 0
     boundary_replacements_accepted: NonNegativeInt = 0
     mean_boundary_latency_ms: NonNegativeFloat = 0.0
@@ -347,6 +348,9 @@ def summarize_rerank_method(
             "boundary_invalid_session_id_count": sum(
                 len(_boundary_list(record, "invalid_session_ids")) for record in records
             ),
+            "boundary_invalid_slot_label_count": sum(
+                len(_boundary_list(record, "invalid_slot_labels")) for record in records
+            ),
             "boundary_policy_rejections": sum(
                 _boundary_bool(record, "policy_rejected") for record in records
             ),
@@ -547,6 +551,8 @@ def _prepare_manifest(
         reranker_signature = signature.get("reranker")
         if not isinstance(reranker_signature, dict):
             raise ValueError("rerank signature is missing its reranker config")
+        metadata = signature.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
         path.parent.mkdir(parents=True, exist_ok=True)
         manifest = {
             "schema_version": "2.0",
@@ -574,6 +580,11 @@ def _prepare_manifest(
                 "same_generation": True,
                 "two_stage_boundary_verification": bool(
                     reranker_signature.get("boundary_verification")
+                ),
+                "selector_replayed": metadata.get("selector_replay") is True,
+                "selector_replay_run": metadata.get("selector_replay_run"),
+                "selector_replay_manifest_sha256": metadata.get(
+                    "selector_replay_manifest_sha256"
                 ),
                 "gold_labels_visible_to_reranker": False,
             },

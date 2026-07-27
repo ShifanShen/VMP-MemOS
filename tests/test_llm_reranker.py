@@ -8,6 +8,7 @@ import pytest
 
 from vmp_memos.frameworks import RetrievedMemory
 from vmp_memos.llm import (
+    LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
     LLMGenerationConfig,
     LLMResponse,
     LongMemEvalEvidenceReranker,
@@ -207,6 +208,103 @@ def test_v53_boundary_verifier_rejects_low_confidence_replacement() -> None:
     assert decision.boundary.policy_rejected is True
     assert decision.boundary.replacement_accepted is False
     assert decision.parse_fallback is False
+
+
+def test_v531_symbolic_boundary_promotes_without_exposing_session_ids() -> None:
+    client = FakeRerankClient(
+        [
+            json_response(
+                selected=["s1", "s2", "s6", "s7"],
+                ranked=["s1", "s2", "s6", "s7", "s3"],
+            ),
+            """
+            {
+              "evidence_needs": ["first missing fact", "second missing fact"],
+              "needs_missing_after_locked": ["first missing fact", "second missing fact"],
+              "selected_slots": ["p1", " P2 "],
+              "confidence": "high"
+            }
+            """,
+        ]
+    )
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(
+            candidate_count=7,
+            protected_top_n=3,
+            ranked_output_count=7,
+            boundary_verification=True,
+            boundary_prompt_version=LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
+        ),
+    )
+
+    decision = reranker.rerank(
+        question="Which two facts jointly answer the question?",
+        question_date="2024-02-01",
+        candidates=_memories(7),
+    )
+
+    assert decision.selected_session_ids == ["s1", "s2", "s3", "s6", "s7"]
+    assert decision.boundary is not None
+    assert decision.boundary.prompt_version == LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION
+    assert decision.boundary.raw_selected_slot_labels == ["p1", "P2"]
+    assert decision.boundary.selected_slot_labels == ["P1", "P2"]
+    assert decision.boundary.slot_session_ids == {
+        "B1": "s4",
+        "B2": "s5",
+        "P1": "s6",
+        "P2": "s7",
+    }
+    assert decision.boundary.decision == "replace_two"
+    assert decision.boundary.replacement_accepted is True
+    assert decision.boundary.parse_fallback is False
+    prompt = client.all_messages[1][1].content
+    assert "session_id=" not in prompt
+    assert "[LOCKED-1 |" in prompt
+    assert "[B1 |" in prompt
+    assert "[P1 |" in prompt
+    assert '"selected_slots"' in prompt
+
+
+def test_v531_symbolic_boundary_fails_closed_on_locked_label() -> None:
+    client = FakeRerankClient(
+        [
+            json_response(
+                selected=["s1", "s2", "s6", "s7"],
+                ranked=["s1", "s2", "s6", "s7", "s3"],
+            ),
+            """
+            {
+              "evidence_needs": ["missing fact"],
+              "needs_missing_after_locked": ["missing fact"],
+              "selected_slots": ["LOCKED-1", "P1"],
+              "confidence": "high"
+            }
+            """,
+        ]
+    )
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(
+            candidate_count=7,
+            protected_top_n=3,
+            ranked_output_count=7,
+            boundary_verification=True,
+            boundary_prompt_version=LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
+        ),
+    )
+
+    decision = reranker.rerank(
+        question="What happened?",
+        question_date=None,
+        candidates=_memories(7),
+    )
+
+    assert decision.selected_session_ids == ["s1", "s2", "s3", "s4", "s5"]
+    assert decision.boundary is not None
+    assert decision.boundary.invalid_slot_labels == ["LOCKED-1"]
+    assert decision.boundary.parse_fallback is True
+    assert decision.boundary.replacement_accepted is False
 
 
 def json_response(*, selected: list[str], ranked: list[str]) -> str:

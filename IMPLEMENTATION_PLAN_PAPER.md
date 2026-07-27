@@ -1179,6 +1179,9 @@ P15.2. [done] VMP-v5.2 shared local-vLLM Top-30 evidence-set reranking,
 P15.3. [done: implementation] VMP-v5.3 shared two-stage selective boundary
        verification, zero-regression Dev gate, and sealed Test workflow;
        server Dev experiment pending
+P15.3.1. [done: implementation] symbolic B1/B2/P1/P2 boundary protocol,
+         protected-ID hiding, exact selector replay, unchanged strict Dev gate;
+         server boundary-only Dev replay pending
 P16. Local-vLLM atomic-memory writer + hierarchical-memory ablation
 P17. Fresh external/final benchmark after architecture freeze
 P18. Fallback style baselines only if needed

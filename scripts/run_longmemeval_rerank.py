@@ -9,12 +9,19 @@ import logging
 import os
 from pathlib import Path
 
+from pydantic import JsonValue
+
 from vmp_memos.llm import (
+    LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
+    LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
     LLMGenerationConfig,
     LongMemEvalEvidenceReranker,
     LongMemEvalRerankerConfig,
+    SelectorReplayClient,
     VLLMClient,
     VLLMClientConfig,
+    load_selector_replay_cache,
+    validate_selector_replay_source,
 )
 from vmp_memos.longmemeval.rerank_runner import (
     LongMemEvalRerankRunConfig,
@@ -62,10 +69,21 @@ def main() -> int:
     parser.add_argument("--max-excerpt-turns", type=int, default=4)
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--boundary-verification", action="store_true")
+    parser.add_argument(
+        "--boundary-prompt-version",
+        default=LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
+        help="Boundary protocol version; defaults to the legacy V5.3 protocol.",
+    )
     parser.add_argument("--boundary-protected-top-n", type=int, default=3)
     parser.add_argument("--boundary-max-promotions", type=int, default=2)
     parser.add_argument("--boundary-max-tokens", type=int, default=256)
     parser.add_argument("--boundary-min-confidence", default="high")
+    parser.add_argument(
+        "--selector-replay-run",
+        type=Path,
+        default=None,
+        help="Replay exact first-stage selector responses from a completed rerank run.",
+    )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
@@ -73,6 +91,8 @@ def main() -> int:
     methods = [method.strip() for method in args.methods.split(",") if method.strip()]
     if not methods:
         parser.error("--methods must contain at least one method")
+    if args.selector_replay_run is not None and not args.boundary_verification:
+        parser.error("--selector-replay-run requires --boundary-verification")
     generation = LLMGenerationConfig(
         max_tokens=args.max_tokens,
         temperature=0.0,
@@ -83,7 +103,7 @@ def main() -> int:
         temperature=0.0,
         top_p=1.0,
     )
-    client = VLLMClient(
+    live_client = VLLMClient(
         VLLMClientConfig(
             base_url=args.base_url,
             model=args.model,
@@ -94,26 +114,63 @@ def main() -> int:
             generation=generation,
         )
     )
+    reranker_config = LongMemEvalRerankerConfig(
+        candidate_count=args.candidate_count,
+        output_top_k=args.output_top_k,
+        protected_top_n=args.protected_top_n,
+        ranked_output_count=args.ranked_output_count,
+        max_candidate_chars=args.max_candidate_chars,
+        max_excerpt_turns=args.max_excerpt_turns,
+        generation=generation,
+        boundary_verification=args.boundary_verification,
+        boundary_prompt_version=args.boundary_prompt_version,
+        boundary_protected_top_n=args.boundary_protected_top_n,
+        boundary_max_promotions=args.boundary_max_promotions,
+        boundary_min_confidence=args.boundary_min_confidence,
+        boundary_generation=boundary_generation,
+    )
+    replay_client: SelectorReplayClient | None = None
+    replay_metadata: dict[str, JsonValue] = {}
+    client: VLLMClient | SelectorReplayClient
+    if args.selector_replay_run is not None:
+        replay_cache = load_selector_replay_cache(
+            args.selector_replay_run,
+            source_run=args.source_run,
+            methods=methods,
+            expected_model=args.model,
+        )
+        replay_client = SelectorReplayClient(live_client, replay_cache)
+        client = replay_client
+        checked_prompts = validate_selector_replay_source(
+            replay_cache,
+            source_run=args.source_run,
+            methods=methods,
+            config=reranker_config,
+            limit=args.limit,
+        )
+        LOGGER.info(
+            "Selector replay preflight passed: records=%d prompts_checked=%d "
+            "unique_cached_prompts=%d",
+            replay_cache.record_count,
+            checked_prompts,
+            len(replay_cache.responses),
+        )
+        replay_metadata = {
+            "selector_replay": True,
+            "selector_replay_run": str(replay_cache.selector_run),
+            "selector_replay_manifest_sha256": replay_cache.selector_manifest_sha256,
+            "selector_replay_record_count": replay_cache.record_count,
+        }
+    else:
+        client = live_client
     reranker = LongMemEvalEvidenceReranker(
         client,
-        LongMemEvalRerankerConfig(
-            candidate_count=args.candidate_count,
-            output_top_k=args.output_top_k,
-            protected_top_n=args.protected_top_n,
-            ranked_output_count=args.ranked_output_count,
-            max_candidate_chars=args.max_candidate_chars,
-            max_excerpt_turns=args.max_excerpt_turns,
-            generation=generation,
-            boundary_verification=args.boundary_verification,
-            boundary_protected_top_n=args.boundary_protected_top_n,
-            boundary_max_promotions=args.boundary_max_promotions,
-            boundary_min_confidence=args.boundary_min_confidence,
-            boundary_generation=boundary_generation,
-        ),
+        reranker_config,
     )
     LOGGER.info(
         "Starting shared rerank: source=%s run_id=%s methods=%s "
-        "model=%s candidates=%d protect=%d/%d boundary=%s resume=%s",
+        "model=%s candidates=%d protect=%d/%d boundary=%s selector_replay=%s "
+        "resume=%s",
         args.source_run,
         args.run_id,
         ",".join(methods),
@@ -122,6 +179,7 @@ def main() -> int:
         args.protected_top_n,
         args.output_top_k,
         args.boundary_verification,
+        args.selector_replay_run,
         args.resume,
     )
     result = run_longmemeval_rerank(
@@ -133,10 +191,14 @@ def main() -> int:
             limit=args.limit,
             metadata={
                 "paper_version": (
-                    "VMP-v5.3" if args.boundary_verification else "VMP-v5.2"
+                    "VMP-v5.3.1"
+                    if args.boundary_prompt_version
+                    == LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION
+                    else ("VMP-v5.3" if args.boundary_verification else "VMP-v5.2")
                 ),
                 "shared_across_frameworks": True,
                 "test_labels_used": False,
+                **replay_metadata,
             },
         ),
         reranker=reranker,
@@ -153,6 +215,16 @@ def main() -> int:
                     for method, summary in result.summaries.items()
                 },
                 "test_labels_used": False,
+                "selector_replay": (
+                    {
+                        "source_run": str(replay_client.cache.selector_run),
+                        "cached_records": replay_client.cache.record_count,
+                        "cache_hits": replay_client.selector_replay_hits,
+                        "live_boundary_calls": replay_client.boundary_live_calls,
+                    }
+                    if replay_client is not None
+                    else None
+                ),
             },
             ensure_ascii=False,
             indent=2,

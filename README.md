@@ -1,5 +1,47 @@
 # VMP-MemOS
 
+## VMP-v5.3.1 symbolic boundary replay
+
+V5.3.1 修复了 V5.3 真实运行中暴露出的输出协议歧义。受保护的 Top-3
+只以 `LOCKED-1..3` 展示，开放槽位和 promotion 分别使用
+`B1/B2/P1/P2`；LLM 不再看到或返回真实 session ID。程序只接受两个合法
+slot label，并在服务端映射回 session ID。非法标签、格式错误和低置信度
+promotion 仍然安全回退到原始 Top-5。
+
+Dev 阶段可以精确复用已完成 V5.3 中保存的第一阶段 selector 响应。复用由
+candidate manifest SHA-256 和 selector prompt SHA-256 双重校验；任何候选顺序或
+selector prompt 变化都会立即停止，不会静默发起新的 selector 请求。因此 Dev
+replay 不使用 BGE-M3，也不会重跑第一阶段的 200 次 LLM 调用，只实时执行
+boundary verifier。
+
+服务器终端 A 启动与原实验相同的本地 vLLM：
+
+```bash
+export VMP_LLM_API_KEY="local-vllm-key"
+export VMP_LLM_MODEL="Qwen/Qwen2.5-7B-Instruct"
+export VMP_VLLM_ENABLE_TOOL_CALLING=0
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+uv run --no-sync bash scripts/serve_vllm.sh
+```
+
+终端 B 复用已经存在的
+`lme_dev_vmp_v53_candidates_seed42` 和 `lme_dev_vmp_v53_rerank_seed42`：
+
+```bash
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=dev_replay \
+uv run --no-sync bash scripts/run_vmp_v531_experiment.sh
+```
+
+日志位于 `outputs/longmemeval/logs/vmp_v531_dev_replay.log`，新结果位于
+`outputs/longmemeval/runs/lme_dev_vmp_v531_replay_seed42`。只有生成
+`outputs/longmemeval/gates/vmp_v531_seed42_dev_pass.json` 后才能运行
+`STAGE=test_candidates` 和 `STAGE=test_rerank`。`exit_code=3` 明确表示实验已经
+完成但严格 Dev 质量门禁未通过，不表示进程崩溃。
+
 ## VMP-v5.3 selective boundary verification
 
 V5.3 保留框架无关的 V5.2 Top-30 selector，但在受保护的 Top-3 后开放

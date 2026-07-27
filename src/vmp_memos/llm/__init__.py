@@ -10,6 +10,7 @@ from vmp_memos.llm.reader import (
 from vmp_memos.llm.reranker import (
     LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_RERANK_PROMPT_VERSION,
+    LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
     LongMemEvalBoundaryDecision,
     LongMemEvalEvidenceReranker,
     LongMemEvalRerankDecision,
@@ -20,11 +21,18 @@ from vmp_memos.llm.reranker import (
     guarded_session_ranking,
     reorder_memories,
 )
+from vmp_memos.llm.selector_replay import (
+    SelectorReplayCache,
+    SelectorReplayClient,
+    load_selector_replay_cache,
+    validate_selector_replay_source,
+)
 from vmp_memos.llm.vllm_client import VLLMClient, VLLMClientConfig, load_vllm_config
 
 __all__ = [
     "LONGMEMEVAL_BOUNDARY_PROMPT_VERSION",
     "LONGMEMEVAL_RERANK_PROMPT_VERSION",
+    "LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION",
     "ChatMessage",
     "LLMGenerationConfig",
     "LLMResponse",
@@ -35,6 +43,8 @@ __all__ = [
     "LongMemEvalRerankDecision",
     "LongMemEvalRerankerConfig",
     "ReaderOutput",
+    "SelectorReplayCache",
+    "SelectorReplayClient",
     "VLLMClient",
     "VLLMClientConfig",
     "build_longmemeval_boundary_prompt",
@@ -42,6 +52,8 @@ __all__ = [
     "build_longmemeval_rerank_prompt",
     "candidate_excerpt",
     "guarded_session_ranking",
+    "load_selector_replay_cache",
     "load_vllm_config",
     "reorder_memories",
+    "validate_selector_replay_source",
 ]

@@ -32,6 +32,7 @@ def evaluate_v53_gate(
     max_regressed_questions: int = 0,
     min_recovered_questions: int = 3,
     min_candidate_count: int = 30,
+    expected_boundary_prompt_version: str = LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
 ) -> dict[str, JsonValue]:
     """Evaluate the two-stage policy without reading Test labels or dataset rows."""
 
@@ -144,7 +145,7 @@ def evaluate_v53_gate(
             and reranked_v43.get("boundary_verification") is True
             and selector_prompt == LONGMEMEVAL_RERANK_PROMPT_VERSION
             and baseline_selector_prompt == selector_prompt
-            and boundary_prompt == LONGMEMEVAL_BOUNDARY_PROMPT_VERSION
+            and boundary_prompt == expected_boundary_prompt_version
             and baseline_boundary_prompt == boundary_prompt
         ),
         "candidate_depth": (
@@ -214,6 +215,7 @@ def evaluate_v53_gate(
                 "model": model,
                 "selector_prompt_version": selector_prompt,
                 "boundary_prompt_version": boundary_prompt,
+                "expected_boundary_prompt_version": expected_boundary_prompt_version,
                 "candidate_count": candidate_count,
                 "min_observed_candidate_count": observed_candidate_count,
                 "baseline_min_observed_candidate_count": (
