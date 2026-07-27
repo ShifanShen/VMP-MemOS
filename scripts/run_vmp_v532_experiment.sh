@@ -102,6 +102,10 @@ create_split() {
 run_candidates() {
   local split_name="$1"
   local run_id="$2"
+  local dev_args=()
+  if [[ "${split_name}" == "dev" ]]; then
+    dev_args=(--allow-dev-model-selection)
+  fi
   python scripts/run_longmemeval_retrieval.py \
     --data "${DATA_PATH}" \
     --split-manifest "${SPLIT_PATH}" \
@@ -118,7 +122,8 @@ run_candidates() {
     --embedding-cache-db "${EMBEDDING_CACHE_DB}" \
     --embedding-batch-size "${EMBEDDING_BATCH_SIZE}" \
     --prewarm-embeddings \
-    --run-id "${run_id}"
+    --run-id "${run_id}" \
+    "${dev_args[@]}"
 }
 
 run_rerank() {
