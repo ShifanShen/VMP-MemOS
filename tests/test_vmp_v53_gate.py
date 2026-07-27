@@ -52,6 +52,23 @@ def test_v531_gate_accepts_only_the_symbolic_prompt_version(tmp_path) -> None:
     assert report["reranker"]["expected_boundary_prompt_version"] == prompt_version
 
 
+def test_v532_gate_accepts_only_the_atomic_set_prompt_version(tmp_path) -> None:
+    prompt_version = "vmp_v532_atomic_set_boundary_v1"
+    candidate_run, rerank_run = _write_runs(
+        tmp_path,
+        boundary_prompt_version=prompt_version,
+    )
+
+    report = evaluate_v53_gate(
+        candidate_run,
+        rerank_run,
+        expected_boundary_prompt_version=prompt_version,
+    )
+
+    assert report["status"] == "passed"
+    assert report["reranker"]["expected_boundary_prompt_version"] == prompt_version
+
+
 def _write_runs(
     tmp_path,
     *,

@@ -12,7 +12,7 @@ import json
 import re
 from collections.abc import Iterable, Sequence
 from time import perf_counter
-from typing import Protocol
+from typing import Protocol, cast
 
 from pydantic import Field, JsonValue, PositiveInt, model_validator
 
@@ -29,10 +29,12 @@ from vmp_memos.schemas.base import (
 LONGMEMEVAL_RERANK_PROMPT_VERSION = "vmp_v52_evidence_set_v1"
 LONGMEMEVAL_BOUNDARY_PROMPT_VERSION = "vmp_v53_selective_boundary_v1"
 LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION = "vmp_v531_symbolic_boundary_v1"
+LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION = "vmp_v532_atomic_set_boundary_v1"
 LONGMEMEVAL_BOUNDARY_PROMPT_VERSIONS = frozenset(
     {
         LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
         LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
+        LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
     }
 )
 LONGMEMEVAL_RERANK_SYSTEM_PROMPT = (
@@ -150,6 +152,55 @@ to the question. Return exactly one JSON object:
     "selected_slots":["B1","B2"],
     "confidence":"high|low"}}
 """
+LONGMEMEVAL_ATOMIC_BOUNDARY_USER_PROMPT = """\
+Audit the complete Top-5 long-term-memory evidence set. The first
+{protected_top_n} sessions are locked. You must choose the remaining
+{open_slots} slots from the original B options and selector-proposed P options.
+
+Question date:
+{question_date}
+
+Question:
+{question}
+
+Locked evidence already in both candidate sets (LOCKED labels are not selectable):
+{protected_context}
+
+Original Top-5 open slots:
+{original_boundary_context}
+
+Selector-proposed alternatives:
+{promotion_context}
+
+Evidence-first procedure:
+1. Decompose the question into at most four atomic needs, named N1 through N4.
+2. Read the complete locked+B and locked+P evidence sets. Do not judge a slot
+   from topic similarity alone.
+3. For every P slot you select, copy one short verbatim quote from that slot's
+   excerpt. The quote must directly support a missing need and must not be
+   invented or paraphrased.
+4. Keep B by default. Select P only when its quoted fact or dated state adds
+   essential evidence not supplied by the locked evidence and retained B slots.
+5. Multi-session counting/list questions require every distinct contributing
+   fact. Temporal questions require the dated states needed for comparison.
+6. Use confidence "high" only when every selected P has a directly grounded
+   quote. Low-confidence changes are rejected.
+
+Labels are opaque. Never output a LOCKED label, a session ID, or a final answer.
+Return exactly one JSON object:
+  {{"evidence_needs":["N1: ..."],
+    "needs_missing_after_locked":["N1"],
+    "slot_assessments":[
+      {{"slot":"P1","supports_needs":["N1"],
+        "evidence_quote":"verbatim text copied from P1",
+        "adds_missing_evidence":true}}
+    ],
+    "selected_slots":["B1","P1"],
+    "confidence":"high|low"}}
+
+selected_slots must contain exactly {open_slots} distinct labels from
+{selectable_labels}. Include a slot_assessments entry for every selected P slot.
+"""
 
 _JSON_FENCE_PATTERN = re.compile(
     r"^\s*```(?:json)?\s*(.*?)\s*```\s*$",
@@ -220,9 +271,7 @@ class LongMemEvalRerankerConfig(SchemaModel):
                 raise ValueError("V5.3 boundary verification must leave open Top-k slots")
             open_slots = self.output_top_k - self.boundary_protected_top_n
             if self.boundary_max_promotions < open_slots:
-                raise ValueError(
-                    "V5.3 boundary_max_promotions must cover every open Top-k slot"
-                )
+                raise ValueError("V5.3 boundary_max_promotions must cover every open Top-k slot")
             if self.boundary_min_confidence != "high":
                 raise ValueError("V5.3 paper policy requires high-confidence promotion")
         if float(self.generation.temperature) != 0.0:
@@ -247,6 +296,7 @@ class LongMemEvalBoundaryDecision(SchemaModel):
     model: str | None = None
     finish_reason: str | None = None
     evidence_needs: list[str] = Field(default_factory=list)
+    needs_missing_after_locked: list[str] = Field(default_factory=list)
     original_boundary_session_ids: list[NonEmptyStr] = Field(default_factory=list)
     proposed_promotion_session_ids: list[NonEmptyStr] = Field(default_factory=list)
     slot_session_ids: dict[NonEmptyStr, NonEmptyStr] = Field(default_factory=dict)
@@ -256,6 +306,8 @@ class LongMemEvalBoundaryDecision(SchemaModel):
     raw_selected_boundary_session_ids: list[NonEmptyStr] = Field(default_factory=list)
     selected_boundary_session_ids: list[NonEmptyStr] = Field(default_factory=list)
     invalid_session_ids: list[NonEmptyStr] = Field(default_factory=list)
+    slot_assessments: list[dict[str, JsonValue]] = Field(default_factory=list)
+    atomic_support_failures: list[NonEmptyStr] = Field(default_factory=list)
     decision: str | None = None
     confidence: str | None = None
     replacement_accepted: bool = False
@@ -290,6 +342,10 @@ class LongMemEvalRerankDecision(SchemaModel):
     output_tokens: NonNegativeInt = 0
     usage: dict[str, JsonValue] = Field(default_factory=dict)
     response_text: str = ""
+    selector_replay: bool = False
+    selector_prompt_sha256_match: bool | None = None
+    selector_source_prompt_sha256: str | None = None
+    selector_current_prompt_sha256: str | None = None
     boundary: LongMemEvalBoundaryDecision | None = None
 
 
@@ -335,9 +391,7 @@ class LongMemEvalEvidenceReranker:
         )
         if replay_context_setter is not None:
             if question_id is None or source_method is None:
-                raise ValueError(
-                    "selector replay requires source_method and question_id context"
-                )
+                raise ValueError("selector replay requires source_method and question_id context")
             replay_context_setter(
                 source_method=source_method,
                 question_id=question_id,
@@ -416,6 +470,16 @@ class LongMemEvalEvidenceReranker:
             output_tokens=output_tokens,
             usage=response.usage,
             response_text=response.text.strip(),
+            selector_replay=response.raw_response.get("selector_replay") is True,
+            selector_prompt_sha256_match=_optional_bool(
+                response.raw_response.get("prompt_sha256_match")
+            ),
+            selector_source_prompt_sha256=_optional_string(
+                response.raw_response.get("source_prompt_sha256")
+            ),
+            selector_current_prompt_sha256=_optional_string(
+                response.raw_response.get("current_prompt_sha256")
+            ),
             boundary=boundary,
         )
 
@@ -488,15 +552,12 @@ class LongMemEvalEvidenceReranker:
         raw_slot_labels: list[str] = []
         selected_slot_labels: list[str] = []
         invalid_slot_labels: list[str] = []
+        slot_assessments: list[dict[str, JsonValue]] = []
+        atomic_support_failures: list[str] = []
         decision_name: str | None
-        if (
-            self.config.boundary_prompt_version
-            == LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION
-        ):
+        if _uses_symbolic_boundary_slots(self.config.boundary_prompt_version):
             raw_slot_labels = _string_list(parsed.get("selected_slots"))
-            normalized_labels = [
-                _normalized_slot_label(label) for label in raw_slot_labels
-            ]
+            normalized_labels = [_normalized_slot_label(label) for label in raw_slot_labels]
             invalid_slot_labels = [
                 raw
                 for raw, normalized in zip(
@@ -509,16 +570,10 @@ class LongMemEvalEvidenceReranker:
             selected_slot_labels = _ordered_unique(
                 label for label in normalized_labels if label in slot_session_ids
             )
-            raw_selected = [
-                slot_session_ids[label]
-                for label in selected_slot_labels
-            ]
+            raw_selected = [slot_session_ids[label] for label in selected_slot_labels]
             invalid_ids: list[str] = []
             valid_selected = list(raw_selected)
-            parse_fallback = (
-                len(selected_slot_labels) != open_slots
-                or bool(invalid_slot_labels)
-            )
+            parse_fallback = len(selected_slot_labels) != open_slots or bool(invalid_slot_labels)
             decision_name = _boundary_decision_name(
                 selected_slot_labels,
             )
@@ -526,22 +581,31 @@ class LongMemEvalEvidenceReranker:
             raw_selected = _string_list(parsed.get("selected_boundary_session_ids"))
             allowed_boundary = set([*original_boundary, *promotions])
             invalid_ids = [
-                session_id
-                for session_id in raw_selected
-                if session_id not in allowed_boundary
+                session_id for session_id in raw_selected if session_id not in allowed_boundary
             ]
             valid_selected = _ordered_unique(
-                session_id
-                for session_id in raw_selected
-                if session_id in allowed_boundary
+                session_id for session_id in raw_selected if session_id in allowed_boundary
             )
             parse_fallback = len(valid_selected) != open_slots or bool(invalid_ids)
             decision_name = _normalized_string(parsed.get("decision"))
         proposed_change = set(valid_selected) != set(original_boundary)
+        if (
+            self.config.boundary_prompt_version == LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION
+            and not parse_fallback
+            and proposed_change
+        ):
+            slot_assessments, atomic_support_failures = _validate_atomic_slot_assessments(
+                parsed,
+                selected_slot_labels=selected_slot_labels,
+                slot_session_ids=slot_session_ids,
+                by_session=by_session,
+                question=question,
+                config=self.config,
+            )
         policy_rejected = (
             not parse_fallback
             and proposed_change
-            and confidence != self.config.boundary_min_confidence
+            and (confidence != self.config.boundary_min_confidence or bool(atomic_support_failures))
         )
         if parse_fallback:
             selected_boundary = original_boundary
@@ -549,23 +613,23 @@ class LongMemEvalEvidenceReranker:
                 f"boundary response must select exactly {open_slots} valid distinct "
                 + (
                     "slot labels"
-                    if self.config.boundary_prompt_version
-                    == LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION
+                    if _uses_symbolic_boundary_slots(self.config.boundary_prompt_version)
                     else "IDs"
                 )
             )
         elif policy_rejected:
             selected_boundary = original_boundary
-            fallback_reason = (
-                "replacement confidence below "
-                f"{self.config.boundary_min_confidence!r}"
-            )
+            if atomic_support_failures:
+                fallback_reason = "atomic promotion evidence failed validation: " + ", ".join(
+                    atomic_support_failures
+                )
+            else:
+                fallback_reason = (
+                    f"replacement confidence below {self.config.boundary_min_confidence!r}"
+                )
         else:
             selected_boundary = valid_selected if proposed_change else original_boundary
-        if (
-            self.config.boundary_prompt_version
-            == LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION
-        ):
+        if _uses_symbolic_boundary_slots(self.config.boundary_prompt_version):
             selected_slot_labels = (
                 _slot_labels_for_sessions(slot_session_ids, selected_boundary)
                 if not parse_fallback and not policy_rejected
@@ -598,6 +662,9 @@ class LongMemEvalEvidenceReranker:
                 model=response.model,
                 finish_reason=response.finish_reason,
                 evidence_needs=_string_list(parsed.get("evidence_needs"))[:4],
+                needs_missing_after_locked=_string_list(parsed.get("needs_missing_after_locked"))[
+                    :4
+                ],
                 original_boundary_session_ids=original_boundary,
                 proposed_promotion_session_ids=promotions,
                 slot_session_ids=slot_session_ids,
@@ -607,6 +674,8 @@ class LongMemEvalEvidenceReranker:
                 raw_selected_boundary_session_ids=raw_selected,
                 selected_boundary_session_ids=selected_boundary,
                 invalid_session_ids=invalid_ids,
+                slot_assessments=slot_assessments,
+                atomic_support_failures=atomic_support_failures,
                 decision=decision_name,
                 confidence=confidence,
                 replacement_accepted=selected_boundary != original_boundary,
@@ -648,7 +717,7 @@ def build_longmemeval_rerank_prompt(
         candidate_context=candidate_context,
         output_top_k=config.output_top_k,
         ranked_output_count=config.ranked_output_count,
-    )
+    ).strip()
 
 
 def prepare_longmemeval_rerank_candidates(
@@ -674,10 +743,16 @@ def build_longmemeval_boundary_prompt(
 ) -> str:
     """Render one fixed framework-agnostic boundary verification prompt."""
 
-    if (
-        config.boundary_prompt_version
-        == LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION
-    ):
+    if config.boundary_prompt_version == LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION:
+        return _build_atomic_boundary_prompt(
+            question=question,
+            question_date=question_date,
+            protected=protected,
+            original_boundary=original_boundary,
+            promotions=promotions,
+            config=config,
+        )
+    if config.boundary_prompt_version == LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION:
         return _build_symbolic_boundary_prompt(
             question=question,
             question_date=question_date,
@@ -712,7 +787,7 @@ def build_longmemeval_boundary_prompt(
         original_boundary_context=context("original-boundary", original_boundary),
         promotion_context=context("proposed-promotion", promotions),
         open_slots=config.output_top_k - config.boundary_protected_top_n,
-    )
+    ).strip()
 
 
 def _build_symbolic_boundary_prompt(
@@ -773,7 +848,68 @@ def _build_symbolic_boundary_prompt(
         ),
         open_slots=config.output_top_k - config.boundary_protected_top_n,
         selectable_labels=", ".join(slot_labels),
-    )
+    ).strip()
+
+
+def _build_atomic_boundary_prompt(
+    *,
+    question: str,
+    question_date: str | None,
+    protected: Sequence[RetrievedMemory],
+    original_boundary: Sequence[RetrievedMemory],
+    promotions: Sequence[RetrievedMemory],
+    config: LongMemEvalRerankerConfig,
+) -> str:
+    """Render V5.3.2's quote-grounded complete-set boundary audit."""
+
+    def context(
+        prefix: str,
+        memories: Sequence[RetrievedMemory],
+        *,
+        description: str,
+    ) -> str:
+        if not memories:
+            return "(none)"
+        blocks: list[str] = []
+        for index, memory in enumerate(memories, start=1):
+            excerpt = candidate_excerpt(
+                question,
+                memory.content,
+                max_chars=config.max_candidate_chars,
+                max_turns=config.max_excerpt_turns,
+            )
+            blocks.append(
+                f"[{prefix}{index} | {description} | "
+                f"date={memory.source_date or 'unknown'}]\n{excerpt}"
+            )
+        return "\n\n".join(blocks)
+
+    slot_labels = [
+        *[f"B{index}" for index in range(1, len(original_boundary) + 1)],
+        *[f"P{index}" for index in range(1, len(promotions) + 1)],
+    ]
+    return LONGMEMEVAL_ATOMIC_BOUNDARY_USER_PROMPT.format(
+        question_date=question_date or "unknown",
+        question=question,
+        protected_top_n=config.boundary_protected_top_n,
+        protected_context=context(
+            "LOCKED-",
+            protected,
+            description="present in every complete set",
+        ),
+        original_boundary_context=context(
+            "B",
+            original_boundary,
+            description="selectable original",
+        ),
+        promotion_context=context(
+            "P",
+            promotions,
+            description="selectable promotion",
+        ),
+        open_slots=config.output_top_k - config.boundary_protected_top_n,
+        selectable_labels=", ".join(slot_labels),
+    ).strip()
 
 
 def _boundary_slot_map(
@@ -781,15 +917,116 @@ def _boundary_slot_map(
     promotions: Sequence[str],
 ) -> dict[str, str]:
     return {
-        **{
-            f"B{index}": session_id
-            for index, session_id in enumerate(original_boundary, start=1)
-        },
-        **{
-            f"P{index}": session_id
-            for index, session_id in enumerate(promotions, start=1)
-        },
+        **{f"B{index}": session_id for index, session_id in enumerate(original_boundary, start=1)},
+        **{f"P{index}": session_id for index, session_id in enumerate(promotions, start=1)},
     }
+
+
+def _uses_symbolic_boundary_slots(prompt_version: str) -> bool:
+    return prompt_version in {
+        LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
+        LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
+    }
+
+
+def _validate_atomic_slot_assessments(
+    parsed: dict[str, object],
+    *,
+    selected_slot_labels: Sequence[str],
+    slot_session_ids: dict[str, str],
+    by_session: dict[str, RetrievedMemory],
+    question: str,
+    config: LongMemEvalRerankerConfig,
+) -> tuple[list[dict[str, JsonValue]], list[str]]:
+    raw_assessments = parsed.get("slot_assessments")
+    values = raw_assessments if isinstance(raw_assessments, list) else []
+    missing_need_ids = _evidence_need_ids(_string_list(parsed.get("needs_missing_after_locked")))
+    assessments: list[dict[str, JsonValue]] = []
+    by_slot: dict[str, dict[str, JsonValue]] = {}
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        slot_value = value.get("slot")
+        if not isinstance(slot_value, str):
+            continue
+        slot = _normalized_slot_label(slot_value)
+        session_id = slot_session_ids.get(slot)
+        if session_id is None or slot in by_slot:
+            continue
+        supports_needs = _string_list(value.get("supports_needs"))[:4]
+        quote_value = value.get("evidence_quote")
+        quote = (
+            quote_value.strip() if isinstance(quote_value, str) and quote_value.strip() else None
+        )
+        adds_missing_evidence = value.get("adds_missing_evidence") is True
+        memory = by_session.get(session_id)
+        quote_valid = bool(
+            quote
+            and memory is not None
+            and _quote_is_grounded(
+                quote,
+                candidate_excerpt(
+                    question,
+                    memory.content,
+                    max_chars=config.max_candidate_chars,
+                    max_turns=config.max_excerpt_turns,
+                ),
+            )
+        )
+        assessment: dict[str, JsonValue] = {
+            "slot": slot,
+            "supports_needs": cast(JsonValue, supports_needs),
+            "evidence_quote": quote,
+            "adds_missing_evidence": adds_missing_evidence,
+            "quote_valid": quote_valid,
+        }
+        assessments.append(assessment)
+        by_slot[slot] = assessment
+
+    failures: list[str] = []
+    for slot in selected_slot_labels:
+        if not slot.startswith("P"):
+            continue
+        selected_assessment = by_slot.get(slot)
+        if selected_assessment is None:
+            failures.append(f"{slot}:missing_assessment")
+            continue
+        selected_needs = selected_assessment.get("supports_needs")
+        if not isinstance(selected_needs, list) or not selected_needs:
+            failures.append(f"{slot}:missing_need")
+        elif not missing_need_ids.intersection(
+            _evidence_need_ids([value for value in selected_needs if isinstance(value, str)])
+        ):
+            failures.append(f"{slot}:not_linked_to_missing_need")
+        if selected_assessment.get("adds_missing_evidence") is not True:
+            failures.append(f"{slot}:not_missing_evidence")
+        selected_quote = selected_assessment.get("evidence_quote")
+        if not isinstance(selected_quote, str) or not selected_quote:
+            failures.append(f"{slot}:missing_quote")
+        elif selected_assessment.get("quote_valid") is not True:
+            failures.append(f"{slot}:quote_not_grounded")
+    return assessments, failures
+
+
+def _evidence_need_ids(values: Sequence[str]) -> set[str]:
+    identifiers: set[str] = set()
+    for value in values:
+        match = re.match(r"\s*(N[1-4])(?:\s*:|\s*$)", value, flags=re.IGNORECASE)
+        if match:
+            identifiers.add(match.group(1).upper())
+    return identifiers
+
+
+def _quote_is_grounded(quote: str, excerpt: str) -> bool:
+    normalized_quote = _normalized_quote_text(quote)
+    if len(normalized_quote) < 12:
+        return False
+    return normalized_quote in _normalized_quote_text(excerpt)
+
+
+def _normalized_quote_text(value: str) -> str:
+    quote_marks = " \t\r\n\"'\u201c\u201d\u2018\u2019`"
+    return " ".join(value.casefold().strip(quote_marks).split())
 
 
 def _normalized_slot_label(value: str) -> str:
@@ -800,13 +1037,9 @@ def _slot_labels_for_sessions(
     slot_session_ids: dict[str, str],
     selected_session_ids: Sequence[str],
 ) -> list[str]:
-    by_session = {
-        session_id: label for label, session_id in slot_session_ids.items()
-    }
+    by_session = {session_id: label for label, session_id in slot_session_ids.items()}
     return [
-        by_session[session_id]
-        for session_id in selected_session_ids
-        if session_id in by_session
+        by_session[session_id] for session_id in selected_session_ids if session_id in by_session
     ]
 
 
@@ -962,6 +1195,14 @@ def _string_list(value: object) -> list[str]:
 
 def _normalized_string(value: object) -> str | None:
     return value.strip().casefold() if isinstance(value, str) and value.strip() else None
+
+
+def _optional_string(value: object) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _optional_bool(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 def _ordered_unique(values: Iterable[str]) -> list[str]:

@@ -239,10 +239,30 @@ def test_selector_replay_preflight_checks_every_prompt_before_live_calls(
         methods=["vmp_hierarchical"],
         config=config,
     )
+    client = SelectorReplayClient(DelegateClient(), cache)
+    reranker = LongMemEvalEvidenceReranker(client, config)
+    result = run_longmemeval_rerank(
+        LongMemEvalRerankRunConfig(
+            source_run=source_run,
+            methods=["vmp_hierarchical"],
+            output_dir=tmp_path / "output",
+        ),
+        reranker=reranker,
+        run_id="exact-replay-audit",
+    )
+    record = json.loads(
+        (result.run_dir / "vmp_hierarchical__vllm_rerank" / "retrieval.jsonl").read_text(
+            encoding="utf-8"
+        )
+    )
 
     assert preflight.records_checked == 1
     assert preflight.exact_prompt_matches == 1
     assert preflight.prompt_mismatches == 0
+    assert client.selector_prompt_mismatches == 0
+    assert record["rerank_metadata"]["selector_replay"] is True
+    assert record["rerank_metadata"]["selector_prompt_sha256_match"] is True
+    assert result.summaries["vmp_hierarchical__vllm_rerank"].selector_prompt_mismatch_count == 0
 
 
 def _write_replay_fixture(
@@ -292,7 +312,7 @@ def _write_replay_fixture(
             "finish_reason": "stop",
             "usage": {"prompt_tokens": 10, "completion_tokens": 4},
             "response_text": '{"selected_session_ids":["s6"]}',
-        }
+        },
     }
     (method_dir / "retrieval.jsonl").write_text(
         json.dumps(record) + "\n",

@@ -8,6 +8,7 @@ import pytest
 
 from vmp_memos.frameworks import RetrievedMemory
 from vmp_memos.llm import (
+    LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
     LLMGenerationConfig,
     LLMResponse,
@@ -325,6 +326,121 @@ def test_v531_symbolic_boundary_fails_closed_on_locked_label() -> None:
     assert decision.boundary.invalid_slot_labels == ["LOCKED-1"]
     assert decision.boundary.parse_fallback is True
     assert decision.boundary.replacement_accepted is False
+
+
+def test_v532_atomic_boundary_accepts_only_quote_grounded_promotion() -> None:
+    client = FakeRerankClient(
+        [
+            json_response(
+                selected=["s1", "s2", "s6", "s3", "s4"],
+                ranked=["s1", "s2", "s6", "s3", "s4", "s5"],
+            ),
+            """
+            {
+              "evidence_needs": ["N1: missing preference"],
+              "needs_missing_after_locked": ["N1"],
+              "slot_assessments": [
+                {
+                  "slot": "P1",
+                  "supports_needs": ["N1"],
+                  "evidence_quote": "Session 6 discusses a preference.",
+                  "adds_missing_evidence": true
+                }
+              ],
+              "selected_slots": ["B1", "P1"],
+              "confidence": "high"
+            }
+            """,
+        ]
+    )
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(
+            candidate_count=6,
+            protected_top_n=3,
+            ranked_output_count=6,
+            boundary_verification=True,
+            boundary_prompt_version=LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
+        ),
+    )
+
+    decision = reranker.rerank(
+        question="Which missing preference is required?",
+        question_date="2024-02-01",
+        candidates=_memories(6),
+    )
+
+    assert decision.selected_session_ids == ["s1", "s2", "s3", "s4", "s6"]
+    assert decision.boundary is not None
+    assert decision.boundary.replacement_accepted is True
+    assert decision.boundary.policy_rejected is False
+    assert decision.boundary.atomic_support_failures == []
+    assert decision.boundary.slot_assessments == [
+        {
+            "slot": "P1",
+            "supports_needs": ["N1"],
+            "evidence_quote": "Session 6 discusses a preference.",
+            "adds_missing_evidence": True,
+            "quote_valid": True,
+        }
+    ]
+    prompt = client.all_messages[1][1].content
+    assert "session_id=" not in prompt
+    assert '"slot_assessments"' in prompt
+    assert "verbatim" in prompt.casefold()
+    assert "complete Top-5" in prompt
+
+
+def test_v532_atomic_boundary_rejects_hallucinated_promotion_quote() -> None:
+    client = FakeRerankClient(
+        [
+            json_response(
+                selected=["s1", "s2", "s6", "s3", "s4"],
+                ranked=["s1", "s2", "s6", "s3", "s4", "s5"],
+            ),
+            """
+            {
+              "evidence_needs": ["N1: missing preference"],
+              "needs_missing_after_locked": ["N1"],
+              "slot_assessments": [
+                {
+                  "slot": "P1",
+                  "supports_needs": ["N1"],
+                  "evidence_quote": "This quote does not occur in the candidate.",
+                  "adds_missing_evidence": true
+                }
+              ],
+              "selected_slots": ["B1", "P1"],
+              "confidence": "high"
+            }
+            """,
+        ]
+    )
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(
+            candidate_count=6,
+            protected_top_n=3,
+            ranked_output_count=6,
+            boundary_verification=True,
+            boundary_prompt_version=LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
+        ),
+    )
+
+    decision = reranker.rerank(
+        question="Which missing preference is required?",
+        question_date="2024-02-01",
+        candidates=_memories(6),
+    )
+
+    assert decision.selected_session_ids == ["s1", "s2", "s3", "s4", "s5"]
+    assert decision.boundary is not None
+    assert decision.boundary.replacement_accepted is False
+    assert decision.boundary.policy_rejected is True
+    assert decision.boundary.atomic_support_failures == ["P1:quote_not_grounded"]
+    assert decision.boundary.fallback_reason == (
+        "atomic promotion evidence failed validation: P1:quote_not_grounded"
+    )
 
 
 def json_response(*, selected: list[str], ranked: list[str]) -> str:

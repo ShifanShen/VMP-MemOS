@@ -89,9 +89,7 @@ def evaluate_v53_gate(
     candidate_count = _integer(reranked_v5.get("candidate_count"))
     baseline_candidate_count = _integer(reranked_v43.get("candidate_count"))
     observed_candidate_count = _integer(reranked_v5.get("min_observed_candidate_count"))
-    baseline_observed_candidate_count = _integer(
-        reranked_v43.get("min_observed_candidate_count")
-    )
+    baseline_observed_candidate_count = _integer(reranked_v43.get("min_observed_candidate_count"))
     split_name = _split_name(candidate_manifest)
     rerank_split_name = _split_name(rerank_manifest)
     candidate_manifest_sha256 = _sha256(candidate_manifest_path)
@@ -165,12 +163,8 @@ def evaluate_v53_gate(
         "min_recall_all_at_5": v53_recall >= min_recall_all_at_5,
         "delta_vs_raw_v5": delta_raw_v5 >= min_delta_vs_raw_v5,
         "delta_vs_shared_v43": delta_shared_v43 >= min_delta_vs_shared_v43,
-        "macro_non_regression_vs_raw_v5": (
-            macro_delta_raw_v5 >= min_macro_delta_vs_raw_v5
-        ),
-        "per_type_guard_vs_raw_v5": (
-            max_type_regression <= max_type_regression_vs_raw_v5
-        ),
+        "macro_non_regression_vs_raw_v5": (macro_delta_raw_v5 >= min_macro_delta_vs_raw_v5),
+        "per_type_guard_vs_raw_v5": (max_type_regression <= max_type_regression_vs_raw_v5),
         "zero_or_bounded_regression": regressed_questions <= max_regressed_questions,
         "minimum_recoveries": recovered_questions >= min_recovered_questions,
     }
@@ -218,22 +212,26 @@ def evaluate_v53_gate(
                 "expected_boundary_prompt_version": expected_boundary_prompt_version,
                 "candidate_count": candidate_count,
                 "min_observed_candidate_count": observed_candidate_count,
-                "baseline_min_observed_candidate_count": (
-                    baseline_observed_candidate_count
-                ),
+                "baseline_min_observed_candidate_count": (baseline_observed_candidate_count),
                 "selector_protected_top_n": reranked_v5.get("protected_top_n"),
-                "boundary_protected_top_n": reranked_v5.get(
-                    "boundary_protected_top_n"
-                ),
+                "boundary_protected_top_n": reranked_v5.get("boundary_protected_top_n"),
                 "output_top_k": reranked_v5.get("output_top_k"),
                 "parse_fallback_rate": fallback_rate,
                 "boundary_parse_fallback_rate": boundary_fallback_rate,
                 "recovered_questions": recovered_questions,
                 "regressed_questions": regressed_questions,
                 "boundary_calls": reranked_v5.get("boundary_calls"),
-                "boundary_replacements_accepted": reranked_v5.get(
-                    "boundary_replacements_accepted"
+                "boundary_replacements_accepted": reranked_v5.get("boundary_replacements_accepted"),
+                "boundary_atomic_support_failures": reranked_v5.get(
+                    "boundary_atomic_support_failures"
                 ),
+                "boundary_grounded_promotions_accepted": reranked_v5.get(
+                    "boundary_grounded_promotions_accepted"
+                ),
+                "baseline_boundary_grounded_promotions_accepted": reranked_v43.get(
+                    "boundary_grounded_promotions_accepted"
+                ),
+                "selector_prompt_mismatch_count": reranked_v5.get("selector_prompt_mismatch_count"),
                 "shared_across_methods": True,
             },
         ),

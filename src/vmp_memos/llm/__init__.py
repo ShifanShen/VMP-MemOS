@@ -8,6 +8,7 @@ from vmp_memos.llm.reader import (
     build_longmemeval_prompt,
 )
 from vmp_memos.llm.reranker import (
+    LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_RERANK_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
@@ -33,6 +34,7 @@ from vmp_memos.llm.selector_replay import (
 from vmp_memos.llm.vllm_client import VLLMClient, VLLMClientConfig, load_vllm_config
 
 __all__ = [
+    "LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION",
     "LONGMEMEVAL_BOUNDARY_PROMPT_VERSION",
     "LONGMEMEVAL_RERANK_PROMPT_VERSION",
     "LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION",

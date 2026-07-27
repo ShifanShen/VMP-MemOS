@@ -64,6 +64,7 @@ class LongMemEvalRerankRunConfig(SchemaModel):
     output_dir: Path = Path("outputs/longmemeval")
     resume: bool = False
     limit: NonNegativeInt | None = None
+    require_full_candidate_count: bool = False
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
 
@@ -88,11 +89,15 @@ class RerankMethodSummary(RetrievalMethodSummary):
     boundary_invalid_session_id_count: NonNegativeInt = 0
     boundary_invalid_slot_label_count: NonNegativeInt = 0
     boundary_policy_rejections: NonNegativeInt = 0
+    boundary_atomic_support_failures: NonNegativeInt = 0
+    boundary_grounded_promotions_accepted: NonNegativeInt = 0
     boundary_replacements_accepted: NonNegativeInt = 0
     mean_boundary_latency_ms: NonNegativeFloat = 0.0
     parse_fallbacks: NonNegativeInt = 0
     parse_fallback_rate: NonNegativeFloat = 0.0
     invalid_session_id_count: NonNegativeInt = 0
+    selector_replay_records: NonNegativeInt = 0
+    selector_prompt_mismatch_count: NonNegativeInt = 0
     recovered_questions: NonNegativeInt = 0
     regressed_questions: NonNegativeInt = 0
     stable_success_questions: NonNegativeInt = 0
@@ -140,6 +145,13 @@ def run_longmemeval_rerank(
     methods = _resolve_methods(source_run, config.methods)
     if not methods:
         raise ValueError("no source retrieval methods selected for reranking")
+    if config.require_full_candidate_count:
+        _validate_full_candidate_depth(
+            source_run,
+            methods=methods,
+            candidate_count=reranker.config.candidate_count,
+            limit=config.limit,
+        )
     resolved_run_id = _safe_run_id(run_id)
     run_dir = config.output_dir.expanduser().resolve() / "runs" / resolved_run_id
     if run_dir == source_run:
@@ -312,9 +324,7 @@ def summarize_rerank_method(
     provider, model = next(iter(observations)) if observations else (None, None)
     fallback_count = sum(record.rerank_metadata.get("parse_fallback") is True for record in records)
     boundary_calls = sum(_boundary_bool(record, "call_made") for record in records)
-    boundary_fallbacks = sum(
-        _boundary_bool(record, "parse_fallback") for record in records
-    )
+    boundary_fallbacks = sum(_boundary_bool(record, "parse_fallback") for record in records)
     payload = base.model_dump(mode="python")
     payload.update(
         {
@@ -337,16 +347,12 @@ def summarize_rerank_method(
                 config.boundary_protected_top_n if config.boundary_verification else 0
             ),
             "boundary_calls": boundary_calls,
-            "boundary_skips": sum(
-                not _boundary_bool(record, "call_made") for record in records
-            )
+            "boundary_skips": sum(not _boundary_bool(record, "call_made") for record in records)
             if config.boundary_verification
             else 0,
             "boundary_parse_fallbacks": boundary_fallbacks,
             "boundary_parse_fallback_rate": (
-                boundary_fallbacks / boundary_calls
-                if boundary_calls
-                else 0.0
+                boundary_fallbacks / boundary_calls if boundary_calls else 0.0
             ),
             "boundary_invalid_session_id_count": sum(
                 len(_boundary_list(record, "invalid_session_ids")) for record in records
@@ -356,6 +362,12 @@ def summarize_rerank_method(
             ),
             "boundary_policy_rejections": sum(
                 _boundary_bool(record, "policy_rejected") for record in records
+            ),
+            "boundary_atomic_support_failures": sum(
+                len(_boundary_list(record, "atomic_support_failures")) for record in records
+            ),
+            "boundary_grounded_promotions_accepted": sum(
+                _grounded_selected_promotions(record) for record in records
             ),
             "boundary_replacements_accepted": sum(
                 _boundary_bool(record, "replacement_accepted") for record in records
@@ -367,6 +379,13 @@ def summarize_rerank_method(
             "parse_fallback_rate": fallback_count / len(records) if records else 0.0,
             "invalid_session_id_count": sum(
                 len(_metadata_list(record, "invalid_session_ids")) for record in records
+            ),
+            "selector_replay_records": sum(
+                record.rerank_metadata.get("selector_replay") is True for record in records
+            ),
+            "selector_prompt_mismatch_count": sum(
+                record.rerank_metadata.get("selector_prompt_sha256_match") is False
+                for record in records
             ),
             "recovered_questions": sum(
                 record.rerank_metadata.get("transition_vs_source") == "recovered"
@@ -454,9 +473,7 @@ def _rerank_record(
         {
             "source_method": source.method,
             "source_retrieval_latency_ms": source_retrieval_latency,
-            "rerank_calls": 1 + int(
-                decision.boundary is not None and decision.boundary.call_made
-            ),
+            "rerank_calls": 1 + int(decision.boundary is not None and decision.boundary.call_made),
             "total_rerank_latency_ms": rerank_latency_ms,
             "total_retrieval_latency_ms": source_retrieval_latency + rerank_latency_ms,
             "reranker_provider": decision.provider,
@@ -506,11 +523,13 @@ def _rerank_record(
         "usage": cast(JsonValue, decision.usage),
         "response_text": decision.response_text,
         "rerank_latency_ms": rerank_latency_ms,
+        "selector_replay": decision.selector_replay,
+        "selector_prompt_sha256_match": decision.selector_prompt_sha256_match,
+        "selector_source_prompt_sha256": decision.selector_source_prompt_sha256,
+        "selector_current_prompt_sha256": decision.selector_current_prompt_sha256,
         "boundary": cast(
             JsonValue,
-            decision.boundary.model_dump(mode="json")
-            if decision.boundary is not None
-            else None,
+            decision.boundary.model_dump(mode="json") if decision.boundary is not None else None,
         ),
         "test_labels_used": False,
     }
@@ -591,9 +610,7 @@ def _prepare_manifest(
                 ),
                 "selector_replayed": metadata.get("selector_replay") is True,
                 "selector_replay_run": metadata.get("selector_replay_run"),
-                "selector_replay_manifest_sha256": metadata.get(
-                    "selector_replay_manifest_sha256"
-                ),
+                "selector_replay_manifest_sha256": metadata.get("selector_replay_manifest_sha256"),
                 "gold_labels_visible_to_reranker": False,
             },
             "test_labels_used": False,
@@ -624,6 +641,7 @@ def _run_signature(
             ],
         ),
         "limit": config.limit,
+        "require_full_candidate_count": config.require_full_candidate_count,
         "reranker": cast(JsonValue, reranker_config.model_dump(mode="json")),
         "metadata": cast(JsonValue, config.metadata),
         "test_labels_used": False,
@@ -659,6 +677,38 @@ def _load_records(path: Path, *, limit: int | None = None) -> list[RetrievalSamp
                 break
             records.append(RetrievalSampleRecord.model_validate_json(line))
     return records
+
+
+def _validate_full_candidate_depth(
+    source_run: Path,
+    *,
+    methods: Sequence[str],
+    candidate_count: int,
+    limit: int | None,
+) -> None:
+    insufficient: list[str] = []
+    for method in methods:
+        records = _load_records(
+            source_run / method / "retrieval.jsonl",
+            limit=limit,
+        )
+        for record in records:
+            observed = len(
+                prepare_longmemeval_rerank_candidates(
+                    record.retrieved_memories,
+                    candidate_count=candidate_count,
+                )
+            )
+            if observed < candidate_count:
+                insufficient.append(f"{method}/{record.question_id}={observed}")
+    if insufficient:
+        preview = ", ".join(insufficient[:10])
+        suffix = "" if len(insufficient) <= 10 else f", ... (+{len(insufficient) - 10})"
+        raise ValueError(
+            "Strict rerank preflight requires "
+            f"{candidate_count} unique sessions per sample; observed {preview}{suffix}. "
+            "Increase source retrieval depth so session deduplication can backfill."
+        )
 
 
 def _load_resume_records(path: Path) -> list[RetrievalSampleRecord]:
@@ -740,6 +790,20 @@ def _boundary_number(record: RetrievalSampleRecord, name: str) -> float:
 def _boundary_list(record: RetrievalSampleRecord, name: str) -> list[JsonValue]:
     value = _boundary_payload(record).get(name, [])
     return value if isinstance(value, list) else []
+
+
+def _grounded_selected_promotions(record: RetrievalSampleRecord) -> int:
+    selected = {
+        value
+        for value in _boundary_list(record, "selected_slot_labels")
+        if isinstance(value, str) and value.startswith("P")
+    }
+    return sum(
+        isinstance(value, dict)
+        and value.get("slot") in selected
+        and value.get("quote_valid") is True
+        for value in _boundary_list(record, "slot_assessments")
+    )
 
 
 def _adapter_number(record: RetrievalSampleRecord, name: str) -> float:

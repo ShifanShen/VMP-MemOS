@@ -1,5 +1,64 @@
 # VMP-MemOS
 
+## VMP-v5.3.2 atomic evidence-set boundary
+
+V5.3.2 针对 V5.3.1 Dev 实验中“协议已稳定但有效恢复不足”的问题做两项修复：
+
+1. candidate runner 先检索 40 条 memory，再按 `source_session_id` 去重并回填为
+   30 个唯一 session；rerank 在第一次 LLM 请求前执行严格深度预检。
+2. boundary verifier 比较完整的 locked+B/P Top-5 证据集合。每个被选中的
+   promotion 必须输出来自自身候选 excerpt 的逐字引用，程序在本地验证引用后才允许
+   替换；引用不存在、格式错误或低置信度都会保留原始 Top-5。
+
+V4.3 和 V5 仍使用相同的本地 vLLM、selector、atomic boundary prompt、生成参数及
+fail-closed 策略。LLM 看不到框架名、question type、gold answer 或 gold session ID。
+严格 Dev gate 未降低，Test 仍保持封存。
+
+服务器必须分阶段运行，避免 BGE-M3 与 vLLM 同时占用单卡显存。第一阶段先停止
+vLLM，生成新的 Dev candidate pool：
+
+```bash
+cd /home/shenshifan/projects/VMP-MemOS
+
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+STAGE=dev_candidates \
+DATA_PATH=data/longmemeval/longmemeval_s_cleaned.json \
+EMBEDDING_BATCH_SIZE=2 \
+uv run --no-sync bash scripts/run_vmp_v532_experiment.sh
+```
+
+第二阶段启动统一的本地 vLLM。在终端 A：
+
+```bash
+cd /home/shenshifan/projects/VMP-MemOS
+
+export VMP_LLM_API_KEY="local-vllm-key"
+export VMP_LLM_MODEL="Qwen/Qwen2.5-7B-Instruct"
+export VMP_VLLM_ENABLE_TOOL_CALLING=0
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+uv run --no-sync bash scripts/serve_vllm.sh
+```
+
+确认 `curl http://127.0.0.1:8000/v1/models` 正常后，在终端 B：
+
+```bash
+cd /home/shenshifan/projects/VMP-MemOS
+
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=dev_rerank \
+uv run --no-sync bash scripts/run_vmp_v532_experiment.sh
+```
+
+Dev 日志位于 `outputs/longmemeval/logs/vmp_v532_dev_candidates.log` 和
+`outputs/longmemeval/logs/vmp_v532_dev_rerank.log`。只有生成
+`outputs/longmemeval/gates/vmp_v532_seed42_dev_pass.json` 后，才能继续运行
+`STAGE=test_candidates` 与 `STAGE=test_rerank`。`exit_code=3` 表示实验已完成但
+质量门未通过，不表示程序崩溃。
+
 ## VMP-v5.3.1 symbolic boundary replay
 
 V5.3.1 修复了 V5.3 真实运行中暴露出的输出协议歧义。受保护的 Top-3

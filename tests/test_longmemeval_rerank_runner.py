@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
+
 from vmp_memos.evaluation import compute_retrieval_metrics
 from vmp_memos.frameworks import RetrievedMemory
 from vmp_memos.llm import (
@@ -208,9 +210,7 @@ def test_v53_runner_audits_shared_boundary_verification(tmp_path) -> None:
     assert summary.boundary_calls == 1
     assert summary.boundary_replacements_accepted == 1
     assert summary.boundary_parse_fallbacks == 0
-    record = _read_jsonl(
-        result.run_dir / "vmp_hierarchical__vllm_boundary" / "retrieval.jsonl"
-    )[0]
+    record = _read_jsonl(result.run_dir / "vmp_hierarchical__vllm_boundary" / "retrieval.jsonl")[0]
     assert record["retrieved_session_ids"][:5] == ["s1", "s2", "s3", "s4", "s6"]
     assert record["rerank_metadata"]["boundary"]["confidence"] == "high"
     assert record["adapter_stats"]["rerank_calls"] == 2
@@ -228,6 +228,56 @@ def test_v53_runner_audits_shared_boundary_verification(tmp_path) -> None:
     )
     assert client.calls == 2
     assert resumed.summaries["vmp_hierarchical__vllm_boundary"].processed_questions == 1
+
+
+def test_rerank_preflight_rejects_truncated_duplicate_session_pool(tmp_path) -> None:
+    source_run = tmp_path / "outputs" / "runs" / "source"
+    method_dir = source_run / "vmp_hierarchical"
+    method_dir.mkdir(parents=True)
+    (source_run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "status": "completed",
+                "run_id": "source",
+                "dataset": "longmemeval-cleaned",
+                "data_sha256": "data",
+                "sample_count": 1,
+                "split": {"name": "dev", "split_id": "split"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    source_record = _source_record()
+    truncated = source_record.model_copy(
+        update={"retrieved_memories": source_record.retrieved_memories[:6]}
+    )
+    (method_dir / "retrieval.jsonl").write_text(
+        truncated.model_dump_json() + "\n",
+        encoding="utf-8",
+    )
+    client = CountingClient()
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(candidate_count=6, ranked_output_count=6),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"requires 6 unique sessions.*q1=5",
+    ):
+        run_longmemeval_rerank(
+            LongMemEvalRerankRunConfig(
+                source_run=source_run,
+                methods=["vmp_hierarchical"],
+                output_dir=tmp_path / "outputs",
+                require_full_candidate_count=True,
+            ),
+            reranker=reranker,
+            run_id="strict-depth",
+        )
+
+    assert client.calls == 0
 
 
 def _source_record() -> RetrievalSampleRecord:

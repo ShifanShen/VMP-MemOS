@@ -12,6 +12,7 @@ from pathlib import Path
 from pydantic import JsonValue
 
 from vmp_memos.llm import (
+    LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
     LLMGenerationConfig,
@@ -85,6 +86,14 @@ def main() -> int:
         help="Replay exact first-stage selector responses from a completed rerank run.",
     )
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--require-full-candidate-count",
+        action="store_true",
+        help=(
+            "Fail before any LLM call unless every sample has candidate-count "
+            "unique sessions after deduplication."
+        ),
+    )
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
@@ -161,9 +170,7 @@ def main() -> int:
             "selector_replay_run": str(replay_cache.selector_run),
             "selector_replay_manifest_sha256": replay_cache.selector_manifest_sha256,
             "selector_replay_record_count": replay_cache.record_count,
-            "selector_replay_exact_prompt_matches": (
-                replay_preflight.exact_prompt_matches
-            ),
+            "selector_replay_exact_prompt_matches": (replay_preflight.exact_prompt_matches),
             "selector_replay_prompt_mismatches": replay_preflight.prompt_mismatches,
         }
     else:
@@ -194,12 +201,17 @@ def main() -> int:
             output_dir=args.output_dir,
             resume=args.resume,
             limit=args.limit,
+            require_full_candidate_count=args.require_full_candidate_count,
             metadata={
                 "paper_version": (
-                    "VMP-v5.3.1"
-                    if args.boundary_prompt_version
-                    == LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION
-                    else ("VMP-v5.3" if args.boundary_verification else "VMP-v5.2")
+                    "VMP-v5.3.2"
+                    if args.boundary_prompt_version == LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION
+                    else (
+                        "VMP-v5.3.1"
+                        if args.boundary_prompt_version
+                        == LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION
+                        else ("VMP-v5.3" if args.boundary_verification else "VMP-v5.2")
+                    )
                 ),
                 "shared_across_frameworks": True,
                 "test_labels_used": False,
@@ -225,9 +237,7 @@ def main() -> int:
                         "source_run": str(replay_client.cache.selector_run),
                         "cached_records": replay_client.cache.record_count,
                         "cache_hits": replay_client.selector_replay_hits,
-                        "runtime_prompt_mismatches": (
-                            replay_client.selector_prompt_mismatches
-                        ),
+                        "runtime_prompt_mismatches": (replay_client.selector_prompt_mismatches),
                         "live_boundary_calls": replay_client.boundary_live_calls,
                     }
                     if replay_client is not None
