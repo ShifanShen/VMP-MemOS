@@ -1,5 +1,38 @@
 # VMP-MemOS
 
+## VMP-v5.3 selective boundary verification
+
+V5.3 保留框架无关的 V5.2 Top-30 selector，但在受保护的 Top-3 后开放
+两个 Top-5 槽位。第二次调用同一个本地 vLLM，只查看受保护证据、原始第
+4/5 名和最多两个待晋升候选，并保守选择两个 boundary sessions。非法、
+格式错误或低置信度替换都会回退到原始 Top-5。
+
+V4.3 和 V5 使用完全相同的 selector、boundary prompt、生成参数、解析器
+和安全策略。两个阶段都看不到框架名、question type、gold answer 或 gold
+session ID。严格 Dev gate 要求 Recall-All@5 至少 93%、相对 raw V5
+至少提升 2.5 个百分点、至少恢复三题且零退化，才允许运行 Test。
+
+服务器严格分阶段运行：
+
+```bash
+# 先停止 vLLM，使用 BGE-M3 生成 Dev candidates。
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+STAGE=dev_candidates EMBEDDING_BATCH_SIZE=2 \
+uv run --no-sync bash scripts/run_vmp_v53_experiment.sh
+
+# 另一个终端启动共享本地 vLLM 后运行：
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=dev_rerank \
+uv run --no-sync bash scripts/run_vmp_v53_experiment.sh
+```
+
+只有生成
+`outputs/longmemeval/gates/vmp_v53_seed42_dev_pass.json` 后才能执行两阶段
+Test。配置与公平性约束见 `configs/vmp_v53.yaml`；中断后设置
+`RERANK_RESUME=1` 即可续跑。
+
 ## VMP-v5.2 共享本地 vLLM 证据集合重排
 
 V5.1 的 nearest-prototype promotion 在训练内达到 `88/94`，但

@@ -1,0 +1,267 @@
+"""Synthetic tests for resumable shared-vLLM LongMemEval reranking."""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from vmp_memos.evaluation import compute_retrieval_metrics
+from vmp_memos.frameworks import RetrievedMemory
+from vmp_memos.llm import (
+    LLMResponse,
+    LongMemEvalEvidenceReranker,
+    LongMemEvalRerankerConfig,
+)
+from vmp_memos.longmemeval.rerank_runner import (
+    LongMemEvalRerankRunConfig,
+    run_longmemeval_rerank,
+)
+from vmp_memos.longmemeval.retrieval_runner import (
+    RetrievalSampleRecord,
+    summarize_method,
+)
+from vmp_memos.longmemeval.tables import export_retrieval_tables
+
+
+class CountingClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def chat(self, messages: list[Any], *, generation: Any = None) -> LLMResponse:
+        self.calls += 1
+        return LLMResponse(
+            provider="vllm",
+            model="Qwen/Qwen2.5-7B-Instruct",
+            text=json.dumps(
+                {
+                    "evidence_needs": ["buried evidence"],
+                    "selected_session_ids": ["s6", "s1", "s2", "s3", "s4"],
+                    "ranked_session_ids": ["s6", "s1", "s2", "s3", "s4", "s5"],
+                }
+            ),
+            usage={"prompt_tokens": 80, "completion_tokens": 16},
+        )
+
+
+class BoundaryCountingClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def chat(self, messages: list[Any], *, generation: Any = None) -> LLMResponse:
+        self.calls += 1
+        if self.calls % 2 == 1:
+            payload = {
+                "evidence_needs": ["buried evidence"],
+                "selected_session_ids": ["s6", "s1", "s2", "s3", "s4"],
+                "ranked_session_ids": ["s6", "s1", "s2", "s3", "s4", "s5"],
+            }
+        else:
+            payload = {
+                "evidence_needs": ["buried evidence"],
+                "selected_boundary_session_ids": ["s4", "s6"],
+                "decision": "replace_one",
+                "confidence": "high",
+            }
+        return LLMResponse(
+            provider="vllm",
+            model="Qwen/Qwen2.5-7B-Instruct",
+            text=json.dumps(payload),
+            usage={"prompt_tokens": 40, "completion_tokens": 12},
+        )
+
+
+def test_rerank_runner_writes_replayable_records_and_resumes(tmp_path) -> None:
+    source_run = tmp_path / "outputs" / "runs" / "source"
+    source_run.mkdir(parents=True)
+    manifest_path = source_run / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "status": "completed",
+                "run_id": "source",
+                "dataset": "longmemeval-cleaned",
+                "data_sha256": "data",
+                "sample_count": 1,
+                "split": {"name": "dev", "split_id": "split"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    source_record = _source_record()
+    for method in ("vmp_tuned", "vmp_hierarchical"):
+        method_dir = source_run / method
+        method_dir.mkdir()
+        method_record = source_record.model_copy(update={"method": method})
+        (method_dir / "retrieval.jsonl").write_text(
+            method_record.model_dump_json() + "\n",
+            encoding="utf-8",
+        )
+        summary = summarize_method(method, [method_record])
+        (method_dir / "summary.json").write_text(
+            summary.model_dump_json(indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    client = CountingClient()
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(candidate_count=6, ranked_output_count=6),
+    )
+    config = LongMemEvalRerankRunConfig(
+        source_run=source_run,
+        methods=["vmp_tuned", "vmp_hierarchical"],
+        output_dir=tmp_path / "outputs",
+    )
+    result = run_longmemeval_rerank(
+        config,
+        reranker=reranker,
+        run_id="reranked",
+    )
+
+    assert client.calls == 2
+    v52 = result.summaries["vmp_hierarchical__vllm_rerank"]
+    assert v52.metrics["recall_all@5"] == 1.0
+    assert v52.parse_fallbacks == 0
+    assert v52.recovered_questions == 1
+    assert v52.candidate_oracle_recoverable_questions == 1
+    assert v52.reranker_provider == "vllm"
+    record = _read_jsonl(result.run_dir / "vmp_hierarchical__vllm_rerank" / "retrieval.jsonl")[0]
+    assert record["retrieved_session_ids"][:5] == [
+        "s1",
+        "s2",
+        "s3",
+        "s4",
+        "s6",
+    ]
+    assert record["rerank_metadata"]["test_labels_used"] is False
+    assert record["rerank_metadata"]["transition_vs_source"] == "recovered"
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["status"] == "completed"
+    assert manifest["fairness"]["shared_across_methods"] is True
+    assert manifest["test_labels_used"] is False
+    tables = export_retrieval_tables(result.run_dir, output_dir=tmp_path / "tables")
+    assert tables["table1_retrieval_overall_csv"].exists()
+
+    interrupted_path = result.run_dir / "vmp_hierarchical__vllm_rerank" / "retrieval.jsonl"
+    with interrupted_path.open("a", encoding="utf-8") as stream:
+        stream.write('{"interrupted":')
+    resumed = run_longmemeval_rerank(
+        config.model_copy(update={"resume": True}),
+        reranker=reranker,
+        run_id="reranked",
+    )
+    assert client.calls == 2
+    assert resumed.summaries["vmp_hierarchical__vllm_rerank"].processed_questions == 1
+    assert '{"interrupted":' not in interrupted_path.read_text(encoding="utf-8")
+
+
+def test_v53_runner_audits_shared_boundary_verification(tmp_path) -> None:
+    source_run = tmp_path / "outputs" / "runs" / "source"
+    source_run.mkdir(parents=True)
+    (source_run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "status": "completed",
+                "run_id": "source",
+                "dataset": "longmemeval-cleaned",
+                "data_sha256": "data",
+                "sample_count": 1,
+                "split": {"name": "dev", "split_id": "split"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    method_dir = source_run / "vmp_hierarchical"
+    method_dir.mkdir()
+    source_record = _source_record()
+    (method_dir / "retrieval.jsonl").write_text(
+        source_record.model_dump_json() + "\n",
+        encoding="utf-8",
+    )
+
+    client = BoundaryCountingClient()
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(
+            candidate_count=6,
+            protected_top_n=3,
+            ranked_output_count=6,
+            boundary_verification=True,
+        ),
+    )
+    result = run_longmemeval_rerank(
+        LongMemEvalRerankRunConfig(
+            source_run=source_run,
+            methods=["vmp_hierarchical"],
+            output_dir=tmp_path / "outputs",
+        ),
+        reranker=reranker,
+        run_id="v53",
+    )
+
+    assert client.calls == 2
+    summary = result.summaries["vmp_hierarchical__vllm_boundary"]
+    assert summary.metrics["recall_all@5"] == 1.0
+    assert summary.boundary_verification is True
+    assert summary.boundary_calls == 1
+    assert summary.boundary_replacements_accepted == 1
+    assert summary.boundary_parse_fallbacks == 0
+    record = _read_jsonl(
+        result.run_dir / "vmp_hierarchical__vllm_boundary" / "retrieval.jsonl"
+    )[0]
+    assert record["retrieved_session_ids"][:5] == ["s1", "s2", "s3", "s4", "s6"]
+    assert record["rerank_metadata"]["boundary"]["confidence"] == "high"
+    assert record["adapter_stats"]["rerank_calls"] == 2
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["fairness"]["two_stage_boundary_verification"] is True
+    resumed = run_longmemeval_rerank(
+        LongMemEvalRerankRunConfig(
+            source_run=source_run,
+            methods=["vmp_hierarchical"],
+            output_dir=tmp_path / "outputs",
+            resume=True,
+        ),
+        reranker=reranker,
+        run_id="v53",
+    )
+    assert client.calls == 2
+    assert resumed.summaries["vmp_hierarchical__vllm_boundary"].processed_questions == 1
+
+
+def _source_record() -> RetrievalSampleRecord:
+    memories = [
+        RetrievedMemory(
+            memory_id=f"s{index}",
+            source_session_id=f"s{index}",
+            content=f"user: Evidence from session {index}.",
+            score=1.0 / index,
+            token_count=8,
+        )
+        for index in range(1, 7)
+    ]
+    session_ids = [memory.source_session_id for memory in memories]
+    assert all(session_id is not None for session_id in session_ids)
+    ranked_ids = [str(session_id) for session_id in session_ids]
+    return RetrievalSampleRecord(
+        question_id="q1",
+        question_type="multi-session",
+        question="Which buried evidence is required?",
+        answer="answer",
+        question_date="2024-02-01",
+        method="vmp_hierarchical",
+        is_abstention=False,
+        gold_session_ids=["s6"],
+        retrieved_session_ids=ranked_ids,
+        retrieved_memories=memories,
+        metrics=compute_retrieval_metrics(ranked_ids, ["s6"]),
+        retrieved_tokens=sum(memory.token_count for memory in memories),
+        adapter_stats={"total_retrieval_latency_ms": 5.0},
+    )
+
+
+def _read_jsonl(path) -> list[dict]:
+    return [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]

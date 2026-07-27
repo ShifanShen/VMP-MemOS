@@ -61,6 +61,11 @@ def main() -> int:
     parser.add_argument("--max-candidate-chars", type=int, default=1200)
     parser.add_argument("--max-excerpt-turns", type=int, default=4)
     parser.add_argument("--max-tokens", type=int, default=512)
+    parser.add_argument("--boundary-verification", action="store_true")
+    parser.add_argument("--boundary-protected-top-n", type=int, default=3)
+    parser.add_argument("--boundary-max-promotions", type=int, default=2)
+    parser.add_argument("--boundary-max-tokens", type=int, default=256)
+    parser.add_argument("--boundary-min-confidence", default="high")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
@@ -70,6 +75,11 @@ def main() -> int:
         parser.error("--methods must contain at least one method")
     generation = LLMGenerationConfig(
         max_tokens=args.max_tokens,
+        temperature=0.0,
+        top_p=1.0,
+    )
+    boundary_generation = LLMGenerationConfig(
+        max_tokens=args.boundary_max_tokens,
         temperature=0.0,
         top_p=1.0,
     )
@@ -94,11 +104,16 @@ def main() -> int:
             max_candidate_chars=args.max_candidate_chars,
             max_excerpt_turns=args.max_excerpt_turns,
             generation=generation,
+            boundary_verification=args.boundary_verification,
+            boundary_protected_top_n=args.boundary_protected_top_n,
+            boundary_max_promotions=args.boundary_max_promotions,
+            boundary_min_confidence=args.boundary_min_confidence,
+            boundary_generation=boundary_generation,
         ),
     )
     LOGGER.info(
         "Starting shared rerank: source=%s run_id=%s methods=%s "
-        "model=%s candidates=%d protect=%d/%d resume=%s",
+        "model=%s candidates=%d protect=%d/%d boundary=%s resume=%s",
         args.source_run,
         args.run_id,
         ",".join(methods),
@@ -106,6 +121,7 @@ def main() -> int:
         args.candidate_count,
         args.protected_top_n,
         args.output_top_k,
+        args.boundary_verification,
         args.resume,
     )
     result = run_longmemeval_rerank(
@@ -116,7 +132,9 @@ def main() -> int:
             resume=args.resume,
             limit=args.limit,
             metadata={
-                "paper_version": "VMP-v5.2",
+                "paper_version": (
+                    "VMP-v5.3" if args.boundary_verification else "VMP-v5.2"
+                ),
                 "shared_across_frameworks": True,
                 "test_labels_used": False,
             },

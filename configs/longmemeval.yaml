@@ -53,6 +53,27 @@ v52_reranking:
   gate_receipt: outputs/longmemeval/gates/vmp_v52_seed42_dev_pass.json
   test_labels_used: false
 
+v53_boundary_verification:
+  policy_config: configs/vmp_v53.yaml
+  candidate_count: 30
+  output_top_k: 5
+  selector_protected_top_n: 3
+  selector_prompt_version: vmp_v52_evidence_set_v1
+  boundary_protected_top_n: 3
+  boundary_max_promotions: 2
+  boundary_prompt_version: vmp_v53_selective_boundary_v1
+  boundary_min_confidence: high
+  provider: vllm
+  model: Qwen/Qwen2.5-7B-Instruct
+  temperature: 0.0
+  top_p: 1.0
+  dev_candidate_run: outputs/longmemeval/runs/lme_dev_vmp_v53_candidates_seed42
+  dev_rerank_run: outputs/longmemeval/runs/lme_dev_vmp_v53_rerank_seed42
+  test_candidate_run: outputs/longmemeval/runs/lme_test_vmp_v53_candidates_seed42
+  test_rerank_run: outputs/longmemeval/runs/lme_test_vmp_v53_rerank_seed42
+  gate_receipt: outputs/longmemeval/gates/vmp_v53_seed42_dev_pass.json
+  test_labels_used: false
+
 ablation:
   reference_method: vmp_tuned
   frozen_model: outputs/longmemeval/models/vmp_v43_seed42.json

@@ -6,6 +6,9 @@ HOST="${VMP_VLLM_HOST:-0.0.0.0}"
 PORT="${VMP_VLLM_PORT:-8000}"
 DTYPE="${VMP_VLLM_DTYPE:-auto}"
 API_KEY="${VMP_LLM_API_KEY:-}"
+# FlashInfer sampling JIT requires a full CUDA Toolkit with nvcc. The native
+# sampler is deterministic for the paper settings and works on driver-only hosts.
+export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"
 
 cmd=(vllm serve "$MODEL" --host "$HOST" --port "$PORT" --dtype "$DTYPE")
 

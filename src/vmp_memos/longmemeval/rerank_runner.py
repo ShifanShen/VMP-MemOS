@@ -75,6 +75,17 @@ class RerankMethodSummary(RetrievalMethodSummary):
     min_observed_candidate_count: NonNegativeInt
     output_top_k: NonNegativeInt
     protected_top_n: NonNegativeInt
+    boundary_verification: bool = False
+    boundary_prompt_version: str | None = None
+    boundary_protected_top_n: NonNegativeInt = 0
+    boundary_calls: NonNegativeInt = 0
+    boundary_skips: NonNegativeInt = 0
+    boundary_parse_fallbacks: NonNegativeInt = 0
+    boundary_parse_fallback_rate: NonNegativeFloat = 0.0
+    boundary_invalid_session_id_count: NonNegativeInt = 0
+    boundary_policy_rejections: NonNegativeInt = 0
+    boundary_replacements_accepted: NonNegativeInt = 0
+    mean_boundary_latency_ms: NonNegativeFloat = 0.0
     parse_fallbacks: NonNegativeInt = 0
     parse_fallback_rate: NonNegativeFloat = 0.0
     invalid_session_id_count: NonNegativeInt = 0
@@ -97,11 +108,16 @@ class LongMemEvalRerankRunResult(SchemaModel):
     summaries: dict[str, RerankMethodSummary]
 
 
-def reranked_method_name(source_method: str) -> str:
+def reranked_method_name(
+    source_method: str,
+    *,
+    boundary_verification: bool = False,
+) -> str:
     """Return the stable method name used by QA and paper tables."""
 
     normalized = _normalize_method(source_method)
-    return f"{normalized}__vllm_rerank"
+    suffix = "vllm_boundary" if boundary_verification else "vllm_rerank"
+    return f"{normalized}__{suffix}"
 
 
 def run_longmemeval_rerank(
@@ -144,7 +160,10 @@ def run_longmemeval_rerank(
     observed_rerankers: set[tuple[str, str]] = set()
     try:
         for source_method in methods:
-            output_method = reranked_method_name(source_method)
+            output_method = reranked_method_name(
+                source_method,
+                boundary_verification=reranker.config.boundary_verification,
+            )
             method_started = perf_counter()
             source_records = _load_records(
                 source_run / source_method / "retrieval.jsonl",
@@ -288,6 +307,10 @@ def summarize_rerank_method(
     _validate_one_reranker(observations)
     provider, model = next(iter(observations)) if observations else (None, None)
     fallback_count = sum(record.rerank_metadata.get("parse_fallback") is True for record in records)
+    boundary_calls = sum(_boundary_bool(record, "call_made") for record in records)
+    boundary_fallbacks = sum(
+        _boundary_bool(record, "parse_fallback") for record in records
+    )
     payload = base.model_dump(mode="python")
     payload.update(
         {
@@ -302,6 +325,37 @@ def summarize_rerank_method(
             ),
             "output_top_k": config.output_top_k,
             "protected_top_n": config.protected_top_n,
+            "boundary_verification": config.boundary_verification,
+            "boundary_prompt_version": (
+                config.boundary_prompt_version if config.boundary_verification else None
+            ),
+            "boundary_protected_top_n": (
+                config.boundary_protected_top_n if config.boundary_verification else 0
+            ),
+            "boundary_calls": boundary_calls,
+            "boundary_skips": sum(
+                not _boundary_bool(record, "call_made") for record in records
+            )
+            if config.boundary_verification
+            else 0,
+            "boundary_parse_fallbacks": boundary_fallbacks,
+            "boundary_parse_fallback_rate": (
+                boundary_fallbacks / boundary_calls
+                if boundary_calls
+                else 0.0
+            ),
+            "boundary_invalid_session_id_count": sum(
+                len(_boundary_list(record, "invalid_session_ids")) for record in records
+            ),
+            "boundary_policy_rejections": sum(
+                _boundary_bool(record, "policy_rejected") for record in records
+            ),
+            "boundary_replacements_accepted": sum(
+                _boundary_bool(record, "replacement_accepted") for record in records
+            ),
+            "mean_boundary_latency_ms": _mean(
+                [_boundary_number(record, "latency_ms") for record in records]
+            ),
             "parse_fallbacks": fallback_count,
             "parse_fallback_rate": fallback_count / len(records) if records else 0.0,
             "invalid_session_id_count": sum(
@@ -388,7 +442,9 @@ def _rerank_record(
         {
             "source_method": source.method,
             "source_retrieval_latency_ms": source_retrieval_latency,
-            "rerank_calls": 1,
+            "rerank_calls": 1 + int(
+                decision.boundary is not None and decision.boundary.call_made
+            ),
             "total_rerank_latency_ms": rerank_latency_ms,
             "total_retrieval_latency_ms": source_retrieval_latency + rerank_latency_ms,
             "reranker_provider": decision.provider,
@@ -397,7 +453,7 @@ def _rerank_record(
         }
     )
     rerank_metadata: dict[str, JsonValue] = {
-        "schema_version": "1.0",
+        "schema_version": "2.0" if decision.boundary is not None else "1.0",
         "source_method": source.method,
         "prompt_version": decision.prompt_version,
         "prompt_sha256": decision.prompt_sha256,
@@ -425,6 +481,10 @@ def _rerank_record(
             JsonValue,
             decision.raw_ranked_session_ids,
         ),
+        "selector_selected_session_ids": cast(
+            JsonValue,
+            decision.selector_selected_session_ids,
+        ),
         "selected_session_ids": cast(JsonValue, decision.selected_session_ids),
         "invalid_session_ids": cast(JsonValue, decision.invalid_session_ids),
         "parse_fallback": decision.parse_fallback,
@@ -434,6 +494,12 @@ def _rerank_record(
         "usage": cast(JsonValue, decision.usage),
         "response_text": decision.response_text,
         "rerank_latency_ms": rerank_latency_ms,
+        "boundary": cast(
+            JsonValue,
+            decision.boundary.model_dump(mode="json")
+            if decision.boundary is not None
+            else None,
+        ),
         "test_labels_used": False,
     }
     return source.model_copy(
@@ -506,6 +572,9 @@ def _prepare_manifest(
                 "provider": "vllm",
                 "same_prompt": True,
                 "same_generation": True,
+                "two_stage_boundary_verification": bool(
+                    reranker_signature.get("boundary_verification")
+                ),
                 "gold_labels_visible_to_reranker": False,
             },
             "test_labels_used": False,
@@ -527,7 +596,13 @@ def _run_signature(
         "methods": cast(JsonValue, methods),
         "reranked_methods": cast(
             JsonValue,
-            [reranked_method_name(method) for method in methods],
+            [
+                reranked_method_name(
+                    method,
+                    boundary_verification=reranker_config.boundary_verification,
+                )
+                for method in methods
+            ],
         ),
         "limit": config.limit,
         "reranker": cast(JsonValue, reranker_config.model_dump(mode="json")),
@@ -627,6 +702,25 @@ def _metadata_number(record: RetrievalSampleRecord, name: str) -> float:
 def _metadata_list(record: RetrievalSampleRecord, name: str) -> list[object]:
     value = record.rerank_metadata.get(name, [])
     return list(value) if isinstance(value, list) else []
+
+
+def _boundary_payload(record: RetrievalSampleRecord) -> dict[str, JsonValue]:
+    value = record.rerank_metadata.get("boundary")
+    return value if isinstance(value, dict) else {}
+
+
+def _boundary_bool(record: RetrievalSampleRecord, name: str) -> bool:
+    return _boundary_payload(record).get(name) is True
+
+
+def _boundary_number(record: RetrievalSampleRecord, name: str) -> float:
+    value = _boundary_payload(record).get(name, 0.0)
+    return float(value) if isinstance(value, int | float) else 0.0
+
+
+def _boundary_list(record: RetrievalSampleRecord, name: str) -> list[JsonValue]:
+    value = _boundary_payload(record).get(name, [])
+    return value if isinstance(value, list) else []
 
 
 def _adapter_number(record: RetrievalSampleRecord, name: str) -> float:

@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 from collections.abc import Iterable, Sequence
+from time import perf_counter
 from typing import Protocol
 
 from pydantic import Field, JsonValue, PositiveInt, model_validator
@@ -20,11 +21,13 @@ from vmp_memos.frameworks.text import estimate_tokens, terms
 from vmp_memos.llm.base import ChatMessage, LLMGenerationConfig, LLMResponse
 from vmp_memos.schemas.base import (
     NonEmptyStr,
+    NonNegativeFloat,
     NonNegativeInt,
     SchemaModel,
 )
 
 LONGMEMEVAL_RERANK_PROMPT_VERSION = "vmp_v52_evidence_set_v1"
+LONGMEMEVAL_BOUNDARY_PROMPT_VERSION = "vmp_v53_selective_boundary_v1"
 LONGMEMEVAL_RERANK_SYSTEM_PROMPT = (
     "You rank long-term memory evidence. Do not answer the question. "
     "Return only the requested JSON object."
@@ -56,6 +59,49 @@ Instructions:
 - selected_session_ids must contain the best {output_top_k} distinct candidates.
 - ranked_session_ids may contain up to {ranked_output_count} distinct candidates.
 """
+LONGMEMEVAL_BOUNDARY_SYSTEM_PROMPT = (
+    "You conservatively verify the boundary of a long-term memory evidence set. "
+    "Do not answer the question. Return only the requested JSON object."
+)
+LONGMEMEVAL_BOUNDARY_USER_PROMPT = """\
+Audit whether proposed memory sessions should replace either of the two original
+boundary sessions in a Top-5 evidence set.
+
+Question date:
+{question_date}
+
+Question:
+{question}
+
+The first {protected_top_n} protected sessions are always retained:
+{protected_context}
+
+Original boundary sessions:
+{original_boundary_context}
+
+Proposed promotion sessions:
+{promotion_context}
+
+Instructions:
+- Choose exactly {open_slots} distinct IDs from the original-boundary and
+  proposed-promotion sessions. Together with the protected sessions, they must
+  form the most complete evidence set for answering the question.
+- Default to the original boundary sessions. Promote a new session only when it
+  adds essential evidence missing from the original Top-5.
+- Do not replace a session merely because another candidate repeats the same
+  fact more fluently.
+- Multi-session questions may require two complementary promotions. Temporal
+  and knowledge-update questions must preserve the dates/states needed to infer
+  the requested sequence or latest valid fact.
+- Confidence must be "high" only when every replacement is directly supported
+  by the candidate excerpts. Otherwise keep the originals and use "low".
+- Never invent a session ID and never answer the question.
+- Return exactly one JSON object:
+  {{"evidence_needs":["..."],
+    "selected_boundary_session_ids":["id1","id2"],
+    "decision":"keep|replace_one|replace_two",
+    "confidence":"high|low"}}
+"""
 
 _JSON_FENCE_PATTERN = re.compile(
     r"^\s*```(?:json)?\s*(.*?)\s*```\s*$",
@@ -85,9 +131,21 @@ class LongMemEvalRerankerConfig(SchemaModel):
     ranked_output_count: PositiveInt = 10
     max_candidate_chars: PositiveInt = 1200
     max_excerpt_turns: PositiveInt = 4
+    boundary_verification: bool = False
+    boundary_prompt_version: NonEmptyStr = LONGMEMEVAL_BOUNDARY_PROMPT_VERSION
+    boundary_protected_top_n: NonNegativeInt = 3
+    boundary_max_promotions: PositiveInt = 2
+    boundary_min_confidence: NonEmptyStr = "high"
     generation: LLMGenerationConfig = Field(
         default_factory=lambda: LLMGenerationConfig(
             max_tokens=512,
+            temperature=0.0,
+            top_p=1.0,
+        )
+    )
+    boundary_generation: LLMGenerationConfig = Field(
+        default_factory=lambda: LLMGenerationConfig(
+            max_tokens=256,
             temperature=0.0,
             top_p=1.0,
         )
@@ -107,11 +165,56 @@ class LongMemEvalRerankerConfig(SchemaModel):
             raise ValueError("ranked_output_count must be at least output_top_k")
         if self.ranked_output_count > self.candidate_count:
             raise ValueError("ranked_output_count cannot exceed candidate_count")
+        if self.boundary_prompt_version != LONGMEMEVAL_BOUNDARY_PROMPT_VERSION:
+            raise ValueError("unsupported LongMemEval boundary prompt version")
+        if self.boundary_verification:
+            if self.boundary_protected_top_n >= self.output_top_k:
+                raise ValueError("V5.3 boundary verification must leave open Top-k slots")
+            open_slots = self.output_top_k - self.boundary_protected_top_n
+            if self.boundary_max_promotions < open_slots:
+                raise ValueError(
+                    "V5.3 boundary_max_promotions must cover every open Top-k slot"
+                )
+            if self.boundary_min_confidence != "high":
+                raise ValueError("V5.3 paper policy requires high-confidence promotion")
         if float(self.generation.temperature) != 0.0:
             raise ValueError("paper reranking requires temperature=0")
         if float(self.generation.top_p) != 1.0:
             raise ValueError("paper reranking requires top_p=1")
+        if float(self.boundary_generation.temperature) != 0.0:
+            raise ValueError("paper boundary verification requires temperature=0")
+        if float(self.boundary_generation.top_p) != 1.0:
+            raise ValueError("paper boundary verification requires top_p=1")
         return self
+
+
+class LongMemEvalBoundaryDecision(SchemaModel):
+    """One conservative second-stage boundary decision."""
+
+    call_made: bool = False
+    skipped_reason: str | None = None
+    prompt_version: NonEmptyStr = LONGMEMEVAL_BOUNDARY_PROMPT_VERSION
+    prompt_sha256: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    finish_reason: str | None = None
+    evidence_needs: list[str] = Field(default_factory=list)
+    original_boundary_session_ids: list[NonEmptyStr] = Field(default_factory=list)
+    proposed_promotion_session_ids: list[NonEmptyStr] = Field(default_factory=list)
+    raw_selected_boundary_session_ids: list[NonEmptyStr] = Field(default_factory=list)
+    selected_boundary_session_ids: list[NonEmptyStr] = Field(default_factory=list)
+    invalid_session_ids: list[NonEmptyStr] = Field(default_factory=list)
+    decision: str | None = None
+    confidence: str | None = None
+    replacement_accepted: bool = False
+    parse_fallback: bool = False
+    policy_rejected: bool = False
+    fallback_reason: str | None = None
+    input_tokens: NonNegativeInt = 0
+    output_tokens: NonNegativeInt = 0
+    usage: dict[str, JsonValue] = Field(default_factory=dict)
+    response_text: str = ""
+    latency_ms: NonNegativeFloat = 0.0
 
 
 class LongMemEvalRerankDecision(SchemaModel):
@@ -125,6 +228,7 @@ class LongMemEvalRerankDecision(SchemaModel):
     evidence_needs: list[str] = Field(default_factory=list)
     raw_selected_session_ids: list[NonEmptyStr] = Field(default_factory=list)
     raw_ranked_session_ids: list[NonEmptyStr] = Field(default_factory=list)
+    selector_selected_session_ids: list[NonEmptyStr] = Field(default_factory=list)
     ranked_session_ids: list[NonEmptyStr] = Field(default_factory=list)
     selected_session_ids: list[NonEmptyStr] = Field(default_factory=list)
     invalid_session_ids: list[NonEmptyStr] = Field(default_factory=list)
@@ -134,6 +238,7 @@ class LongMemEvalRerankDecision(SchemaModel):
     output_tokens: NonNegativeInt = 0
     usage: dict[str, JsonValue] = Field(default_factory=dict)
     response_text: str = ""
+    boundary: LongMemEvalBoundaryDecision | None = None
 
 
 class LongMemEvalEvidenceReranker:
@@ -186,7 +291,7 @@ class LongMemEvalEvidenceReranker:
             valid_proposed = list(original_ids)
             fallback_reason = fallback_reason or "response contained no valid candidate IDs"
         complete_llm_order = _ordered_unique([*valid_proposed, *original_ids])
-        ranked_ids = guarded_session_ranking(
+        selector_ranked_ids = guarded_session_ranking(
             original_session_ids=original_ids,
             proposed_session_ids=complete_llm_order,
             output_top_k=self.config.output_top_k,
@@ -202,6 +307,22 @@ class LongMemEvalEvidenceReranker:
             "completion_tokens",
             fallback=estimate_tokens(response.text) if response.text else 0,
         )
+        boundary: LongMemEvalBoundaryDecision | None = None
+        ranked_ids = selector_ranked_ids
+        if self.config.boundary_verification:
+            boundary, ranked_ids = self._verify_boundary(
+                question=question,
+                question_date=question_date,
+                candidates=unique_candidates,
+                valid_proposed_session_ids=[] if parse_fallback else valid_proposed,
+                original_session_ids=original_ids,
+                selector_response=response,
+            )
+            input_tokens += boundary.input_tokens
+            output_tokens += boundary.output_tokens
+            if boundary.parse_fallback:
+                parse_fallback = True
+                fallback_reason = boundary.fallback_reason or fallback_reason
         return LongMemEvalRerankDecision(
             prompt_version=self.config.prompt_version,
             prompt_sha256=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
@@ -211,6 +332,7 @@ class LongMemEvalEvidenceReranker:
             evidence_needs=evidence_needs,
             raw_selected_session_ids=raw_selected,
             raw_ranked_session_ids=raw_ranked,
+            selector_selected_session_ids=selector_ranked_ids[: self.config.output_top_k],
             ranked_session_ids=ranked_ids,
             selected_session_ids=ranked_ids[: self.config.output_top_k],
             invalid_session_ids=invalid_ids,
@@ -220,6 +342,146 @@ class LongMemEvalEvidenceReranker:
             output_tokens=output_tokens,
             usage=response.usage,
             response_text=response.text.strip(),
+            boundary=boundary,
+        )
+
+    def _verify_boundary(
+        self,
+        *,
+        question: str,
+        question_date: str | None,
+        candidates: Sequence[RetrievedMemory],
+        valid_proposed_session_ids: Sequence[str],
+        original_session_ids: Sequence[str],
+        selector_response: LLMResponse,
+    ) -> tuple[LongMemEvalBoundaryDecision, list[str]]:
+        """Conservatively verify at most two promotions around the Top-5 boundary."""
+
+        protected = list(original_session_ids[: self.config.boundary_protected_top_n])
+        original_top_k = list(original_session_ids[: self.config.output_top_k])
+        original_boundary = original_top_k[self.config.boundary_protected_top_n :]
+        promotions = [
+            session_id
+            for session_id in _ordered_unique(valid_proposed_session_ids)
+            if session_id not in original_top_k
+        ][: self.config.boundary_max_promotions]
+        if not promotions:
+            ranked_ids = _ordered_unique([*original_top_k, *original_session_ids])
+            return (
+                LongMemEvalBoundaryDecision(
+                    call_made=False,
+                    skipped_reason="selector proposed no out-of-Top-5 candidates",
+                    original_boundary_session_ids=original_boundary,
+                    selected_boundary_session_ids=original_boundary,
+                ),
+                ranked_ids,
+            )
+
+        by_session = {_session_id(memory): memory for memory in candidates}
+        prompt = build_longmemeval_boundary_prompt(
+            question=question,
+            question_date=question_date,
+            protected=[by_session[session_id] for session_id in protected],
+            original_boundary=[
+                by_session[session_id]
+                for session_id in original_boundary
+                if session_id in by_session
+            ],
+            promotions=[
+                by_session[session_id] for session_id in promotions if session_id in by_session
+            ],
+            config=self.config,
+        )
+        started_at = perf_counter()
+        response = self.client.chat(
+            [
+                ChatMessage(role="system", content=LONGMEMEVAL_BOUNDARY_SYSTEM_PROMPT),
+                ChatMessage(role="user", content=prompt),
+            ],
+            generation=self.config.boundary_generation,
+        )
+        latency_ms = (perf_counter() - started_at) * 1000.0
+        if (
+            response.provider != selector_response.provider
+            or response.model != selector_response.model
+        ):
+            raise ValueError("selector and boundary verifier must use one provider/model")
+        parsed, fallback_reason = _parse_rerank_response(response.text)
+        raw_selected = _string_list(parsed.get("selected_boundary_session_ids"))
+        allowed_boundary = set([*original_boundary, *promotions])
+        invalid_ids = [
+            session_id for session_id in raw_selected if session_id not in allowed_boundary
+        ]
+        valid_selected = _ordered_unique(
+            session_id for session_id in raw_selected if session_id in allowed_boundary
+        )
+        open_slots = self.config.output_top_k - self.config.boundary_protected_top_n
+        confidence = _normalized_string(parsed.get("confidence"))
+        decision_name = _normalized_string(parsed.get("decision"))
+        parse_fallback = len(valid_selected) != open_slots or bool(invalid_ids)
+        proposed_change = set(valid_selected) != set(original_boundary)
+        policy_rejected = (
+            not parse_fallback
+            and proposed_change
+            and confidence != self.config.boundary_min_confidence
+        )
+        if parse_fallback:
+            selected_boundary = original_boundary
+            fallback_reason = fallback_reason or (
+                f"boundary response must select exactly {open_slots} valid distinct IDs"
+            )
+        elif policy_rejected:
+            selected_boundary = original_boundary
+            fallback_reason = (
+                "replacement confidence below "
+                f"{self.config.boundary_min_confidence!r}"
+            )
+        else:
+            selected_boundary = valid_selected if proposed_change else original_boundary
+        final_top_k = _ordered_unique([*protected, *selected_boundary])
+        ranked_ids = _ordered_unique(
+            [
+                *final_top_k,
+                *valid_proposed_session_ids,
+                *original_session_ids,
+            ]
+        )
+        input_tokens = _usage_tokens(
+            response.usage,
+            "prompt_tokens",
+            fallback=estimate_tokens(LONGMEMEVAL_BOUNDARY_SYSTEM_PROMPT + "\n" + prompt),
+        )
+        output_tokens = _usage_tokens(
+            response.usage,
+            "completion_tokens",
+            fallback=estimate_tokens(response.text) if response.text else 0,
+        )
+        return (
+            LongMemEvalBoundaryDecision(
+                call_made=True,
+                prompt_sha256=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                provider=response.provider,
+                model=response.model,
+                finish_reason=response.finish_reason,
+                evidence_needs=_string_list(parsed.get("evidence_needs"))[:4],
+                original_boundary_session_ids=original_boundary,
+                proposed_promotion_session_ids=promotions,
+                raw_selected_boundary_session_ids=raw_selected,
+                selected_boundary_session_ids=selected_boundary,
+                invalid_session_ids=invalid_ids,
+                decision=decision_name,
+                confidence=confidence,
+                replacement_accepted=selected_boundary != original_boundary,
+                parse_fallback=parse_fallback,
+                policy_rejected=policy_rejected,
+                fallback_reason=fallback_reason if parse_fallback or policy_rejected else None,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                usage=response.usage,
+                response_text=response.text.strip(),
+                latency_ms=latency_ms,
+            ),
+            ranked_ids,
         )
 
 
@@ -248,6 +510,45 @@ def build_longmemeval_rerank_prompt(
         candidate_context=candidate_context,
         output_top_k=config.output_top_k,
         ranked_output_count=config.ranked_output_count,
+    )
+
+
+def build_longmemeval_boundary_prompt(
+    *,
+    question: str,
+    question_date: str | None,
+    protected: Sequence[RetrievedMemory],
+    original_boundary: Sequence[RetrievedMemory],
+    promotions: Sequence[RetrievedMemory],
+    config: LongMemEvalRerankerConfig,
+) -> str:
+    """Render the fixed framework-agnostic V5.3 boundary verification prompt."""
+
+    def context(role: str, memories: Sequence[RetrievedMemory]) -> str:
+        if not memories:
+            return "(none)"
+        blocks: list[str] = []
+        for memory in memories:
+            excerpt = candidate_excerpt(
+                question,
+                memory.content,
+                max_chars=config.max_candidate_chars,
+                max_turns=config.max_excerpt_turns,
+            )
+            blocks.append(
+                f"[{role} | session_id={_session_id(memory)} | "
+                f"date={memory.source_date or 'unknown'}]\n{excerpt}"
+            )
+        return "\n\n".join(blocks)
+
+    return LONGMEMEVAL_BOUNDARY_USER_PROMPT.format(
+        question_date=question_date or "unknown",
+        question=question,
+        protected_top_n=config.boundary_protected_top_n,
+        protected_context=context("protected", protected),
+        original_boundary_context=context("original-boundary", original_boundary),
+        promotion_context=context("proposed-promotion", promotions),
+        open_slots=config.output_top_k - config.boundary_protected_top_n,
     )
 
 
@@ -390,6 +691,10 @@ def _string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [stripped for item in value if isinstance(item, str) and (stripped := item.strip())]
+
+
+def _normalized_string(value: object) -> str | None:
+    return value.strip().casefold() if isinstance(value, str) and value.strip() else None
 
 
 def _ordered_unique(values: Iterable[str]) -> list[str]:
