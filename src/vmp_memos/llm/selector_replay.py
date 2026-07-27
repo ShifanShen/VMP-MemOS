@@ -20,6 +20,7 @@ from vmp_memos.llm.reranker import (
     LongMemEvalRerankerConfig,
     RerankerChatClient,
     build_longmemeval_rerank_prompt,
+    prepare_longmemeval_rerank_candidates,
 )
 
 
@@ -257,9 +258,10 @@ def validate_selector_replay_source(
                     RetrievedMemory.model_validate(value)
                     for value in memory_values
                 ]
-                memories = _unique_retrieved_memories(parsed_memories)[
-                    : config.candidate_count
-                ]
+                memories = prepare_longmemeval_rerank_candidates(
+                    parsed_memories,
+                    candidate_count=config.candidate_count,
+                )
                 prompt = build_longmemeval_rerank_prompt(
                     question=question,
                     question_date=question_date_value,
@@ -290,20 +292,6 @@ def _selector_records_path(selector_run: Path, source_method: str) -> Path:
     raise FileNotFoundError(
         f"No selector records for method {source_method!r} in {selector_run}"
     )
-
-
-def _unique_retrieved_memories(
-    memories: Sequence[RetrievedMemory],
-) -> list[RetrievedMemory]:
-    unique: list[RetrievedMemory] = []
-    seen: set[str] = set()
-    for memory in memories:
-        session_id = memory.source_session_id or memory.memory_id
-        if session_id in seen:
-            continue
-        seen.add(session_id)
-        unique.append(memory)
-    return unique
 
 
 def _read_json_object(path: Path) -> dict[str, JsonValue]:

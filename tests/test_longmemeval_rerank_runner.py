@@ -231,7 +231,7 @@ def test_v53_runner_audits_shared_boundary_verification(tmp_path) -> None:
 
 
 def _source_record() -> RetrievalSampleRecord:
-    memories = [
+    unique_memories = [
         RetrievedMemory(
             memory_id=f"s{index}",
             source_session_id=f"s{index}",
@@ -241,7 +241,15 @@ def _source_record() -> RetrievalSampleRecord:
         )
         for index in range(1, 7)
     ]
-    session_ids = [memory.source_session_id for memory in memories]
+    duplicate_first_session = unique_memories[0].model_copy(
+        update={"memory_id": "s1-duplicate-chunk"}
+    )
+    memories = [
+        unique_memories[0],
+        duplicate_first_session,
+        *unique_memories[1:],
+    ]
+    session_ids = [memory.source_session_id for memory in unique_memories]
     assert all(session_id is not None for session_id in session_ids)
     ranked_ids = [str(session_id) for session_id in session_ids]
     return RetrievalSampleRecord(

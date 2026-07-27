@@ -19,6 +19,7 @@ from vmp_memos.llm.reranker import (
     build_longmemeval_rerank_prompt,
     candidate_excerpt,
     guarded_session_ranking,
+    prepare_longmemeval_rerank_candidates,
     reorder_memories,
 )
 from vmp_memos.llm.selector_replay import (
@@ -54,6 +55,7 @@ __all__ = [
     "guarded_session_ranking",
     "load_selector_replay_cache",
     "load_vllm_config",
+    "prepare_longmemeval_rerank_candidates",
     "reorder_memories",
     "validate_selector_replay_source",
 ]

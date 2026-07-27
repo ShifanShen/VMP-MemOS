@@ -313,7 +313,10 @@ class LongMemEvalEvidenceReranker:
     ) -> LongMemEvalRerankDecision:
         """Rerank one framework's candidates without observing gold labels."""
 
-        unique_candidates = _unique_memories(candidates)[: self.config.candidate_count]
+        unique_candidates = prepare_longmemeval_rerank_candidates(
+            candidates,
+            candidate_count=self.config.candidate_count,
+        )
         if not unique_candidates:
             raise ValueError("at least one retrieval candidate is required")
         original_ids = [_session_id(memory) for memory in unique_candidates]
@@ -627,6 +630,18 @@ def build_longmemeval_rerank_prompt(
         output_top_k=config.output_top_k,
         ranked_output_count=config.ranked_output_count,
     )
+
+
+def prepare_longmemeval_rerank_candidates(
+    candidates: Sequence[RetrievedMemory],
+    *,
+    candidate_count: int,
+) -> list[RetrievedMemory]:
+    """Deduplicate sessions before applying the shared candidate-depth limit."""
+
+    if candidate_count < 1:
+        raise ValueError("candidate_count must be at least 1")
+    return _unique_memories(candidates)[:candidate_count]
 
 
 def build_longmemeval_boundary_prompt(

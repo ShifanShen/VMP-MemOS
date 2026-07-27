@@ -15,6 +15,7 @@ from vmp_memos.llm import (
     LongMemEvalRerankerConfig,
     candidate_excerpt,
     guarded_session_ranking,
+    prepare_longmemeval_rerank_candidates,
 )
 
 
@@ -113,6 +114,25 @@ def test_guard_and_excerpt_are_deterministic_and_framework_agnostic() -> None:
     )
     assert "Paris" in excerpt
     assert len(excerpt) <= 100
+
+
+def test_candidate_depth_is_applied_after_session_deduplication() -> None:
+    memories = _memories(6)
+    duplicate = memories[0].model_copy(update={"memory_id": "duplicate-s1"})
+
+    prepared = prepare_longmemeval_rerank_candidates(
+        [memories[0], duplicate, *memories[1:]],
+        candidate_count=6,
+    )
+
+    assert [memory.source_session_id for memory in prepared] == [
+        "s1",
+        "s2",
+        "s3",
+        "s4",
+        "s5",
+        "s6",
+    ]
 
 
 def test_paper_reranker_rejects_non_deterministic_sampling() -> None:

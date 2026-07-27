@@ -21,6 +21,7 @@ from vmp_memos.frameworks import RetrievedMemory
 from vmp_memos.llm import (
     LongMemEvalRerankDecision,
     LongMemEvalRerankerConfig,
+    prepare_longmemeval_rerank_candidates,
     reorder_memories,
 )
 from vmp_memos.longmemeval.retrieval_runner import (
@@ -405,7 +406,10 @@ def _rerank_record(
     output_method: str,
     reranker: EvidenceReranker,
 ) -> RetrievalSampleRecord:
-    candidates = source.retrieved_memories[: reranker.config.candidate_count]
+    candidates = prepare_longmemeval_rerank_candidates(
+        source.retrieved_memories,
+        candidate_count=reranker.config.candidate_count,
+    )
     started_at = perf_counter()
     decision = reranker.rerank(
         question=source.question,
