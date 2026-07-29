@@ -27,14 +27,27 @@ from vmp_memos.schemas.base import (
 )
 
 LONGMEMEVAL_RERANK_PROMPT_VERSION = "vmp_v52_evidence_set_v1"
+LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION = (
+    "vmp_v54_symbolic_span_selector_v1"
+)
+LONGMEMEVAL_RERANK_PROMPT_VERSIONS = frozenset(
+    {
+        LONGMEMEVAL_RERANK_PROMPT_VERSION,
+        LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
+    }
+)
 LONGMEMEVAL_BOUNDARY_PROMPT_VERSION = "vmp_v53_selective_boundary_v1"
 LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION = "vmp_v531_symbolic_boundary_v1"
 LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION = "vmp_v532_atomic_set_boundary_v1"
+LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION = (
+    "vmp_v54_symbolic_span_boundary_v1"
+)
 LONGMEMEVAL_BOUNDARY_PROMPT_VERSIONS = frozenset(
     {
         LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
         LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
         LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
+        LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
     }
 )
 LONGMEMEVAL_RERANK_SYSTEM_PROMPT = (
@@ -67,6 +80,45 @@ Instructions:
     "ranked_session_ids":["id1", "..."]}}
 - selected_session_ids must contain the best {output_top_k} distinct candidates.
 - ranked_session_ids may contain up to {ranked_output_count} distinct candidates.
+"""
+LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_USER_PROMPT = """\
+Select a joint set of long-term-memory evidence sufficient to answer the
+question. Candidate labels and evidence-span labels are opaque identifiers.
+
+Question date:
+{question_date}
+
+Question:
+{question}
+
+Candidate sessions:
+{candidate_context}
+
+Evidence-first procedure:
+1. Decompose the question into at most four atomic needs, named N1 through N4.
+2. Select the best {output_top_k} distinct candidate labels. The first
+   {protected_top_n} candidates are protected by the server, but you must still
+   return a complete selection.
+3. For every selected candidate outside the original Top-5 (C01 through C05),
+   add one evidence_selections entry containing the exact evidence-span labels
+   that support its missing need. Do not copy or paraphrase evidence text.
+4. For temporal and knowledge-update questions, prefer the latest valid state
+   while retaining earlier dated states only when the sequence is required.
+5. For multi-session questions, cover distinct evidence needs rather than
+   selecting repeated versions of the same fact.
+
+Never output a session ID or answer the question. Return one JSON object:
+  {{"evidence_needs":["N1: ..."],
+    "evidence_selections":[
+      {{"supports_needs":["N1"],"evidence_spans":["C06:S02"]}}
+    ],
+    "selected_candidates":["C01","C02","C03","C04","C05"],
+    "ranked_candidates":["C01","C02","C03","C04","C05"]}}
+
+selected_candidates must contain exactly {output_top_k} distinct labels.
+ranked_candidates may contain up to {ranked_output_count} distinct labels.
+Evidence-span ownership is checked locally; an out-of-Top-5 candidate without
+a valid owned evidence span cannot be promoted.
 """
 LONGMEMEVAL_BOUNDARY_SYSTEM_PROMPT = (
     "You conservatively verify the boundary of a long-term memory evidence set. "
@@ -201,6 +253,52 @@ Return exactly one JSON object:
 selected_slots must contain exactly {open_slots} distinct labels from
 {selectable_labels}. Include a slot_assessments entry for every selected P slot.
 """
+LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_USER_PROMPT = """\
+Audit the complete Top-5 long-term-memory evidence set. The first
+{protected_top_n} sessions are locked. Choose the remaining {open_slots} slots
+from the original B options and selector-proposed P options.
+
+Question date:
+{question_date}
+
+Question:
+{question}
+
+Locked evidence present in both sets (LOCKED labels are not selectable):
+{protected_context}
+
+Original Top-5 open slots:
+{original_boundary_context}
+
+Selector-proposed alternatives:
+{promotion_context}
+
+Evidence-first procedure:
+1. Decompose the question into at most four atomic needs, named N1 through N4.
+2. Read the complete locked+B and locked+P evidence sets.
+3. For every selected P slot, return one or more exact evidence-span labels
+   owned by that P slot. Do not copy evidence text and do not use a span owned
+   by another slot.
+4. Keep B by default. Select P only when its grounded span adds essential
+   evidence missing from the locked evidence and retained B slots.
+5. Multi-session questions require complementary facts. Temporal and
+   knowledge-update questions require the dated states needed for comparison.
+6. Use confidence "high" only when every selected P is grounded by its own
+   span. Low-confidence changes are rejected.
+
+Never output a LOCKED label, session ID, or final answer. Return one JSON object:
+  {{"evidence_needs":["N1: ..."],
+    "needs_missing_after_locked":["N1"],
+    "slot_assessments":[
+      {{"slot":"P1","supports_needs":["N1"],
+        "evidence_spans":["P1:S02"],"adds_missing_evidence":true}}
+    ],
+    "selected_slots":["B1","P1"],
+    "confidence":"high|low"}}
+
+selected_slots must contain exactly {open_slots} distinct labels from
+{selectable_labels}. Include a slot_assessments entry for every selected P slot.
+"""
 
 _JSON_FENCE_PATTERN = re.compile(
     r"^\s*```(?:json)?\s*(.*?)\s*```\s*$",
@@ -254,7 +352,7 @@ class LongMemEvalRerankerConfig(SchemaModel):
     def validate_fair_reranking(self) -> LongMemEvalRerankerConfig:
         """Reject settings that break the fixed V5.2 comparison contract."""
 
-        if self.prompt_version != LONGMEMEVAL_RERANK_PROMPT_VERSION:
+        if self.prompt_version not in LONGMEMEVAL_RERANK_PROMPT_VERSIONS:
             raise ValueError("unsupported LongMemEval reranker prompt version")
         if self.candidate_count < self.output_top_k:
             raise ValueError("candidate_count must be at least output_top_k")
@@ -266,6 +364,20 @@ class LongMemEvalRerankerConfig(SchemaModel):
             raise ValueError("ranked_output_count cannot exceed candidate_count")
         if self.boundary_prompt_version not in LONGMEMEVAL_BOUNDARY_PROMPT_VERSIONS:
             raise ValueError("unsupported LongMemEval boundary prompt version")
+        symbolic_span_selector = (
+            self.prompt_version
+            == LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION
+        )
+        symbolic_span_boundary = (
+            self.boundary_prompt_version
+            == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
+        )
+        if self.boundary_verification and (
+            symbolic_span_selector != symbolic_span_boundary
+        ):
+            raise ValueError(
+                "V5.4 symbolic span selector and boundary versions must be enabled together"
+            )
         if self.boundary_verification:
             if self.boundary_protected_top_n >= self.output_top_k:
                 raise ValueError("V5.3 boundary verification must leave open Top-k slots")
@@ -330,6 +442,19 @@ class LongMemEvalRerankDecision(SchemaModel):
     model: NonEmptyStr
     finish_reason: str | None = None
     evidence_needs: list[str] = Field(default_factory=list)
+    candidate_label_session_ids: dict[NonEmptyStr, NonEmptyStr] = Field(
+        default_factory=dict
+    )
+    raw_selected_candidate_labels: list[NonEmptyStr] = Field(default_factory=list)
+    raw_ranked_candidate_labels: list[NonEmptyStr] = Field(default_factory=list)
+    invalid_candidate_labels: list[NonEmptyStr] = Field(default_factory=list)
+    selector_evidence_selections: list[dict[str, JsonValue]] = Field(
+        default_factory=list
+    )
+    selector_span_binding_failures: list[NonEmptyStr] = Field(default_factory=list)
+    selector_grounded_promotion_labels: list[NonEmptyStr] = Field(
+        default_factory=list
+    )
     raw_selected_session_ids: list[NonEmptyStr] = Field(default_factory=list)
     raw_ranked_session_ids: list[NonEmptyStr] = Field(default_factory=list)
     selector_selected_session_ids: list[NonEmptyStr] = Field(default_factory=list)
@@ -407,17 +532,97 @@ class LongMemEvalEvidenceReranker:
             generation=self.config.generation,
         )
         parsed, fallback_reason = _parse_rerank_response(response.text)
-        raw_selected = _string_list(parsed.get("selected_session_ids"))
-        raw_ranked = _string_list(parsed.get("ranked_session_ids"))
         evidence_needs = _string_list(parsed.get("evidence_needs"))[:4]
-        allowed = set(original_ids)
-        proposed = _ordered_unique([*raw_selected, *raw_ranked])
-        invalid_ids = [session_id for session_id in proposed if session_id not in allowed]
-        valid_proposed = [session_id for session_id in proposed if session_id in allowed]
+        candidate_label_session_ids: dict[str, str] = {}
+        raw_selected_candidate_labels: list[str] = []
+        raw_ranked_candidate_labels: list[str] = []
+        invalid_candidate_labels: list[str] = []
+        selector_evidence_selections: list[dict[str, JsonValue]] = []
+        selector_span_binding_failures: list[str] = []
+        selector_grounded_promotion_labels: list[str] = []
+        if (
+            self.config.prompt_version
+            == LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION
+        ):
+            candidate_label_session_ids = _candidate_label_session_map(unique_candidates)
+            raw_selected_candidate_labels = [
+                _normalized_candidate_label(value)
+                for value in _string_list(parsed.get("selected_candidates"))
+            ]
+            raw_ranked_candidate_labels = [
+                _normalized_candidate_label(value)
+                for value in _string_list(parsed.get("ranked_candidates"))
+            ]
+            raw_candidate_labels = _ordered_unique(
+                [*raw_selected_candidate_labels, *raw_ranked_candidate_labels]
+            )
+            invalid_candidate_labels = [
+                label
+                for label in raw_candidate_labels
+                if label not in candidate_label_session_ids
+            ]
+            (
+                selector_evidence_selections,
+                selector_span_binding_failures,
+                grounded_labels,
+            ) = _validate_selector_evidence_selections(
+                parsed,
+                candidates=unique_candidates,
+                question=question,
+                config=self.config,
+            )
+            original_top_k_labels = {
+                _candidate_label(index)
+                for index in range(
+                    1,
+                    min(self.config.output_top_k, len(unique_candidates)) + 1,
+                )
+            }
+            selector_grounded_promotion_labels = [
+                label for label in grounded_labels if label not in original_top_k_labels
+            ]
+            valid_labels = [
+                *selector_grounded_promotion_labels,
+                *[
+                    label
+                    for label in raw_candidate_labels
+                    if label in original_top_k_labels
+                ],
+            ]
+            valid_proposed = _ordered_unique(
+                candidate_label_session_ids[label]
+                for label in valid_labels
+                if label in candidate_label_session_ids
+            )
+            raw_selected = [
+                candidate_label_session_ids[label]
+                for label in raw_selected_candidate_labels
+                if label in candidate_label_session_ids
+            ]
+            raw_ranked = [
+                candidate_label_session_ids[label]
+                for label in raw_ranked_candidate_labels
+                if label in candidate_label_session_ids
+            ]
+            invalid_ids: list[str] = []
+        else:
+            raw_selected = _string_list(parsed.get("selected_session_ids"))
+            raw_ranked = _string_list(parsed.get("ranked_session_ids"))
+            allowed = set(original_ids)
+            proposed = _ordered_unique([*raw_selected, *raw_ranked])
+            invalid_ids = [session_id for session_id in proposed if session_id not in allowed]
+            valid_proposed = [
+                session_id for session_id in proposed if session_id in allowed
+            ]
         parse_fallback = not valid_proposed
         if parse_fallback:
             valid_proposed = list(original_ids)
-            fallback_reason = fallback_reason or "response contained no valid candidate IDs"
+            fallback_reason = fallback_reason or (
+                "response contained no grounded candidate spans"
+                if self.config.prompt_version
+                == LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION
+                else "response contained no valid candidate IDs"
+            )
         complete_llm_order = _ordered_unique([*valid_proposed, *original_ids])
         selector_ranked_ids = guarded_session_ranking(
             original_session_ids=original_ids,
@@ -458,6 +663,13 @@ class LongMemEvalEvidenceReranker:
             model=response.model,
             finish_reason=response.finish_reason,
             evidence_needs=evidence_needs,
+            candidate_label_session_ids=candidate_label_session_ids,
+            raw_selected_candidate_labels=raw_selected_candidate_labels,
+            raw_ranked_candidate_labels=raw_ranked_candidate_labels,
+            invalid_candidate_labels=invalid_candidate_labels,
+            selector_evidence_selections=selector_evidence_selections,
+            selector_span_binding_failures=selector_span_binding_failures,
+            selector_grounded_promotion_labels=selector_grounded_promotion_labels,
             raw_selected_session_ids=raw_selected,
             raw_ranked_session_ids=raw_ranked,
             selector_selected_session_ids=selector_ranked_ids[: self.config.output_top_k],
@@ -602,6 +814,22 @@ class LongMemEvalEvidenceReranker:
                 question=question,
                 config=self.config,
             )
+        elif (
+            self.config.boundary_prompt_version
+            == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
+            and not parse_fallback
+            and proposed_change
+        ):
+            slot_assessments, atomic_support_failures = (
+                _validate_symbolic_span_slot_assessments(
+                    parsed,
+                    selected_slot_labels=selected_slot_labels,
+                    slot_session_ids=slot_session_ids,
+                    by_session=by_session,
+                    question=question,
+                    config=self.config,
+                )
+            )
         policy_rejected = (
             not parse_fallback
             and proposed_change
@@ -620,8 +848,15 @@ class LongMemEvalEvidenceReranker:
         elif policy_rejected:
             selected_boundary = original_boundary
             if atomic_support_failures:
-                fallback_reason = "atomic promotion evidence failed validation: " + ", ".join(
-                    atomic_support_failures
+                validation_name = (
+                    "symbolic span evidence"
+                    if self.config.boundary_prompt_version
+                    == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
+                    else "atomic promotion evidence"
+                )
+                fallback_reason = (
+                    f"{validation_name} failed validation: "
+                    + ", ".join(atomic_support_failures)
                 )
             else:
                 fallback_reason = (
@@ -701,6 +936,29 @@ def build_longmemeval_rerank_prompt(
 ) -> str:
     """Render the fixed framework-agnostic evidence-selection prompt."""
 
+    if config.prompt_version == LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION:
+        candidate_context = "\n\n".join(
+            _format_symbolic_span_candidate(
+                rank,
+                memory,
+                question=question,
+                max_chars=config.max_candidate_chars,
+                max_turns=config.max_excerpt_turns,
+            )
+            for rank, memory in enumerate(
+                candidates[: config.candidate_count],
+                start=1,
+            )
+        )
+        return LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_USER_PROMPT.format(
+            question_date=question_date or "unknown",
+            question=question,
+            candidate_context=candidate_context,
+            output_top_k=config.output_top_k,
+            protected_top_n=config.protected_top_n,
+            ranked_output_count=config.ranked_output_count,
+        ).strip()
+
     candidate_context = "\n\n".join(
         _format_candidate(
             rank,
@@ -743,6 +1001,18 @@ def build_longmemeval_boundary_prompt(
 ) -> str:
     """Render one fixed framework-agnostic boundary verification prompt."""
 
+    if (
+        config.boundary_prompt_version
+        == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
+    ):
+        return _build_symbolic_span_boundary_prompt(
+            question=question,
+            question_date=question_date,
+            protected=protected,
+            original_boundary=original_boundary,
+            promotions=promotions,
+            config=config,
+        )
     if config.boundary_prompt_version == LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION:
         return _build_atomic_boundary_prompt(
             question=question,
@@ -912,6 +1182,65 @@ def _build_atomic_boundary_prompt(
     ).strip()
 
 
+def _build_symbolic_span_boundary_prompt(
+    *,
+    question: str,
+    question_date: str | None,
+    protected: Sequence[RetrievedMemory],
+    original_boundary: Sequence[RetrievedMemory],
+    promotions: Sequence[RetrievedMemory],
+    config: LongMemEvalRerankerConfig,
+) -> str:
+    """Render V5.4 with locally owned evidence-span identifiers."""
+
+    def context(
+        prefix: str,
+        memories: Sequence[RetrievedMemory],
+        *,
+        description: str,
+    ) -> str:
+        if not memories:
+            return "(none)"
+        return "\n\n".join(
+            _format_labeled_span_memory(
+                f"{prefix}{index}",
+                memory,
+                question=question,
+                description=description,
+                max_chars=config.max_candidate_chars,
+                max_turns=config.max_excerpt_turns,
+            )
+            for index, memory in enumerate(memories, start=1)
+        )
+
+    slot_labels = [
+        *[f"B{index}" for index in range(1, len(original_boundary) + 1)],
+        *[f"P{index}" for index in range(1, len(promotions) + 1)],
+    ]
+    return LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_USER_PROMPT.format(
+        question_date=question_date or "unknown",
+        question=question,
+        protected_top_n=config.boundary_protected_top_n,
+        protected_context=context(
+            "LOCKED-",
+            protected,
+            description="present in every complete set",
+        ),
+        original_boundary_context=context(
+            "B",
+            original_boundary,
+            description="selectable original",
+        ),
+        promotion_context=context(
+            "P",
+            promotions,
+            description="selectable promotion",
+        ),
+        open_slots=config.output_top_k - config.boundary_protected_top_n,
+        selectable_labels=", ".join(slot_labels),
+    ).strip()
+
+
 def _boundary_slot_map(
     original_boundary: Sequence[str],
     promotions: Sequence[str],
@@ -926,6 +1255,7 @@ def _uses_symbolic_boundary_slots(prompt_version: str) -> bool:
     return prompt_version in {
         LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
         LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
+        LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
     }
 
 
@@ -1008,6 +1338,145 @@ def _validate_atomic_slot_assessments(
     return assessments, failures
 
 
+def _validate_selector_evidence_selections(
+    parsed: dict[str, object],
+    *,
+    candidates: Sequence[RetrievedMemory],
+    question: str,
+    config: LongMemEvalRerankerConfig,
+) -> tuple[list[dict[str, JsonValue]], list[str], list[str]]:
+    raw_selections = parsed.get("evidence_selections")
+    values = raw_selections if isinstance(raw_selections, list) else []
+    need_ids = _evidence_need_ids(_string_list(parsed.get("evidence_needs")))
+    span_owners = _selector_span_owner_map(
+        candidates,
+        question=question,
+        config=config,
+    )
+    selections: list[dict[str, JsonValue]] = []
+    failures: list[str] = []
+    grounded_labels: list[str] = []
+    for index, value in enumerate(values, start=1):
+        if not isinstance(value, dict):
+            failures.append(f"E{index}:invalid_assessment")
+            continue
+        supports_needs = _string_list(value.get("supports_needs"))[:4]
+        raw_span_ids = _string_list(value.get("evidence_spans"))[:4]
+        span_ids = [_normalized_evidence_span_id(span_id) for span_id in raw_span_ids]
+        invalid_span_ids = [span_id for span_id in span_ids if span_id not in span_owners]
+        owner_labels = _ordered_unique(
+            span_owners[span_id]
+            for span_id in span_ids
+            if span_id in span_owners
+        )
+        supports_known_need = bool(
+            need_ids.intersection(_evidence_need_ids(supports_needs))
+        )
+        span_valid = bool(span_ids) and not invalid_span_ids and len(owner_labels) == 1
+        selection: dict[str, JsonValue] = {
+            "supports_needs": cast(JsonValue, supports_needs),
+            "evidence_spans": cast(JsonValue, span_ids),
+            "owner_candidate_labels": cast(JsonValue, owner_labels),
+            "span_valid": span_valid,
+        }
+        selections.append(selection)
+        if not supports_needs:
+            failures.append(f"E{index}:missing_need")
+        elif not supports_known_need:
+            failures.append(f"E{index}:unknown_need")
+        if not span_ids:
+            failures.append(f"E{index}:missing_span")
+        elif invalid_span_ids or len(owner_labels) != 1:
+            failures.append(f"E{index}:span_not_grounded")
+        if span_valid and supports_known_need:
+            grounded_labels.extend(owner_labels)
+    return selections, failures, _ordered_unique(grounded_labels)
+
+
+def _validate_symbolic_span_slot_assessments(
+    parsed: dict[str, object],
+    *,
+    selected_slot_labels: Sequence[str],
+    slot_session_ids: dict[str, str],
+    by_session: dict[str, RetrievedMemory],
+    question: str,
+    config: LongMemEvalRerankerConfig,
+) -> tuple[list[dict[str, JsonValue]], list[str]]:
+    raw_assessments = parsed.get("slot_assessments")
+    values = raw_assessments if isinstance(raw_assessments, list) else []
+    missing_need_ids = _evidence_need_ids(
+        _string_list(parsed.get("needs_missing_after_locked"))
+    )
+    span_owners: dict[str, str] = {}
+    for slot, session_id in slot_session_ids.items():
+        memory = by_session.get(session_id)
+        if memory is None:
+            continue
+        for span_id in _evidence_span_ids(
+            slot,
+            memory,
+            question=question,
+            config=config,
+        ):
+            span_owners[span_id] = slot
+
+    assessments: list[dict[str, JsonValue]] = []
+    by_slot: dict[str, dict[str, JsonValue]] = {}
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        slot_value = value.get("slot")
+        if not isinstance(slot_value, str):
+            continue
+        slot = _normalized_slot_label(slot_value)
+        if slot not in slot_session_ids or slot in by_slot:
+            continue
+        supports_needs = _string_list(value.get("supports_needs"))[:4]
+        span_ids = [
+            _normalized_evidence_span_id(span_id)
+            for span_id in _string_list(value.get("evidence_spans"))[:4]
+        ]
+        adds_missing_evidence = value.get("adds_missing_evidence") is True
+        span_valid = bool(span_ids) and all(
+            span_owners.get(span_id) == slot for span_id in span_ids
+        )
+        assessment: dict[str, JsonValue] = {
+            "slot": slot,
+            "supports_needs": cast(JsonValue, supports_needs),
+            "evidence_spans": cast(JsonValue, span_ids),
+            "adds_missing_evidence": adds_missing_evidence,
+            "span_valid": span_valid,
+        }
+        assessments.append(assessment)
+        by_slot[slot] = assessment
+
+    failures: list[str] = []
+    for slot in selected_slot_labels:
+        if not slot.startswith("P"):
+            continue
+        selected_assessment = by_slot.get(slot)
+        if selected_assessment is None:
+            failures.append(f"{slot}:missing_assessment")
+            continue
+        selected_needs = selected_assessment.get("supports_needs")
+        if not isinstance(selected_needs, list) or not selected_needs:
+            failures.append(f"{slot}:missing_need")
+        elif not missing_need_ids.intersection(
+            _evidence_need_ids(
+                [value for value in selected_needs if isinstance(value, str)]
+            )
+        ):
+            failures.append(f"{slot}:not_linked_to_missing_need")
+        if selected_assessment.get("adds_missing_evidence") is not True:
+            failures.append(f"{slot}:not_missing_evidence")
+        selected_spans = selected_assessment.get("evidence_spans")
+        if not isinstance(selected_spans, list) or not selected_spans:
+            failures.append(f"{slot}:missing_span")
+        elif selected_assessment.get("span_valid") is not True:
+            failures.append(f"{slot}:span_not_grounded")
+    return assessments, failures
+
+
 def _evidence_need_ids(values: Sequence[str]) -> set[str]:
     identifiers: set[str] = set()
     for value in values:
@@ -1027,6 +1496,28 @@ def _quote_is_grounded(quote: str, excerpt: str) -> bool:
 def _normalized_quote_text(value: str) -> str:
     quote_marks = " \t\r\n\"'\u201c\u201d\u2018\u2019`"
     return " ".join(value.casefold().strip(quote_marks).split())
+
+
+def _normalized_candidate_label(value: str) -> str:
+    compact = re.sub(r"\s+", "", value).upper()
+    match = re.fullmatch(r"C0*(\d+)", compact)
+    if not match:
+        return compact
+    return _candidate_label(int(match.group(1)))
+
+
+def _normalized_evidence_span_id(value: str) -> str:
+    compact = re.sub(r"\s+", "", value).upper()
+    candidate = re.fullmatch(r"C0*(\d+):S0*(\d+)", compact)
+    if candidate:
+        return f"{_candidate_label(int(candidate.group(1)))}:S{int(candidate.group(2)):02d}"
+    boundary = re.fullmatch(r"([BP])0*(\d+):S0*(\d+)", compact)
+    if boundary:
+        return f"{boundary.group(1)}{int(boundary.group(2))}:S{int(boundary.group(3)):02d}"
+    locked = re.fullmatch(r"LOCKED-0*(\d+):S0*(\d+)", compact)
+    if locked:
+        return f"LOCKED-{int(locked.group(1))}:S{int(locked.group(2)):02d}"
+    return compact
 
 
 def _normalized_slot_label(value: str) -> str:
@@ -1133,6 +1624,79 @@ def candidate_excerpt(
     return _balanced_excerpt(excerpt, max_chars=max_chars)
 
 
+def candidate_evidence_spans(
+    question: str,
+    content: str,
+    *,
+    max_chars: int,
+    max_turns: int,
+    max_span_chars: int = 360,
+) -> list[str]:
+    """Split the deterministic candidate excerpt into locally addressable spans."""
+
+    if max_span_chars < 32:
+        raise ValueError("max_span_chars must be at least 32")
+    excerpt = candidate_excerpt(
+        question,
+        content,
+        max_chars=max_chars,
+        max_turns=max_turns,
+    )
+    pieces = [
+        piece.strip()
+        for piece in re.split(r"(?<=[.!?])\s+|\n+", excerpt)
+        if piece.strip() and piece.strip() != "..."
+    ]
+    spans: list[str] = []
+    for piece in pieces or [excerpt]:
+        spans.extend(_split_evidence_span(piece, max_chars=max_span_chars))
+    return spans or ["(empty candidate)"]
+
+
+def _format_symbolic_span_candidate(
+    rank: int,
+    memory: RetrievedMemory,
+    *,
+    question: str,
+    max_chars: int,
+    max_turns: int,
+) -> str:
+    label = _candidate_label(rank)
+    return _format_labeled_span_memory(
+        label,
+        memory,
+        question=question,
+        description=f"candidate_rank={rank}",
+        max_chars=max_chars,
+        max_turns=max_turns,
+    )
+
+
+def _format_labeled_span_memory(
+    label: str,
+    memory: RetrievedMemory,
+    *,
+    question: str,
+    description: str,
+    max_chars: int,
+    max_turns: int,
+) -> str:
+    spans = candidate_evidence_spans(
+        question,
+        memory.content,
+        max_chars=max_chars,
+        max_turns=max_turns,
+    )
+    evidence = "\n".join(
+        f"[{label}:S{index:02d}] {span}"
+        for index, span in enumerate(spans, start=1)
+    )
+    return (
+        f"[{label} | {description} | date={memory.source_date or 'unknown'}]\n"
+        f"{evidence}"
+    )
+
+
 def _format_candidate(
     rank: int,
     memory: RetrievedMemory,
@@ -1151,6 +1715,56 @@ def _format_candidate(
         f"[Candidate {rank} | session_id={_session_id(memory)} | "
         f"date={memory.source_date or 'unknown'}]\n{excerpt}"
     )
+
+
+def _candidate_label(rank: int) -> str:
+    if rank < 1:
+        raise ValueError("candidate rank must be positive")
+    return f"C{rank:02d}"
+
+
+def _candidate_label_session_map(
+    candidates: Sequence[RetrievedMemory],
+) -> dict[str, str]:
+    return {
+        _candidate_label(index): _session_id(memory)
+        for index, memory in enumerate(candidates, start=1)
+    }
+
+
+def _selector_span_owner_map(
+    candidates: Sequence[RetrievedMemory],
+    *,
+    question: str,
+    config: LongMemEvalRerankerConfig,
+) -> dict[str, str]:
+    owners: dict[str, str] = {}
+    for index, memory in enumerate(candidates, start=1):
+        label = _candidate_label(index)
+        for span_id in _evidence_span_ids(
+            label,
+            memory,
+            question=question,
+            config=config,
+        ):
+            owners[span_id] = label
+    return owners
+
+
+def _evidence_span_ids(
+    label: str,
+    memory: RetrievedMemory,
+    *,
+    question: str,
+    config: LongMemEvalRerankerConfig,
+) -> list[str]:
+    spans = candidate_evidence_spans(
+        question,
+        memory.content,
+        max_chars=config.max_candidate_chars,
+        max_turns=config.max_excerpt_turns,
+    )
+    return [f"{label}:S{index:02d}" for index in range(1, len(spans) + 1)]
 
 
 def _parse_rerank_response(text: str) -> tuple[dict[str, object], str | None]:
@@ -1224,6 +1838,37 @@ def _balanced_excerpt(text: str, *, max_chars: int) -> str:
     head = (max_chars - 5) // 2
     tail = max_chars - 5 - head
     return f"{stripped[:head]}\n...\n{stripped[-tail:]}"
+
+
+def _split_evidence_span(text: str, *, max_chars: int) -> list[str]:
+    stripped = " ".join(text.split())
+    if len(stripped) <= max_chars:
+        return [stripped] if stripped else []
+    words = stripped.split()
+    chunks: list[str] = []
+    current: list[str] = []
+    current_length = 0
+    for word in words:
+        added = len(word) + int(bool(current))
+        if current and current_length + added > max_chars:
+            chunks.append(" ".join(current))
+            current = []
+            current_length = 0
+        if len(word) > max_chars:
+            if current:
+                chunks.append(" ".join(current))
+                current = []
+                current_length = 0
+            chunks.extend(
+                word[index : index + max_chars]
+                for index in range(0, len(word), max_chars)
+            )
+            continue
+        current.append(word)
+        current_length += len(word) + int(len(current) > 1)
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
 
 
 def _usage_tokens(

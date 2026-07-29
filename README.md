@@ -1,5 +1,80 @@
 # VMP-MemOS
 
+## VMP-v5.4 symbolic evidence-span binding
+
+V5.3.2 的服务器 Dev 结果为 `Recall-All@5 = 0.9149`：相对 raw V5 只提升
+1.06 个百分点、恢复 1 题且零退化，因此实验本身完成，但没有通过未降级的论文
+quality gate。错误审计表明主要瓶颈不是候选召回：93/94 个可回答问题的正确 session
+已存在于候选池；主要问题是 LLM 找到了正确证据文本，却把证据绑定到错误的候选 ID。
+
+V5.4 只修改共享的 LLM 选择协议，不改变 V4.3/V5 的候选、模型或 gate：
+
+1. selector 只看到匿名候选 `C01..C30`，每个 excerpt 被确定性切分为
+   `Cxx:Sxx` 证据 span，不暴露真实 session ID。
+2. Top-5 以外的候选必须返回所属证据 span 才能晋升。程序从 span 所有者反向推导
+   candidate，而不是相信模型同时填写的 candidate label。
+3. boundary 使用同样的 `SLOT:Sxx` 归属验证；跨候选 span、非法 label、解析失败或
+   低置信度一律 fail closed，保留原始 Top-5。
+4. 两个框架仍共享同一本地 vLLM、prompt、参数、reader 和安全策略。Test 在 Dev
+   gate 通过前保持封存。
+
+Dev 直接复用已完成的 V5.3.2 candidate run，因此无需再次加载 BGE-M3。先在终端 A
+启动本地 vLLM（`VMP_LLM_MODEL` 必须与本地已下载模型或其缓存标识一致）：
+
+```bash
+cd /home/shenshifan/projects/VMP-MemOS
+
+export VMP_LLM_API_KEY="local-vllm-key"
+export VMP_LLM_MODEL="Qwen/Qwen2.5-7B-Instruct"
+export VMP_VLLM_ENABLE_TOOL_CALLING=0
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+uv run --no-sync bash scripts/serve_vllm.sh
+```
+
+确认 `curl -H "Authorization: Bearer local-vllm-key" \
+http://127.0.0.1:8000/v1/models` 正常后，在终端 B 运行：
+
+```bash
+cd /home/shenshifan/projects/VMP-MemOS
+
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=dev_rerank \
+uv run --no-sync bash scripts/run_vmp_v54_experiment.sh
+```
+
+中断后原命令增加 `RERANK_RESUME=1` 即可续跑。日志位于
+`outputs/longmemeval/logs/vmp_v54_dev_rerank.log`，结果位于
+`outputs/longmemeval/runs/lme_dev_vmp_v54_rerank_seed42`。只有生成
+`outputs/longmemeval/gates/vmp_v54_seed42_dev_pass.json` 后，才能依次运行
+`STAGE=test_candidates` 与 `STAGE=test_rerank`；`exit_code=3` 仍表示实验完成但
+严格 gate 未通过。
+
+Dev gate 通过后，先停止 vLLM，独占 GPU 运行 BGE-M3 Test 候选生成：
+
+```bash
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+STAGE=test_candidates \
+EMBEDDING_BATCH_SIZE=2 \
+uv run --no-sync bash scripts/run_vmp_v54_experiment.sh
+```
+
+然后重新启动同一个 vLLM，再执行封存 Test rerank（如需同时生成统一 reader 的
+最终答案，可设置 `RUN_QA=1`）：
+
+```bash
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=test_rerank \
+RUN_QA=1 \
+uv run --no-sync bash scripts/run_vmp_v54_experiment.sh
+```
+
 ## VMP-v5.3.2 atomic evidence-set boundary
 
 V5.3.2 针对 V5.3.1 Dev 实验中“协议已稳定但有效恢复不足”的问题做两项修复：

@@ -1183,10 +1183,15 @@ P15.3.1. [done: implementation] symbolic B1/B2/P1/P2 boundary protocol,
          protected-ID hiding, exact selector replay, unchanged strict Dev gate;
          server boundary-only Dev replay completed; parser ambiguity eliminated,
          but strict Dev gain gate failed
-P15.3.2. [done: implementation] retrieve-40/deduplicate-to-30 candidate backfill,
+P15.3.2. [done: experiment failed strict gate] retrieve-40/deduplicate-to-30 candidate backfill,
          strict pre-LLM candidate-depth audit, complete Top-5 atomic evidence-set
          boundary with verbatim-quote validation, unchanged strict Dev gate;
-         server Dev experiment pending
+         Dev Recall-All@5=0.9149, +0.0106 vs raw V5, one recovery and zero
+         regressions; candidate oracle remains 93/94
+P15.4. [done: implementation] framework-blind Cxx candidate labels, deterministic
+       Cxx:Sxx evidence spans, server-derived promotion ownership, symbolic
+       boundary span validation, resumable error provenance, unchanged strict
+       Dev gate, and frozen V5.3.2 Dev candidate reuse; server Dev experiment pending
 P16. Local-vLLM atomic-memory writer + hierarchical-memory ablation
 P17. Fresh external/final benchmark after architecture freeze
 P18. Fallback style baselines only if needed

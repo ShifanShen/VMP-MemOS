@@ -12,6 +12,8 @@ from pydantic import JsonValue
 from vmp_memos.llm import (
     LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_RERANK_PROMPT_VERSION,
+    LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
+    LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
 )
 from vmp_memos.longmemeval.rerank_runner import reranked_method_name
 
@@ -32,6 +34,7 @@ def evaluate_v53_gate(
     max_regressed_questions: int = 0,
     min_recovered_questions: int = 3,
     min_candidate_count: int = 30,
+    expected_selector_prompt_version: str = LONGMEMEVAL_RERANK_PROMPT_VERSION,
     expected_boundary_prompt_version: str = LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
 ) -> dict[str, JsonValue]:
     """Evaluate the two-stage policy without reading Test labels or dataset rows."""
@@ -112,6 +115,18 @@ def evaluate_v53_gate(
         isinstance(rerank_fairness, dict)
         and rerank_fairness.get("two_stage_boundary_verification") is True
     )
+    symbolic_span_expected = (
+        expected_selector_prompt_version
+        == LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION
+        or expected_boundary_prompt_version
+        == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
+    )
+    symbolic_span_marked = (
+        isinstance(rerank_fairness, dict)
+        and rerank_fairness.get("symbolic_selector_labels") is True
+        and rerank_fairness.get("selector_evidence_span_binding") is True
+        and rerank_fairness.get("boundary_evidence_span_binding") is True
+    )
     sample_count = _integer(candidate_manifest.get("sample_count"))
     summaries = (raw_v5, raw_v43, reranked_v5, reranked_v43)
     processed_counts = [_integer(summary.get("processed_questions")) for summary in summaries]
@@ -141,10 +156,13 @@ def evaluate_v53_gate(
             two_stage_marked
             and reranked_v5.get("boundary_verification") is True
             and reranked_v43.get("boundary_verification") is True
-            and selector_prompt == LONGMEMEVAL_RERANK_PROMPT_VERSION
+            and selector_prompt == expected_selector_prompt_version
             and baseline_selector_prompt == selector_prompt
             and boundary_prompt == expected_boundary_prompt_version
             and baseline_boundary_prompt == boundary_prompt
+        ),
+        "shared_symbolic_span_protocol": (
+            symbolic_span_marked if symbolic_span_expected else True
         ),
         "candidate_depth": (
             candidate_count >= min_candidate_count
@@ -208,6 +226,7 @@ def evaluate_v53_gate(
                 "provider": provider,
                 "model": model,
                 "selector_prompt_version": selector_prompt,
+                "expected_selector_prompt_version": expected_selector_prompt_version,
                 "boundary_prompt_version": boundary_prompt,
                 "expected_boundary_prompt_version": expected_boundary_prompt_version,
                 "candidate_count": candidate_count,
@@ -232,6 +251,15 @@ def evaluate_v53_gate(
                     "boundary_grounded_promotions_accepted"
                 ),
                 "selector_prompt_mismatch_count": reranked_v5.get("selector_prompt_mismatch_count"),
+                "invalid_candidate_label_count": reranked_v5.get(
+                    "invalid_candidate_label_count"
+                ),
+                "selector_span_binding_failure_count": reranked_v5.get(
+                    "selector_span_binding_failure_count"
+                ),
+                "selector_grounded_promotion_count": reranked_v5.get(
+                    "selector_grounded_promotion_count"
+                ),
                 "shared_across_methods": True,
             },
         ),

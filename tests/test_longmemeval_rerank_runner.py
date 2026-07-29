@@ -148,6 +148,20 @@ def test_rerank_runner_writes_replayable_records_and_resumes(tmp_path) -> None:
     interrupted_path = result.run_dir / "vmp_hierarchical__vllm_rerank" / "retrieval.jsonl"
     with interrupted_path.open("a", encoding="utf-8") as stream:
         stream.write('{"interrupted":')
+    interrupted_manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    interrupted_manifest.update(
+        {
+            "status": "failed",
+            "error_type": "ConnectionError",
+            "error": "temporary vLLM outage",
+            "finished_at": "2024-01-01T00:00:00+00:00",
+            "wall_duration_seconds": 12.0,
+        }
+    )
+    result.manifest_path.write_text(
+        json.dumps(interrupted_manifest),
+        encoding="utf-8",
+    )
     resumed = run_longmemeval_rerank(
         config.model_copy(update={"resume": True}),
         reranker=reranker,
@@ -156,6 +170,19 @@ def test_rerank_runner_writes_replayable_records_and_resumes(tmp_path) -> None:
     assert client.calls == 2
     assert resumed.summaries["vmp_hierarchical__vllm_rerank"].processed_questions == 1
     assert '{"interrupted":' not in interrupted_path.read_text(encoding="utf-8")
+    resumed_manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert resumed_manifest["status"] == "completed"
+    assert "error_type" not in resumed_manifest
+    assert "error" not in resumed_manifest
+    assert resumed_manifest["previous_attempts"] == [
+        {
+            "status": "failed",
+            "finished_at": "2024-01-01T00:00:00+00:00",
+            "wall_duration_seconds": 12.0,
+            "error_type": "ConnectionError",
+            "error": "temporary vLLM outage",
+        }
+    ]
 
 
 def test_v53_runner_audits_shared_boundary_verification(tmp_path) -> None:

@@ -1,0 +1,43 @@
+version: VMP-v5.2
+pipeline: shared_local_vllm_evidence_set_reranking
+
+candidate_generation:
+  source_model: outputs/longmemeval/models/vmp_v5_seed42.json
+  comparison_model: outputs/longmemeval/models/vmp_v43_seed42.json
+  methods:
+    - vmp_tuned
+    - vmp_hierarchical
+  candidate_count: 30
+  output_top_k: 5
+
+reranker:
+  provider: vllm
+  base_url: http://127.0.0.1:8000/v1
+  model: Qwen/Qwen2.5-7B-Instruct
+  prompt_version: vmp_v52_evidence_set_v1
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 512
+  protected_top_n: 4
+  ranked_output_count: 10
+  max_candidate_chars: 1200
+  max_excerpt_turns: 4
+  parse_failure_policy: preserve_original_ranking
+
+dev_gate:
+  min_recall_all_at_5: 0.91
+  min_delta_vs_raw_v5: 0.005
+  min_delta_vs_shared_reranked_v43: 0.005
+  min_macro_delta_vs_shared_reranked_v43: 0.0
+  max_worst_type_regression_vs_shared_reranked_v43: 0.03
+  max_parse_fallback_rate: 0.02
+  test_labels_used: false
+
+fairness:
+  shared_candidate_count: true
+  shared_prompt: true
+  shared_generation: true
+  shared_reader: true
+  framework_name_visible_to_reranker: false
+  gold_labels_visible_to_reranker: false
+  test_labels_used_for_selection: false

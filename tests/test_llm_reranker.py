@@ -19,6 +19,9 @@ from vmp_memos.llm import (
     prepare_longmemeval_rerank_candidates,
 )
 
+V54_SELECTOR_PROMPT_VERSION = "vmp_v54_symbolic_span_selector_v1"
+V54_BOUNDARY_PROMPT_VERSION = "vmp_v54_symbolic_span_boundary_v1"
+
 
 class FakeRerankClient:
     def __init__(self, text: str | list[str]) -> None:
@@ -144,6 +147,14 @@ def test_paper_reranker_rejects_non_deterministic_sampling() -> None:
                 temperature=0.1,
                 top_p=1.0,
             )
+        )
+
+
+def test_v54_selector_and_boundary_versions_must_be_enabled_together() -> None:
+    with pytest.raises(ValueError, match="must be enabled together"):
+        LongMemEvalRerankerConfig(
+            prompt_version=V54_SELECTOR_PROMPT_VERSION,
+            boundary_verification=True,
         )
 
 
@@ -441,6 +452,252 @@ def test_v532_atomic_boundary_rejects_hallucinated_promotion_quote() -> None:
     assert decision.boundary.fallback_reason == (
         "atomic promotion evidence failed validation: P1:quote_not_grounded"
     )
+
+
+def test_v54_symbolic_selector_and_boundary_use_grounded_span_ids() -> None:
+    client = FakeRerankClient(
+        [
+            """
+            {
+              "evidence_needs": ["N1: missing preference"],
+              "evidence_selections": [
+                {
+                  "supports_needs": ["N1"],
+                  "evidence_spans": ["C06:S01"]
+                }
+              ],
+              "selected_candidates": ["C01", "C02", "C03", "C06", "C04"],
+              "ranked_candidates": ["C01", "C02", "C03", "C06", "C04", "C05"]
+            }
+            """,
+            """
+            {
+              "evidence_needs": ["N1: missing preference"],
+              "needs_missing_after_locked": ["N1"],
+              "slot_assessments": [
+                {
+                  "slot": "P1",
+                  "supports_needs": ["N1"],
+                  "evidence_spans": ["P1:S01"],
+                  "adds_missing_evidence": true
+                }
+              ],
+              "selected_slots": ["B1", "P1"],
+              "confidence": "high"
+            }
+            """,
+        ]
+    )
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(
+            prompt_version=V54_SELECTOR_PROMPT_VERSION,
+            candidate_count=6,
+            protected_top_n=3,
+            ranked_output_count=6,
+            boundary_verification=True,
+            boundary_prompt_version=V54_BOUNDARY_PROMPT_VERSION,
+        ),
+    )
+
+    decision = reranker.rerank(
+        question="Which missing preference is required?",
+        question_date="2024-02-01",
+        candidates=_memories(6),
+    )
+
+    assert decision.selected_session_ids == ["s1", "s2", "s3", "s4", "s6"]
+    assert decision.raw_selected_candidate_labels == [
+        "C01",
+        "C02",
+        "C03",
+        "C06",
+        "C04",
+    ]
+    assert decision.invalid_candidate_labels == []
+    assert decision.selector_span_binding_failures == []
+    assert decision.selector_grounded_promotion_labels == ["C06"]
+    assert decision.candidate_label_session_ids["C06"] == "s6"
+    assert decision.boundary is not None
+    assert decision.boundary.replacement_accepted is True
+    assert decision.boundary.atomic_support_failures == []
+    assert decision.boundary.slot_assessments == [
+        {
+            "slot": "P1",
+            "supports_needs": ["N1"],
+            "evidence_spans": ["P1:S01"],
+            "adds_missing_evidence": True,
+            "span_valid": True,
+        }
+    ]
+    selector_prompt = client.all_messages[0][1].content
+    boundary_prompt = client.all_messages[1][1].content
+    assert "session_id=" not in selector_prompt
+    assert "s6" not in selector_prompt
+    assert "[C06 |" in selector_prompt
+    assert "[C06:S01]" in selector_prompt
+    assert "[P1:S01]" in boundary_prompt
+    assert "evidence_spans" in boundary_prompt
+
+
+def test_v54_uses_span_owner_instead_of_mismatched_selected_label() -> None:
+    client = FakeRerankClient(
+        [
+            """
+            {
+              "evidence_needs": ["N1: missing preference"],
+              "evidence_selections": [
+                {
+                  "supports_needs": ["N1"],
+                  "evidence_spans": ["C07:S01"]
+                }
+              ],
+              "selected_candidates": ["C01", "C02", "C03", "C06", "C04"],
+              "ranked_candidates": ["C01", "C02", "C03", "C06", "C04", "C05", "C07"]
+            }
+            """,
+            """
+            {
+              "evidence_needs": ["N1: missing preference"],
+              "needs_missing_after_locked": ["N1"],
+              "slot_assessments": [
+                {
+                  "slot": "P1",
+                  "supports_needs": ["N1"],
+                  "evidence_spans": ["P1:S01"],
+                  "adds_missing_evidence": true
+                }
+              ],
+              "selected_slots": ["B1", "P1"],
+              "confidence": "high"
+            }
+            """,
+        ]
+    )
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(
+            prompt_version=V54_SELECTOR_PROMPT_VERSION,
+            candidate_count=7,
+            protected_top_n=3,
+            ranked_output_count=7,
+            boundary_verification=True,
+            boundary_prompt_version=V54_BOUNDARY_PROMPT_VERSION,
+        ),
+    )
+
+    decision = reranker.rerank(
+        question="Which missing preference is required?",
+        question_date="2024-02-01",
+        candidates=_memories(7),
+    )
+
+    assert decision.selector_grounded_promotion_labels == ["C07"]
+    assert decision.selected_session_ids == ["s1", "s2", "s3", "s4", "s7"]
+    assert "s6" not in decision.selected_session_ids
+
+
+def test_v54_boundary_rejects_span_owned_by_another_slot() -> None:
+    client = FakeRerankClient(
+        [
+            """
+            {
+              "evidence_needs": ["N1: missing preference"],
+              "evidence_selections": [
+                {
+                  "supports_needs": ["N1"],
+                  "evidence_spans": ["C06:S01"]
+                }
+              ],
+              "selected_candidates": ["C01", "C02", "C03", "C06", "C04"],
+              "ranked_candidates": ["C01", "C02", "C03", "C06", "C04", "C05"]
+            }
+            """,
+            """
+            {
+              "evidence_needs": ["N1: missing preference"],
+              "needs_missing_after_locked": ["N1"],
+              "slot_assessments": [
+                {
+                  "slot": "P1",
+                  "supports_needs": ["N1"],
+                  "evidence_spans": ["B1:S01"],
+                  "adds_missing_evidence": true
+                }
+              ],
+              "selected_slots": ["B1", "P1"],
+              "confidence": "high"
+            }
+            """,
+        ]
+    )
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(
+            prompt_version=V54_SELECTOR_PROMPT_VERSION,
+            candidate_count=6,
+            protected_top_n=3,
+            ranked_output_count=6,
+            boundary_verification=True,
+            boundary_prompt_version=V54_BOUNDARY_PROMPT_VERSION,
+        ),
+    )
+
+    decision = reranker.rerank(
+        question="Which missing preference is required?",
+        question_date="2024-02-01",
+        candidates=_memories(6),
+    )
+
+    assert decision.selected_session_ids == ["s1", "s2", "s3", "s4", "s5"]
+    assert decision.boundary is not None
+    assert decision.boundary.replacement_accepted is False
+    assert decision.boundary.atomic_support_failures == ["P1:span_not_grounded"]
+    assert decision.boundary.fallback_reason == (
+        "symbolic span evidence failed validation: P1:span_not_grounded"
+    )
+
+
+def test_v54_selector_rejects_ungrounded_promotion_span_before_boundary() -> None:
+    client = FakeRerankClient(
+        """
+        {
+          "evidence_needs": ["N1: missing preference"],
+          "evidence_selections": [
+            {
+              "supports_needs": ["N1"],
+              "evidence_spans": ["C99:S01"]
+            }
+          ],
+          "selected_candidates": ["C01", "C02", "C03", "C06", "C04"],
+          "ranked_candidates": ["C01", "C02", "C03", "C06", "C04", "C05"]
+        }
+        """
+    )
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(
+            prompt_version=V54_SELECTOR_PROMPT_VERSION,
+            candidate_count=6,
+            protected_top_n=3,
+            ranked_output_count=6,
+            boundary_verification=True,
+            boundary_prompt_version=V54_BOUNDARY_PROMPT_VERSION,
+        ),
+    )
+
+    decision = reranker.rerank(
+        question="Which missing preference is required?",
+        question_date="2024-02-01",
+        candidates=_memories(6),
+    )
+
+    assert client.calls == 1
+    assert decision.selected_session_ids == ["s1", "s2", "s3", "s4", "s5"]
+    assert decision.selector_grounded_promotion_labels == []
+    assert decision.selector_span_binding_failures == ["E1:span_not_grounded"]
+    assert decision.boundary is not None
+    assert decision.boundary.call_made is False
 
 
 def json_response(*, selected: list[str], ranked: list[str]) -> str:

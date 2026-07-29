@@ -19,6 +19,8 @@ from vmp_memos.evaluation import (
 )
 from vmp_memos.frameworks import RetrievedMemory
 from vmp_memos.llm import (
+    LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
+    LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
     LongMemEvalRerankDecision,
     LongMemEvalRerankerConfig,
     prepare_longmemeval_rerank_candidates,
@@ -96,6 +98,9 @@ class RerankMethodSummary(RetrievalMethodSummary):
     parse_fallbacks: NonNegativeInt = 0
     parse_fallback_rate: NonNegativeFloat = 0.0
     invalid_session_id_count: NonNegativeInt = 0
+    invalid_candidate_label_count: NonNegativeInt = 0
+    selector_span_binding_failure_count: NonNegativeInt = 0
+    selector_grounded_promotion_count: NonNegativeInt = 0
     selector_replay_records: NonNegativeInt = 0
     selector_prompt_mismatch_count: NonNegativeInt = 0
     recovered_questions: NonNegativeInt = 0
@@ -283,6 +288,8 @@ def run_longmemeval_rerank(
             },
         },
     )
+    manifest.pop("error_type", None)
+    manifest.pop("error", None)
     manifest.update(
         {
             "status": "completed",
@@ -379,6 +386,18 @@ def summarize_rerank_method(
             "parse_fallback_rate": fallback_count / len(records) if records else 0.0,
             "invalid_session_id_count": sum(
                 len(_metadata_list(record, "invalid_session_ids")) for record in records
+            ),
+            "invalid_candidate_label_count": sum(
+                len(_metadata_list(record, "invalid_candidate_labels"))
+                for record in records
+            ),
+            "selector_span_binding_failure_count": sum(
+                len(_metadata_list(record, "selector_span_binding_failures"))
+                for record in records
+            ),
+            "selector_grounded_promotion_count": sum(
+                len(_metadata_list(record, "selector_grounded_promotion_labels"))
+                for record in records
             ),
             "selector_replay_records": sum(
                 record.rerank_metadata.get("selector_replay") is True for record in records
@@ -502,6 +521,34 @@ def _rerank_record(
         "reranked_recall_all@5": reranked_recall,
         "transition_vs_source": transition,
         "evidence_needs": cast(JsonValue, decision.evidence_needs),
+        "candidate_label_session_ids": cast(
+            JsonValue,
+            decision.candidate_label_session_ids,
+        ),
+        "raw_selected_candidate_labels": cast(
+            JsonValue,
+            decision.raw_selected_candidate_labels,
+        ),
+        "raw_ranked_candidate_labels": cast(
+            JsonValue,
+            decision.raw_ranked_candidate_labels,
+        ),
+        "invalid_candidate_labels": cast(
+            JsonValue,
+            decision.invalid_candidate_labels,
+        ),
+        "selector_evidence_selections": cast(
+            JsonValue,
+            decision.selector_evidence_selections,
+        ),
+        "selector_span_binding_failures": cast(
+            JsonValue,
+            decision.selector_span_binding_failures,
+        ),
+        "selector_grounded_promotion_labels": cast(
+            JsonValue,
+            decision.selector_grounded_promotion_labels,
+        ),
         "raw_selected_session_ids": cast(
             JsonValue,
             decision.raw_selected_session_ids,
@@ -564,6 +611,27 @@ def _prepare_manifest(
         if existing.get("signature") != signature:
             raise ValueError("Existing rerank manifest does not match requested settings")
         manifest = existing
+        previous_attempts = manifest.get("previous_attempts")
+        attempts = list(previous_attempts) if isinstance(previous_attempts, list) else []
+        if manifest.get("error_type") is not None or manifest.get("error") is not None:
+            attempts.append(
+                cast(
+                    JsonValue,
+                    {
+                        "status": manifest.get("status"),
+                        "finished_at": manifest.get("finished_at"),
+                        "wall_duration_seconds": manifest.get(
+                            "wall_duration_seconds"
+                        ),
+                        "error_type": manifest.get("error_type"),
+                        "error": manifest.get("error"),
+                    },
+                )
+            )
+        if attempts:
+            manifest["previous_attempts"] = cast(JsonValue, attempts)
+        manifest.pop("error_type", None)
+        manifest.pop("error", None)
         manifest.update(
             {
                 "status": "running",
@@ -607,6 +675,18 @@ def _prepare_manifest(
                 "same_generation": True,
                 "two_stage_boundary_verification": bool(
                     reranker_signature.get("boundary_verification")
+                ),
+                "symbolic_selector_labels": (
+                    reranker_signature.get("prompt_version")
+                    == LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION
+                ),
+                "selector_evidence_span_binding": (
+                    reranker_signature.get("prompt_version")
+                    == LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION
+                ),
+                "boundary_evidence_span_binding": (
+                    reranker_signature.get("boundary_prompt_version")
+                    == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
                 ),
                 "selector_replayed": metadata.get("selector_replay") is True,
                 "selector_replay_run": metadata.get("selector_replay_run"),
@@ -801,7 +881,10 @@ def _grounded_selected_promotions(record: RetrievalSampleRecord) -> int:
     return sum(
         isinstance(value, dict)
         and value.get("slot") in selected
-        and value.get("quote_valid") is True
+        and (
+            value.get("quote_valid") is True
+            or value.get("span_valid") is True
+        )
         for value in _boundary_list(record, "slot_assessments")
     )
 

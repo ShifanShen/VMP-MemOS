@@ -14,7 +14,10 @@ from pydantic import JsonValue
 from vmp_memos.llm import (
     LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
+    LONGMEMEVAL_RERANK_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
+    LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
+    LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
     LLMGenerationConfig,
     LongMemEvalEvidenceReranker,
     LongMemEvalRerankerConfig,
@@ -69,6 +72,10 @@ def main() -> int:
     parser.add_argument("--max-candidate-chars", type=int, default=1200)
     parser.add_argument("--max-excerpt-turns", type=int, default=4)
     parser.add_argument("--max-tokens", type=int, default=512)
+    parser.add_argument(
+        "--prompt-version",
+        default=LONGMEMEVAL_RERANK_PROMPT_VERSION,
+    )
     parser.add_argument("--boundary-verification", action="store_true")
     parser.add_argument(
         "--boundary-prompt-version",
@@ -124,6 +131,7 @@ def main() -> int:
         )
     )
     reranker_config = LongMemEvalRerankerConfig(
+        prompt_version=args.prompt_version,
         candidate_count=args.candidate_count,
         output_top_k=args.output_top_k,
         protected_top_n=args.protected_top_n,
@@ -204,13 +212,27 @@ def main() -> int:
             require_full_candidate_count=args.require_full_candidate_count,
             metadata={
                 "paper_version": (
-                    "VMP-v5.3.2"
-                    if args.boundary_prompt_version == LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION
+                    "VMP-v5.4"
+                    if (
+                        args.prompt_version
+                        == LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION
+                        and args.boundary_prompt_version
+                        == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
+                    )
                     else (
-                        "VMP-v5.3.1"
+                        "VMP-v5.3.2"
                         if args.boundary_prompt_version
-                        == LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION
-                        else ("VMP-v5.3" if args.boundary_verification else "VMP-v5.2")
+                        == LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION
+                        else (
+                            "VMP-v5.3.1"
+                            if args.boundary_prompt_version
+                            == LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION
+                            else (
+                                "VMP-v5.3"
+                                if args.boundary_verification
+                                else "VMP-v5.2"
+                            )
+                        )
                     )
                 ),
                 "shared_across_frameworks": True,

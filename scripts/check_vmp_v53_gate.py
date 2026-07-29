@@ -7,7 +7,10 @@ import argparse
 import json
 from pathlib import Path
 
-from vmp_memos.llm import LONGMEMEVAL_BOUNDARY_PROMPT_VERSION
+from vmp_memos.llm import (
+    LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
+    LONGMEMEVAL_RERANK_PROMPT_VERSION,
+)
 from vmp_memos.longmemeval.boundary_gate import evaluate_v53_gate
 from vmp_memos.longmemeval.rerank_gate import write_gate_receipt
 
@@ -30,6 +33,10 @@ def main() -> int:
     parser.add_argument("--min-recovered-questions", type=int, default=3)
     parser.add_argument("--min-candidate-count", type=int, default=30)
     parser.add_argument(
+        "--expected-selector-prompt-version",
+        default=LONGMEMEVAL_RERANK_PROMPT_VERSION,
+    )
+    parser.add_argument(
         "--expected-boundary-prompt-version",
         default=LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
     )
@@ -50,6 +57,7 @@ def main() -> int:
         max_regressed_questions=args.max_regressed_questions,
         min_recovered_questions=args.min_recovered_questions,
         min_candidate_count=args.min_candidate_count,
+        expected_selector_prompt_version=args.expected_selector_prompt_version,
         expected_boundary_prompt_version=args.expected_boundary_prompt_version,
     )
     if report["status"] == "passed" and args.receipt is not None:

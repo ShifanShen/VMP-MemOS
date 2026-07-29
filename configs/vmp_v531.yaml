@@ -1,0 +1,73 @@
+version: VMP-v5.3.1
+pipeline: shared_local_vllm_symbolic_boundary_verification
+
+dev_replay:
+  candidate_run: outputs/longmemeval/runs/lme_dev_vmp_v53_candidates_seed42
+  selector_run: outputs/longmemeval/runs/lme_dev_vmp_v53_rerank_seed42
+  sample_identity_required: true
+  candidate_session_set_match_required: true
+  selector_prompt_sha256_audited: true
+  live_selector_calls: false
+  live_boundary_calls: true
+
+candidate_generation:
+  source_model: outputs/longmemeval/models/vmp_v5_seed42.json
+  comparison_model: outputs/longmemeval/models/vmp_v43_seed42.json
+  methods:
+    - vmp_tuned
+    - vmp_hierarchical
+  candidate_count: 30
+  output_top_k: 5
+
+selector:
+  provider: vllm
+  model: Qwen/Qwen2.5-7B-Instruct
+  prompt_version: vmp_v52_evidence_set_v1
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 512
+  protected_top_n: 3
+  ranked_output_count: 10
+  max_candidate_chars: 1200
+  max_excerpt_turns: 4
+
+boundary_verifier:
+  prompt_version: vmp_v531_symbolic_boundary_v1
+  protected_top_n: 3
+  max_promotions: 2
+  selectable_labels:
+    - B1
+    - B2
+    - P1
+    - P2
+  protected_labels:
+    - LOCKED-1
+    - LOCKED-2
+    - LOCKED-3
+  expose_session_ids_to_llm: false
+  min_confidence: high
+  max_tokens: 256
+  parse_failure_policy: preserve_original_top5
+  low_confidence_policy: preserve_original_top5
+
+dev_gate:
+  min_recall_all_at_5: 0.93
+  min_delta_vs_raw_v5: 0.025
+  min_delta_vs_shared_reranked_v43: 0.03
+  min_macro_delta_vs_raw_v5: 0.0
+  max_type_regression_vs_raw_v5: 0.03
+  max_parse_fallback_rate: 0.02
+  max_boundary_fallback_rate: 0.02
+  max_regressed_questions: 0
+  min_recovered_questions: 3
+  test_labels_used: false
+
+fairness:
+  shared_candidate_count: true
+  shared_selector_prompt: true
+  shared_boundary_prompt: true
+  shared_generation: true
+  shared_reader: true
+  framework_name_visible_to_llm: false
+  gold_labels_visible_to_llm: false
+  test_labels_used_for_selection: false
