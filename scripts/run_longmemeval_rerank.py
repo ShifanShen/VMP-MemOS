@@ -14,10 +14,12 @@ from pydantic import JsonValue
 from vmp_memos.llm import (
     LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
+    LONGMEMEVAL_IDENTITY_CANDIDATE_PLANNER_VERSION,
     LONGMEMEVAL_RERANK_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LLMGenerationConfig,
     LongMemEvalEvidenceReranker,
     LongMemEvalRerankerConfig,
@@ -33,6 +35,31 @@ from vmp_memos.longmemeval.rerank_runner import (
 )
 
 LOGGER = logging.getLogger("vmp_memos.run_longmemeval_rerank")
+
+
+def _paper_version(
+    *,
+    selector_prompt_version: str,
+    boundary_prompt_version: str,
+    boundary_verification: bool,
+) -> str:
+    if (
+        selector_prompt_version == LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION
+        and boundary_prompt_version
+        == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
+    ):
+        return "VMP-v5.5"
+    if (
+        selector_prompt_version == LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION
+        and boundary_prompt_version
+        == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
+    ):
+        return "VMP-v5.4"
+    if boundary_prompt_version == LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION:
+        return "VMP-v5.3.2"
+    if boundary_prompt_version == LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION:
+        return "VMP-v5.3.1"
+    return "VMP-v5.3" if boundary_verification else "VMP-v5.2"
 
 
 def main() -> int:
@@ -66,6 +93,16 @@ def main() -> int:
     parser.add_argument("--max-retries", type=int, default=2)
     parser.add_argument("--retry-sleep-seconds", type=float, default=1.0)
     parser.add_argument("--candidate-count", type=int, default=30)
+    parser.add_argument(
+        "--candidate-planner-version",
+        default=LONGMEMEVAL_IDENTITY_CANDIDATE_PLANNER_VERSION,
+    )
+    parser.add_argument("--candidate-planner-rrf-k", type=int, default=60)
+    parser.add_argument(
+        "--candidate-planner-hierarchical-weight",
+        type=float,
+        default=0.8,
+    )
     parser.add_argument("--output-top-k", type=int, default=5)
     parser.add_argument("--protected-top-n", type=int, default=4)
     parser.add_argument("--ranked-output-count", type=int, default=10)
@@ -132,6 +169,11 @@ def main() -> int:
     )
     reranker_config = LongMemEvalRerankerConfig(
         prompt_version=args.prompt_version,
+        candidate_planner_version=args.candidate_planner_version,
+        candidate_planner_rrf_k=args.candidate_planner_rrf_k,
+        candidate_planner_hierarchical_weight=(
+            args.candidate_planner_hierarchical_weight
+        ),
         candidate_count=args.candidate_count,
         output_top_k=args.output_top_k,
         protected_top_n=args.protected_top_n,
@@ -189,13 +231,14 @@ def main() -> int:
     )
     LOGGER.info(
         "Starting shared rerank: source=%s run_id=%s methods=%s "
-        "model=%s candidates=%d protect=%d/%d boundary=%s selector_replay=%s "
-        "resume=%s",
+        "model=%s candidates=%d planner=%s protect=%d/%d boundary=%s "
+        "selector_replay=%s resume=%s",
         args.source_run,
         args.run_id,
         ",".join(methods),
         args.model,
         args.candidate_count,
+        args.candidate_planner_version,
         args.protected_top_n,
         args.output_top_k,
         args.boundary_verification,
@@ -211,29 +254,10 @@ def main() -> int:
             limit=args.limit,
             require_full_candidate_count=args.require_full_candidate_count,
             metadata={
-                "paper_version": (
-                    "VMP-v5.4"
-                    if (
-                        args.prompt_version
-                        == LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION
-                        and args.boundary_prompt_version
-                        == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
-                    )
-                    else (
-                        "VMP-v5.3.2"
-                        if args.boundary_prompt_version
-                        == LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION
-                        else (
-                            "VMP-v5.3.1"
-                            if args.boundary_prompt_version
-                            == LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION
-                            else (
-                                "VMP-v5.3"
-                                if args.boundary_verification
-                                else "VMP-v5.2"
-                            )
-                        )
-                    )
+                "paper_version": _paper_version(
+                    selector_prompt_version=args.prompt_version,
+                    boundary_prompt_version=args.boundary_prompt_version,
+                    boundary_verification=args.boundary_verification,
                 ),
                 "shared_across_frameworks": True,
                 "test_labels_used": False,

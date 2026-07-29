@@ -21,8 +21,10 @@ from vmp_memos.frameworks import RetrievedMemory
 from vmp_memos.llm import (
     LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LongMemEvalRerankDecision,
     LongMemEvalRerankerConfig,
+    plan_longmemeval_rerank_candidates,
     prepare_longmemeval_rerank_candidates,
     reorder_memories,
 )
@@ -77,6 +79,9 @@ class RerankMethodSummary(RetrievalMethodSummary):
     reranker_provider: str | None = None
     reranker_model: str | None = None
     prompt_version: NonEmptyStr
+    candidate_planner_version: NonEmptyStr
+    candidate_planner_applied_questions: NonNegativeInt = 0
+    candidate_planner_identity_questions: NonNegativeInt = 0
     candidate_count: NonNegativeInt
     min_observed_candidate_count: NonNegativeInt
     output_top_k: NonNegativeInt
@@ -339,6 +344,13 @@ def summarize_rerank_method(
             "reranker_provider": provider,
             "reranker_model": model,
             "prompt_version": config.prompt_version,
+            "candidate_planner_version": config.candidate_planner_version,
+            "candidate_planner_applied_questions": sum(
+                _candidate_plan_bool(record, "applied") for record in records
+            ),
+            "candidate_planner_identity_questions": sum(
+                not _candidate_plan_bool(record, "applied") for record in records
+            ),
             "candidate_count": config.candidate_count,
             "min_observed_candidate_count": min(
                 (int(_metadata_number(record, "candidate_count_observed")) for record in records),
@@ -446,10 +458,14 @@ def _rerank_record(
     output_method: str,
     reranker: EvidenceReranker,
 ) -> RetrievalSampleRecord:
-    candidates = prepare_longmemeval_rerank_candidates(
+    candidate_plan = plan_longmemeval_rerank_candidates(
         source.retrieved_memories,
         candidate_count=reranker.config.candidate_count,
+        planner_version=reranker.config.candidate_planner_version,
+        rrf_k=reranker.config.candidate_planner_rrf_k,
+        hierarchical_weight=reranker.config.candidate_planner_hierarchical_weight,
     )
+    candidates = candidate_plan.candidates
     started_at = perf_counter()
     decision = reranker.rerank(
         question_id=source.question_id,
@@ -510,6 +526,10 @@ def _rerank_record(
         "finish_reason": decision.finish_reason,
         "candidate_count_requested": reranker.config.candidate_count,
         "candidate_count_observed": len(candidates),
+        "candidate_plan": cast(
+            JsonValue,
+            candidate_plan.model_dump(mode="json", exclude={"candidates"}),
+        ),
         "candidate_oracle_recoverable": candidate_oracle_recoverable,
         "output_top_k": reranker.config.output_top_k,
         "protected_top_n": reranker.config.protected_top_n,
@@ -678,11 +698,17 @@ def _prepare_manifest(
                 ),
                 "symbolic_selector_labels": (
                     reranker_signature.get("prompt_version")
-                    == LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION
+                    in {
+                        LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
+                        LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+                    }
                 ),
                 "selector_evidence_span_binding": (
                     reranker_signature.get("prompt_version")
-                    == LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION
+                    in {
+                        LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
+                        LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+                    }
                 ),
                 "boundary_evidence_span_binding": (
                     reranker_signature.get("boundary_prompt_version")
@@ -691,6 +717,11 @@ def _prepare_manifest(
                 "selector_replayed": metadata.get("selector_replay") is True,
                 "selector_replay_run": metadata.get("selector_replay_run"),
                 "selector_replay_manifest_sha256": metadata.get("selector_replay_manifest_sha256"),
+                "shared_candidate_planner": True,
+                "candidate_planner_version": reranker_signature.get(
+                    "candidate_planner_version"
+                ),
+                "candidate_planner_uses_gold_labels": False,
                 "gold_labels_visible_to_reranker": False,
             },
             "test_labels_used": False,
@@ -851,6 +882,11 @@ def _metadata_number(record: RetrievalSampleRecord, name: str) -> float:
 def _metadata_list(record: RetrievalSampleRecord, name: str) -> list[object]:
     value = record.rerank_metadata.get(name, [])
     return list(value) if isinstance(value, list) else []
+
+
+def _candidate_plan_bool(record: RetrievalSampleRecord, name: str) -> bool:
+    value = record.rerank_metadata.get("candidate_plan")
+    return isinstance(value, dict) and value.get(name) is True
 
 
 def _boundary_payload(record: RetrievalSampleRecord) -> dict[str, JsonValue]:

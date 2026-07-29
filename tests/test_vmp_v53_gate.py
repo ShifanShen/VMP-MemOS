@@ -94,12 +94,41 @@ def test_v54_gate_accepts_symbolic_span_selector_and_boundary(tmp_path) -> None:
     )
 
 
+def test_v55_gate_requires_label_free_dual_view_planner_audit(tmp_path) -> None:
+    selector_prompt_version = "vmp_v55_challenger_span_selector_v1"
+    boundary_prompt_version = "vmp_v54_symbolic_span_boundary_v1"
+    planner_version = "vmp_v55_dual_view_rrf_v1"
+    candidate_run, rerank_run = _write_runs(
+        tmp_path,
+        selector_prompt_version=selector_prompt_version,
+        boundary_prompt_version=boundary_prompt_version,
+        candidate_planner_version=planner_version,
+        candidate_count=10,
+    )
+
+    report = evaluate_v53_gate(
+        candidate_run,
+        rerank_run,
+        expected_selector_prompt_version=selector_prompt_version,
+        expected_boundary_prompt_version=boundary_prompt_version,
+        expected_candidate_planner_version=planner_version,
+        min_candidate_count=10,
+    )
+
+    assert report["status"] == "passed"
+    assert report["checks"]["label_free_candidate_planner"] is True
+    assert report["reranker"]["candidate_planner_applied_questions"] == 100
+    assert report["reranker"]["baseline_candidate_planner_identity_questions"] == 100
+
+
 def _write_runs(
     tmp_path,
     *,
     regressed_questions: int = 0,
     selector_prompt_version: str = "vmp_v52_evidence_set_v1",
     boundary_prompt_version: str = "vmp_v53_selective_boundary_v1",
+    candidate_planner_version: str | None = None,
+    candidate_count: int = 30,
 ):
     candidate_run = tmp_path / "candidates"
     rerank_run = tmp_path / "reranked"
@@ -124,14 +153,25 @@ def _write_runs(
             "fairness": {
                 "two_stage_boundary_verification": True,
                 "symbolic_selector_labels": (
-                    selector_prompt_version == "vmp_v54_symbolic_span_selector_v1"
+                    selector_prompt_version
+                    in {
+                        "vmp_v54_symbolic_span_selector_v1",
+                        "vmp_v55_challenger_span_selector_v1",
+                    }
                 ),
                 "selector_evidence_span_binding": (
-                    selector_prompt_version == "vmp_v54_symbolic_span_selector_v1"
+                    selector_prompt_version
+                    in {
+                        "vmp_v54_symbolic_span_selector_v1",
+                        "vmp_v55_challenger_span_selector_v1",
+                    }
                 ),
                 "boundary_evidence_span_binding": (
                     boundary_prompt_version == "vmp_v54_symbolic_span_boundary_v1"
                 ),
+                "shared_candidate_planner": candidate_planner_version is not None,
+                "candidate_planner_version": candidate_planner_version,
+                "candidate_planner_uses_gold_labels": False,
             },
             "test_labels_used": False,
         },
@@ -146,6 +186,9 @@ def _write_runs(
         regressed_questions=regressed_questions,
         selector_prompt_version=selector_prompt_version,
         boundary_prompt_version=boundary_prompt_version,
+        candidate_planner_version=candidate_planner_version,
+        candidate_planner_applied_questions=100,
+        candidate_count=candidate_count,
     )
     _write_summary(
         rerank_run / "vmp_tuned__vllm_boundary" / "summary.json",
@@ -154,6 +197,9 @@ def _write_runs(
         recovered_questions=3,
         selector_prompt_version=selector_prompt_version,
         boundary_prompt_version=boundary_prompt_version,
+        candidate_planner_version=candidate_planner_version,
+        candidate_planner_identity_questions=100,
+        candidate_count=candidate_count,
     )
     return candidate_run, rerank_run
 
@@ -167,6 +213,10 @@ def _write_summary(
     regressed_questions: int = 0,
     selector_prompt_version: str = "vmp_v52_evidence_set_v1",
     boundary_prompt_version: str = "vmp_v53_selective_boundary_v1",
+    candidate_planner_version: str | None = None,
+    candidate_planner_applied_questions: int = 0,
+    candidate_planner_identity_questions: int = 0,
+    candidate_count: int = 30,
 ) -> None:
     payload = {
         "processed_questions": 100,
@@ -185,8 +235,15 @@ def _write_summary(
                 "prompt_version": selector_prompt_version,
                 "boundary_prompt_version": boundary_prompt_version,
                 "boundary_verification": True,
-                "candidate_count": 30,
-                "min_observed_candidate_count": 30,
+                "candidate_planner_version": candidate_planner_version,
+                "candidate_planner_applied_questions": (
+                    candidate_planner_applied_questions
+                ),
+                "candidate_planner_identity_questions": (
+                    candidate_planner_identity_questions
+                ),
+                "candidate_count": candidate_count,
+                "min_observed_candidate_count": candidate_count,
                 "output_top_k": 5,
                 "protected_top_n": 3,
                 "boundary_protected_top_n": 3,

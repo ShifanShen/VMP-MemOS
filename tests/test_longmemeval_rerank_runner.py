@@ -128,6 +128,9 @@ def test_rerank_runner_writes_replayable_records_and_resumes(tmp_path) -> None:
     assert v52.recovered_questions == 1
     assert v52.candidate_oracle_recoverable_questions == 1
     assert v52.reranker_provider == "vllm"
+    assert v52.candidate_planner_version == "identity_v1"
+    assert v52.candidate_planner_applied_questions == 0
+    assert v52.candidate_planner_identity_questions == 1
     record = _read_jsonl(result.run_dir / "vmp_hierarchical__vllm_rerank" / "retrieval.jsonl")[0]
     assert record["retrieved_session_ids"][:5] == [
         "s1",
@@ -137,10 +140,14 @@ def test_rerank_runner_writes_replayable_records_and_resumes(tmp_path) -> None:
         "s6",
     ]
     assert record["rerank_metadata"]["test_labels_used"] is False
+    assert record["rerank_metadata"]["candidate_plan"]["planner_version"] == "identity_v1"
+    assert record["rerank_metadata"]["candidate_plan"]["applied"] is False
     assert record["rerank_metadata"]["transition_vs_source"] == "recovered"
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     assert manifest["status"] == "completed"
     assert manifest["fairness"]["shared_across_methods"] is True
+    assert manifest["fairness"]["shared_candidate_planner"] is True
+    assert manifest["fairness"]["candidate_planner_uses_gold_labels"] is False
     assert manifest["test_labels_used"] is False
     tables = export_retrieval_tables(result.run_dir, output_dir=tmp_path / "tables")
     assert tables["table1_retrieval_overall_csv"].exists()

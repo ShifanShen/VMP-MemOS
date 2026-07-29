@@ -1188,10 +1188,17 @@ P15.3.2. [done: experiment failed strict gate] retrieve-40/deduplicate-to-30 can
          boundary with verbatim-quote validation, unchanged strict Dev gate;
          Dev Recall-All@5=0.9149, +0.0106 vs raw V5, one recovery and zero
          regressions; candidate oracle remains 93/94
-P15.4. [done: implementation] framework-blind Cxx candidate labels, deterministic
+P15.4. [done: experiment failed strict gate] framework-blind Cxx candidate labels, deterministic
        Cxx:Sxx evidence spans, server-derived promotion ownership, symbolic
        boundary span validation, resumable error provenance, unchanged strict
-       Dev gate, and frozen V5.3.2 Dev candidate reuse; server Dev experiment pending
+       Dev gate, and frozen V5.3.2 Dev candidate reuse; Dev Recall-All@5=0.9149,
+       one recovery and zero regressions; position audit found 216/218 cited
+       evidence owners in C01-C05 and no citations in C11-C30
+P15.5. [done: implementation, server Dev experiment pending] label-free
+       hierarchical/session-semantic weighted-RRF candidate planning, equal
+       Top-10 LLM input, mandatory C06-C10 challenger assessments, fail-closed
+       incomplete scans, per-record planner provenance, unchanged V5.4 symbolic
+       boundary, unchanged strict outcome gate, and sealed Test workflow
 P16. Local-vLLM atomic-memory writer + hierarchical-memory ablation
 P17. Fresh external/final benchmark after architecture freeze
 P18. Fallback style baselines only if needed

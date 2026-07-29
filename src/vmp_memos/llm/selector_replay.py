@@ -13,6 +13,7 @@ from pydantic import JsonValue
 
 from vmp_memos.frameworks import RetrievedMemory
 from vmp_memos.llm.base import ChatMessage, LLMGenerationConfig, LLMResponse
+from vmp_memos.llm.candidate_planner import plan_longmemeval_rerank_candidates
 from vmp_memos.llm.reranker import (
     LONGMEMEVAL_BOUNDARY_SYSTEM_PROMPT,
     LONGMEMEVAL_RERANK_PROMPT_VERSION,
@@ -20,7 +21,6 @@ from vmp_memos.llm.reranker import (
     LongMemEvalRerankerConfig,
     RerankerChatClient,
     build_longmemeval_rerank_prompt,
-    prepare_longmemeval_rerank_candidates,
 )
 
 
@@ -392,10 +392,16 @@ def validate_selector_replay_source(
                 if limit is not None and method_checked >= limit:
                     break
                 record = RetrievalSampleRecord.model_validate_json(line)
-                memories = prepare_longmemeval_rerank_candidates(
+                candidate_plan = plan_longmemeval_rerank_candidates(
                     record.retrieved_memories,
                     candidate_count=config.candidate_count,
+                    planner_version=config.candidate_planner_version,
+                    rrf_k=config.candidate_planner_rrf_k,
+                    hierarchical_weight=(
+                        config.candidate_planner_hierarchical_weight
+                    ),
                 )
+                memories = candidate_plan.candidates
                 key = (method, record.question_id)
                 entry = cache.entries.get(key)
                 if entry is None:

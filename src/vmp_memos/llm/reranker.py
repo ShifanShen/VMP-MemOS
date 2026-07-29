@@ -19,6 +19,11 @@ from pydantic import Field, JsonValue, PositiveInt, model_validator
 from vmp_memos.frameworks import RetrievedMemory
 from vmp_memos.frameworks.text import estimate_tokens, terms
 from vmp_memos.llm.base import ChatMessage, LLMGenerationConfig, LLMResponse
+from vmp_memos.llm.candidate_planner import (
+    LONGMEMEVAL_CANDIDATE_PLANNER_VERSIONS,
+    LONGMEMEVAL_IDENTITY_CANDIDATE_PLANNER_VERSION,
+    LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION,
+)
 from vmp_memos.schemas.base import (
     NonEmptyStr,
     NonNegativeFloat,
@@ -30,10 +35,14 @@ LONGMEMEVAL_RERANK_PROMPT_VERSION = "vmp_v52_evidence_set_v1"
 LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION = (
     "vmp_v54_symbolic_span_selector_v1"
 )
+LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION = (
+    "vmp_v55_challenger_span_selector_v1"
+)
 LONGMEMEVAL_RERANK_PROMPT_VERSIONS = frozenset(
     {
         LONGMEMEVAL_RERANK_PROMPT_VERSION,
         LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
+        LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
     }
 )
 LONGMEMEVAL_BOUNDARY_PROMPT_VERSION = "vmp_v53_selective_boundary_v1"
@@ -119,6 +128,50 @@ selected_candidates must contain exactly {output_top_k} distinct labels.
 ranked_candidates may contain up to {ranked_output_count} distinct labels.
 Evidence-span ownership is checked locally; an out-of-Top-5 candidate without
 a valid owned evidence span cannot be promoted.
+"""
+LONGMEMEVAL_V55_CHALLENGER_SELECTOR_USER_PROMPT = """\
+Audit whether any challenger supplies essential long-term-memory evidence
+missing from the original Top-5. Candidate and evidence-span labels are opaque.
+
+Question date:
+{question_date}
+
+Question:
+{question}
+
+Original Top-5:
+{original_context}
+
+Challengers:
+{challenger_context}
+
+Evidence-first procedure:
+1. Decompose the question into at most four atomic needs, named N1 through N4.
+2. Inspect every challenger from C06 through C10. Return exactly one
+   challenger_assessments entry for each, in label order.
+3. When a challenger adds essential missing evidence, set
+   adds_missing_evidence=true and return one or more exact span labels owned by
+   that challenger. Otherwise return empty supports_needs and evidence_spans.
+4. Counting, list, duration, and ordering questions may need several sessions.
+   Do not treat the first matching session as complete coverage.
+5. For relative-time questions, use the question date and session dates.
+6. The first {protected_top_n} candidates are protected by the server. Return a
+   complete Top-{output_top_k} selection, but do not invent evidence.
+
+Never output a session ID or answer the question. Return one JSON object:
+  {{"evidence_needs":["N1: ..."],
+    "challenger_assessments":[
+      {{"candidate":"C06","supports_needs":[],
+        "evidence_spans":[],"adds_missing_evidence":false}},
+      {{"candidate":"C07","supports_needs":["N1"],
+        "evidence_spans":["C07:S02"],"adds_missing_evidence":true}}
+    ],
+    "selected_candidates":["C01","C02","C03","C04","C05"],
+    "ranked_candidates":["C01","C02","C03","C04","C05"]}}
+
+selected_candidates must contain exactly {output_top_k} distinct labels.
+ranked_candidates may contain up to {ranked_output_count} distinct labels.
+Evidence-span ownership and complete challenger coverage are checked locally.
 """
 LONGMEMEVAL_BOUNDARY_SYSTEM_PROMPT = (
     "You conservatively verify the boundary of a long-term memory evidence set. "
@@ -322,6 +375,11 @@ class LongMemEvalRerankerConfig(SchemaModel):
     """Immutable shared reranker settings used by every compared framework."""
 
     prompt_version: NonEmptyStr = LONGMEMEVAL_RERANK_PROMPT_VERSION
+    candidate_planner_version: NonEmptyStr = (
+        LONGMEMEVAL_IDENTITY_CANDIDATE_PLANNER_VERSION
+    )
+    candidate_planner_rrf_k: NonNegativeInt = 60
+    candidate_planner_hierarchical_weight: NonNegativeFloat = 0.8
     candidate_count: PositiveInt = 30
     output_top_k: PositiveInt = 5
     protected_top_n: NonNegativeInt = 4
@@ -354,6 +412,10 @@ class LongMemEvalRerankerConfig(SchemaModel):
 
         if self.prompt_version not in LONGMEMEVAL_RERANK_PROMPT_VERSIONS:
             raise ValueError("unsupported LongMemEval reranker prompt version")
+        if self.candidate_planner_version not in LONGMEMEVAL_CANDIDATE_PLANNER_VERSIONS:
+            raise ValueError("unsupported LongMemEval candidate planner version")
+        if float(self.candidate_planner_hierarchical_weight) > 1.0:
+            raise ValueError("candidate planner hierarchical weight must be in [0, 1]")
         if self.candidate_count < self.output_top_k:
             raise ValueError("candidate_count must be at least output_top_k")
         if self.protected_top_n >= self.output_top_k:
@@ -364,10 +426,10 @@ class LongMemEvalRerankerConfig(SchemaModel):
             raise ValueError("ranked_output_count cannot exceed candidate_count")
         if self.boundary_prompt_version not in LONGMEMEVAL_BOUNDARY_PROMPT_VERSIONS:
             raise ValueError("unsupported LongMemEval boundary prompt version")
-        symbolic_span_selector = (
-            self.prompt_version
-            == LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION
-        )
+        symbolic_span_selector = self.prompt_version in {
+            LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
+            LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+        }
         symbolic_span_boundary = (
             self.boundary_prompt_version
             == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
@@ -378,6 +440,22 @@ class LongMemEvalRerankerConfig(SchemaModel):
             raise ValueError(
                 "V5.4 symbolic span selector and boundary versions must be enabled together"
             )
+        if self.prompt_version == LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION:
+            if (
+                self.candidate_planner_version
+                != LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
+            ):
+                raise ValueError("V5.5 challenger selector requires the dual-view planner")
+            if (
+                self.candidate_count != 10
+                or self.output_top_k != 5
+                or self.protected_top_n != 3
+                or self.ranked_output_count != 10
+            ):
+                raise ValueError(
+                    "V5.5 paper contract requires candidates=10, top_k=5, "
+                    "protected=3, ranked=10"
+                )
         if self.boundary_verification:
             if self.boundary_protected_top_n >= self.output_top_k:
                 raise ValueError("V5.3 boundary verification must leave open Top-k slots")
@@ -540,10 +618,11 @@ class LongMemEvalEvidenceReranker:
         selector_evidence_selections: list[dict[str, JsonValue]] = []
         selector_span_binding_failures: list[str] = []
         selector_grounded_promotion_labels: list[str] = []
-        if (
-            self.config.prompt_version
-            == LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION
-        ):
+        selector_protocol_fallback = False
+        if self.config.prompt_version in {
+            LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
+            LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+        }:
             candidate_label_session_ids = _candidate_label_session_map(unique_candidates)
             raw_selected_candidate_labels = [
                 _normalized_candidate_label(value)
@@ -561,16 +640,37 @@ class LongMemEvalEvidenceReranker:
                 for label in raw_candidate_labels
                 if label not in candidate_label_session_ids
             ]
-            (
-                selector_evidence_selections,
-                selector_span_binding_failures,
-                grounded_labels,
-            ) = _validate_selector_evidence_selections(
-                parsed,
-                candidates=unique_candidates,
-                question=question,
-                config=self.config,
-            )
+            if (
+                self.config.prompt_version
+                == LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION
+            ):
+                (
+                    selector_evidence_selections,
+                    selector_span_binding_failures,
+                    grounded_labels,
+                    challenger_scan_complete,
+                ) = _validate_challenger_assessments(
+                    parsed,
+                    candidates=unique_candidates,
+                    question=question,
+                    config=self.config,
+                )
+                selector_protocol_fallback = not challenger_scan_complete
+                if selector_protocol_fallback:
+                    # Fail closed: a partial challenger scan must not count any
+                    # promotion as grounded or influence the final ranking.
+                    grounded_labels = []
+            else:
+                (
+                    selector_evidence_selections,
+                    selector_span_binding_failures,
+                    grounded_labels,
+                ) = _validate_selector_evidence_selections(
+                    parsed,
+                    candidates=unique_candidates,
+                    question=question,
+                    config=self.config,
+                )
             original_top_k_labels = {
                 _candidate_label(index)
                 for index in range(
@@ -614,14 +714,21 @@ class LongMemEvalEvidenceReranker:
             valid_proposed = [
                 session_id for session_id in proposed if session_id in allowed
             ]
-        parse_fallback = not valid_proposed
+        parse_fallback = selector_protocol_fallback or not valid_proposed
         if parse_fallback:
             valid_proposed = list(original_ids)
             fallback_reason = fallback_reason or (
-                "response contained no grounded candidate spans"
-                if self.config.prompt_version
-                == LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION
-                else "response contained no valid candidate IDs"
+                "challenger scan did not assess every candidate"
+                if selector_protocol_fallback
+                else (
+                    "response contained no grounded candidate spans"
+                    if self.config.prompt_version
+                    in {
+                        LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
+                        LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+                    }
+                    else "response contained no valid candidate IDs"
+                )
             )
         complete_llm_order = _ordered_unique([*valid_proposed, *original_ids])
         selector_ranked_ids = guarded_session_ranking(
@@ -935,6 +1042,30 @@ def build_longmemeval_rerank_prompt(
     config: LongMemEvalRerankerConfig,
 ) -> str:
     """Render the fixed framework-agnostic evidence-selection prompt."""
+
+    if config.prompt_version == LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION:
+        rendered = [
+            _format_symbolic_span_candidate(
+                rank,
+                memory,
+                question=question,
+                max_chars=config.max_candidate_chars,
+                max_turns=config.max_excerpt_turns,
+            )
+            for rank, memory in enumerate(
+                candidates[: config.candidate_count],
+                start=1,
+            )
+        ]
+        return LONGMEMEVAL_V55_CHALLENGER_SELECTOR_USER_PROMPT.format(
+            question_date=question_date or "unknown",
+            question=question,
+            original_context="\n\n".join(rendered[: config.output_top_k]),
+            challenger_context="\n\n".join(rendered[config.output_top_k :]),
+            output_top_k=config.output_top_k,
+            protected_top_n=config.protected_top_n,
+            ranked_output_count=config.ranked_output_count,
+        ).strip()
 
     if config.prompt_version == LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION:
         candidate_context = "\n\n".join(
@@ -1391,6 +1522,94 @@ def _validate_selector_evidence_selections(
         if span_valid and supports_known_need:
             grounded_labels.extend(owner_labels)
     return selections, failures, _ordered_unique(grounded_labels)
+
+
+def _validate_challenger_assessments(
+    parsed: dict[str, object],
+    *,
+    candidates: Sequence[RetrievedMemory],
+    question: str,
+    config: LongMemEvalRerankerConfig,
+) -> tuple[list[dict[str, JsonValue]], list[str], list[str], bool]:
+    raw_assessments = parsed.get("challenger_assessments")
+    values = raw_assessments if isinstance(raw_assessments, list) else []
+    need_ids = _evidence_need_ids(_string_list(parsed.get("evidence_needs")))
+    span_owners = _selector_span_owner_map(
+        candidates,
+        question=question,
+        config=config,
+    )
+    expected_labels = [
+        _candidate_label(index)
+        for index in range(config.output_top_k + 1, config.candidate_count + 1)
+    ]
+    expected = set(expected_labels)
+    assessments: list[dict[str, JsonValue]] = []
+    failures: list[str] = []
+    grounded_labels: list[str] = []
+    observed: set[str] = set()
+    complete = True
+    for index, value in enumerate(values, start=1):
+        if not isinstance(value, dict):
+            failures.append(f"E{index}:invalid_assessment")
+            complete = False
+            continue
+        candidate_value = value.get("candidate")
+        candidate = (
+            _normalized_candidate_label(candidate_value)
+            if isinstance(candidate_value, str)
+            else ""
+        )
+        if candidate not in expected:
+            failures.append(f"E{index}:invalid_challenger")
+            complete = False
+            continue
+        if candidate in observed:
+            failures.append(f"{candidate}:duplicate_assessment")
+            complete = False
+            continue
+        observed.add(candidate)
+        supports_needs = _string_list(value.get("supports_needs"))[:4]
+        span_ids = [
+            _normalized_evidence_span_id(span_id)
+            for span_id in _string_list(value.get("evidence_spans"))[:4]
+        ]
+        adds_missing_evidence = value.get("adds_missing_evidence") is True
+        supports_known_need = bool(
+            need_ids.intersection(_evidence_need_ids(supports_needs))
+        )
+        span_valid = bool(span_ids) and all(
+            span_owners.get(span_id) == candidate for span_id in span_ids
+        )
+        assessment: dict[str, JsonValue] = {
+            "candidate": candidate,
+            "supports_needs": cast(JsonValue, supports_needs),
+            "evidence_spans": cast(JsonValue, span_ids),
+            "adds_missing_evidence": adds_missing_evidence,
+            "span_valid": span_valid,
+        }
+        assessments.append(assessment)
+        if not adds_missing_evidence:
+            continue
+        if not supports_needs:
+            failures.append(f"{candidate}:missing_need")
+        elif not supports_known_need:
+            failures.append(f"{candidate}:unknown_need")
+        if not span_ids:
+            failures.append(f"{candidate}:missing_span")
+        elif not span_valid:
+            failures.append(f"{candidate}:span_not_grounded")
+        if supports_known_need and span_valid:
+            grounded_labels.append(candidate)
+
+    missing = [label for label in expected_labels if label not in observed]
+    if missing:
+        failures.append("missing_assessments:" + ",".join(missing))
+        complete = False
+    assessments.sort(
+        key=lambda assessment: expected_labels.index(str(assessment["candidate"]))
+    )
+    return assessments, failures, _ordered_unique(grounded_labels), complete
 
 
 def _validate_symbolic_span_slot_assessments(

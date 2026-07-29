@@ -1,5 +1,69 @@
 # VMP-MemOS
 
+## VMP-v5.5 dual-view challenger scan
+
+V5.5 addresses the position bias observed in the completed V5.4 Dev run. It
+does not lower the paper quality gate and does not use question types, answers,
+gold sessions, or Test labels. The frozen V5.3.2 Dev candidate pool is reused.
+
+- A deterministic weighted-RRF planner combines V5's hierarchical rank with
+  its session-semantic rank and emits 10 unique sessions.
+- The same planner code is used for V4.3; because V4.3 has no hierarchical
+  session-semantic metadata, its documented behavior is an identity Top-10.
+- The shared local vLLM sees exactly 10 anonymous candidates for either method.
+  It must assess every challenger `C06..C10`; an incomplete scan fails closed
+  and preserves the original Top-5.
+- The V5.4 symbolic evidence-span boundary verifier remains unchanged.
+
+Start the already-downloaded local model in terminal A:
+
+```bash
+cd /home/shenshifan/projects/VMP-MemOS
+
+export VMP_LLM_API_KEY="local-vllm-key"
+export VMP_LLM_MODEL="/home/shenshifan/models/Qwen2.5-7B-Instruct"
+export VMP_VLLM_ENABLE_TOOL_CALLING=0
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+uv run --no-sync bash scripts/serve_vllm.sh
+```
+
+After `curl -H "Authorization: Bearer local-vllm-key" \
+http://127.0.0.1:8000/v1/models` succeeds, run Dev in terminal B:
+
+```bash
+cd /home/shenshifan/projects/VMP-MemOS
+
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=/home/shenshifan/models/Qwen2.5-7B-Instruct \
+STAGE=dev_rerank \
+uv run --no-sync bash scripts/run_vmp_v55_experiment.sh
+```
+
+For an interrupted run, add `RERANK_RESUME=1` to the command. The log is
+`outputs/longmemeval/logs/vmp_v55_dev_rerank.log`; the run is
+`outputs/longmemeval/runs/lme_dev_vmp_v55_rerank_seed42`. Exit code 3 means
+the experiment completed but the unchanged strict Dev quality gate failed.
+Only a successful run creates
+`outputs/longmemeval/gates/vmp_v55_seed42_dev_pass.json`.
+
+After that receipt exists, Test remains a two-stage single-GPU workflow:
+
+```bash
+# Stop vLLM, then generate Test candidates with BGE-M3.
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+STAGE=test_candidates EMBEDDING_BATCH_SIZE=2 \
+uv run --no-sync bash scripts/run_vmp_v55_experiment.sh
+
+# Restart the same vLLM, then run the sealed Test rerank and optional reader.
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=/home/shenshifan/models/Qwen2.5-7B-Instruct \
+STAGE=test_rerank RUN_QA=1 \
+uv run --no-sync bash scripts/run_vmp_v55_experiment.sh
+```
+
 ## VMP-v5.4 symbolic evidence-span binding
 
 V5.3.2 的服务器 Dev 结果为 `Recall-All@5 = 0.9149`：相对 raw V5 只提升

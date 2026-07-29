@@ -40,6 +40,10 @@ def main() -> int:
         "--expected-boundary-prompt-version",
         default=LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
     )
+    parser.add_argument(
+        "--expected-candidate-planner-version",
+        default=None,
+    )
     args = parser.parse_args()
 
     report = evaluate_v53_gate(
@@ -59,6 +63,7 @@ def main() -> int:
         min_candidate_count=args.min_candidate_count,
         expected_selector_prompt_version=args.expected_selector_prompt_version,
         expected_boundary_prompt_version=args.expected_boundary_prompt_version,
+        expected_candidate_planner_version=args.expected_candidate_planner_version,
     )
     if report["status"] == "passed" and args.receipt is not None:
         report["receipt"] = str(write_gate_receipt(report, args.receipt))

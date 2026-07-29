@@ -1,6 +1,12 @@
 """LLM clients and provider adapters."""
 
 from vmp_memos.llm.base import ChatMessage, LLMGenerationConfig, LLMResponse
+from vmp_memos.llm.candidate_planner import (
+    LONGMEMEVAL_IDENTITY_CANDIDATE_PLANNER_VERSION,
+    LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION,
+    LongMemEvalCandidatePlan,
+    plan_longmemeval_rerank_candidates,
+)
 from vmp_memos.llm.reader import (
     LongMemEvalReader,
     LongMemEvalReaderConfig,
@@ -14,6 +20,7 @@ from vmp_memos.llm.reranker import (
     LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LongMemEvalBoundaryDecision,
     LongMemEvalEvidenceReranker,
     LongMemEvalRerankDecision,
@@ -39,14 +46,18 @@ from vmp_memos.llm.vllm_client import VLLMClient, VLLMClientConfig, load_vllm_co
 __all__ = [
     "LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION",
     "LONGMEMEVAL_BOUNDARY_PROMPT_VERSION",
+    "LONGMEMEVAL_IDENTITY_CANDIDATE_PLANNER_VERSION",
     "LONGMEMEVAL_RERANK_PROMPT_VERSION",
     "LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION",
     "LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION",
     "LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION",
+    "LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION",
+    "LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION",
     "ChatMessage",
     "LLMGenerationConfig",
     "LLMResponse",
     "LongMemEvalBoundaryDecision",
+    "LongMemEvalCandidatePlan",
     "LongMemEvalEvidenceReranker",
     "LongMemEvalReader",
     "LongMemEvalReaderConfig",
@@ -67,6 +78,7 @@ __all__ = [
     "guarded_session_ranking",
     "load_selector_replay_cache",
     "load_vllm_config",
+    "plan_longmemeval_rerank_candidates",
     "prepare_longmemeval_rerank_candidates",
     "reorder_memories",
     "validate_selector_replay_source",

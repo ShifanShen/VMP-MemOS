@@ -14,6 +14,8 @@ from vmp_memos.llm import (
     LONGMEMEVAL_RERANK_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION,
 )
 from vmp_memos.longmemeval.rerank_runner import reranked_method_name
 
@@ -36,6 +38,7 @@ def evaluate_v53_gate(
     min_candidate_count: int = 30,
     expected_selector_prompt_version: str = LONGMEMEVAL_RERANK_PROMPT_VERSION,
     expected_boundary_prompt_version: str = LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
+    expected_candidate_planner_version: str | None = None,
 ) -> dict[str, JsonValue]:
     """Evaluate the two-stage policy without reading Test labels or dataset rows."""
 
@@ -105,6 +108,14 @@ def evaluate_v53_gate(
     baseline_selector_prompt = reranked_v43.get("prompt_version")
     boundary_prompt = reranked_v5.get("boundary_prompt_version")
     baseline_boundary_prompt = reranked_v43.get("boundary_prompt_version")
+    candidate_planner = reranked_v5.get("candidate_planner_version")
+    baseline_candidate_planner = reranked_v43.get("candidate_planner_version")
+    candidate_planner_applied_questions = _integer(
+        reranked_v5.get("candidate_planner_applied_questions")
+    )
+    baseline_candidate_planner_identity_questions = _integer(
+        reranked_v43.get("candidate_planner_identity_questions")
+    )
     candidate_config = candidate_manifest.get("config")
     dev_selection_marked = (
         isinstance(candidate_config, dict)
@@ -117,7 +128,10 @@ def evaluate_v53_gate(
     )
     symbolic_span_expected = (
         expected_selector_prompt_version
-        == LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION
+        in {
+            LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
+            LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+        }
         or expected_boundary_prompt_version
         == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
     )
@@ -131,6 +145,26 @@ def evaluate_v53_gate(
     summaries = (raw_v5, raw_v43, reranked_v5, reranked_v43)
     processed_counts = [_integer(summary.get("processed_questions")) for summary in summaries]
     evaluated_counts = [_integer(summary.get("evaluated_questions")) for summary in summaries]
+    candidate_planner_contract = True
+    if expected_candidate_planner_version is not None:
+        candidate_planner_contract = (
+            isinstance(rerank_fairness, dict)
+            and rerank_fairness.get("shared_candidate_planner") is True
+            and rerank_fairness.get("candidate_planner_uses_gold_labels") is False
+            and rerank_fairness.get("candidate_planner_version")
+            == expected_candidate_planner_version
+            and candidate_planner == expected_candidate_planner_version
+            and baseline_candidate_planner == expected_candidate_planner_version
+        )
+        if (
+            expected_candidate_planner_version
+            == LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
+        ):
+            candidate_planner_contract = (
+                candidate_planner_contract
+                and candidate_planner_applied_questions == sample_count
+                and baseline_candidate_planner_identity_questions == sample_count
+            )
 
     checks = {
         "candidate_run_completed": candidate_manifest.get("status") == "completed",
@@ -164,6 +198,7 @@ def evaluate_v53_gate(
         "shared_symbolic_span_protocol": (
             symbolic_span_marked if symbolic_span_expected else True
         ),
+        "label_free_candidate_planner": candidate_planner_contract,
         "candidate_depth": (
             candidate_count >= min_candidate_count
             and baseline_candidate_count >= min_candidate_count
@@ -188,7 +223,7 @@ def evaluate_v53_gate(
     }
     passed = all(checks.values())
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "status": "passed" if passed else "failed",
         "candidate_run": str(candidate_dir),
         "rerank_run": str(rerank_dir),
@@ -230,6 +265,17 @@ def evaluate_v53_gate(
                 "boundary_prompt_version": boundary_prompt,
                 "expected_boundary_prompt_version": expected_boundary_prompt_version,
                 "candidate_count": candidate_count,
+                "candidate_planner_version": candidate_planner,
+                "expected_candidate_planner_version": (
+                    expected_candidate_planner_version
+                ),
+                "candidate_planner_applied_questions": (
+                    candidate_planner_applied_questions
+                ),
+                "baseline_candidate_planner_version": baseline_candidate_planner,
+                "baseline_candidate_planner_identity_questions": (
+                    baseline_candidate_planner_identity_questions
+                ),
                 "min_observed_candidate_count": observed_candidate_count,
                 "baseline_min_observed_candidate_count": (baseline_observed_candidate_count),
                 "selector_protected_top_n": reranked_v5.get("protected_top_n"),
@@ -276,6 +322,9 @@ def evaluate_v53_gate(
                 "max_regressed_questions": max_regressed_questions,
                 "min_recovered_questions": min_recovered_questions,
                 "min_candidate_count": min_candidate_count,
+                "expected_candidate_planner_version": (
+                    expected_candidate_planner_version
+                ),
             },
         ),
         "checks": cast(JsonValue, checks),

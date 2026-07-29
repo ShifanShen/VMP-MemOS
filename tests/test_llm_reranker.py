@@ -10,6 +10,8 @@ from vmp_memos.frameworks import RetrievedMemory
 from vmp_memos.llm import (
     LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
+    LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION,
     LLMGenerationConfig,
     LLMResponse,
     LongMemEvalEvidenceReranker,
@@ -696,6 +698,118 @@ def test_v54_selector_rejects_ungrounded_promotion_span_before_boundary() -> Non
     assert decision.selected_session_ids == ["s1", "s2", "s3", "s4", "s5"]
     assert decision.selector_grounded_promotion_labels == []
     assert decision.selector_span_binding_failures == ["E1:span_not_grounded"]
+    assert decision.boundary is not None
+    assert decision.boundary.call_made is False
+
+
+def test_v55_challenger_scan_promotes_grounded_late_candidate() -> None:
+    client = FakeRerankClient(
+        [
+            """
+            {
+              "evidence_needs": ["N1: missing preference"],
+              "challenger_assessments": [
+                {"candidate":"C06","supports_needs":[],"evidence_spans":[],"adds_missing_evidence":false},
+                {"candidate":"C07","supports_needs":["N1"],"evidence_spans":["C07:S01"],"adds_missing_evidence":true},
+                {"candidate":"C08","supports_needs":[],"evidence_spans":[],"adds_missing_evidence":false},
+                {"candidate":"C09","supports_needs":[],"evidence_spans":[],"adds_missing_evidence":false},
+                {"candidate":"C10","supports_needs":[],"evidence_spans":[],"adds_missing_evidence":false}
+              ],
+              "selected_candidates": ["C01", "C02", "C03", "C07", "C04"],
+              "ranked_candidates": ["C01", "C02", "C03", "C07", "C04", "C05"]
+            }
+            """,
+            """
+            {
+              "evidence_needs": ["N1: missing preference"],
+              "needs_missing_after_locked": ["N1"],
+              "slot_assessments": [
+                {
+                  "slot": "P1",
+                  "supports_needs": ["N1"],
+                  "evidence_spans": ["P1:S01"],
+                  "adds_missing_evidence": true
+                }
+              ],
+              "selected_slots": ["B1", "P1"],
+              "confidence": "high"
+            }
+            """,
+        ]
+    )
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(
+            candidate_planner_version=(
+                LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
+            ),
+            prompt_version=LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+            candidate_count=10,
+            protected_top_n=3,
+            ranked_output_count=10,
+            boundary_verification=True,
+            boundary_prompt_version=V54_BOUNDARY_PROMPT_VERSION,
+        ),
+    )
+
+    decision = reranker.rerank(
+        question="Which missing preference is required?",
+        question_date="2024-02-01",
+        candidates=_memories(10),
+    )
+
+    assert decision.selected_session_ids == ["s1", "s2", "s3", "s4", "s7"]
+    assert decision.selector_grounded_promotion_labels == ["C07"]
+    assert decision.selector_span_binding_failures == []
+    assert decision.boundary is not None
+    assert decision.boundary.replacement_accepted is True
+    selector_prompt = client.all_messages[0][1].content
+    assert "Inspect every challenger" in selector_prompt
+    assert "[C06:S01]" in selector_prompt
+    assert "[C10:S01]" in selector_prompt
+    assert "session_id=" not in selector_prompt
+
+
+def test_v55_challenger_scan_fails_closed_when_assessment_is_missing() -> None:
+    client = FakeRerankClient(
+        """
+        {
+          "evidence_needs": ["N1: missing preference"],
+          "challenger_assessments": [
+            {"candidate":"C06","supports_needs":[],"evidence_spans":[],"adds_missing_evidence":false},
+            {"candidate":"C07","supports_needs":["N1"],"evidence_spans":["C07:S01"],"adds_missing_evidence":true}
+          ],
+          "selected_candidates": ["C01", "C02", "C03", "C07", "C04"],
+          "ranked_candidates": ["C01", "C02", "C03", "C07", "C04", "C05"]
+        }
+        """
+    )
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(
+            candidate_planner_version=(
+                LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
+            ),
+            prompt_version=LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+            candidate_count=10,
+            protected_top_n=3,
+            ranked_output_count=10,
+            boundary_verification=True,
+            boundary_prompt_version=V54_BOUNDARY_PROMPT_VERSION,
+        ),
+    )
+
+    decision = reranker.rerank(
+        question="Which missing preference is required?",
+        question_date="2024-02-01",
+        candidates=_memories(10),
+    )
+
+    assert client.calls == 1
+    assert decision.parse_fallback is True
+    assert decision.selected_session_ids == ["s1", "s2", "s3", "s4", "s5"]
+    assert decision.selector_grounded_promotion_labels == []
+    assert "missing_assessments:C08,C09,C10" in decision.selector_span_binding_failures
     assert decision.boundary is not None
     assert decision.boundary.call_made is False
 
