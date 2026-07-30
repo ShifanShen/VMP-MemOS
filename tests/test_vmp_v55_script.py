@@ -3,6 +3,7 @@
 from pathlib import Path
 
 SCRIPT_PATH = Path("scripts/run_vmp_v55_experiment.sh")
+V551_SCRIPT_PATH = Path("scripts/run_vmp_v551_experiment.sh")
 
 
 def test_v55_reuses_frozen_dev_candidates_and_keeps_outcome_gates() -> None:
@@ -32,3 +33,12 @@ def test_v55_uses_audited_dual_view_planner_and_fixed_ten_candidate_prompt() -> 
     assert "--expected-candidate-planner-version" in script
     assert 'SELECTOR_PROMPT_VERSION="${SELECTOR_PROMPT_VERSION:-' in script
     assert "vmp_v55_challenger_span_selector_v1" in script
+
+
+def test_v551_uses_distinct_prompt_and_artifact_names() -> None:
+    script = V551_SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert "vmp_v551_complete_challenger_selector_v1" in script
+    assert "lme_dev_vmp_v551_rerank_seed42" in script
+    assert "vmp_v551_seed42_dev_pass.json" in script
+    assert "run_vmp_v55_experiment.sh" in script

@@ -1,5 +1,33 @@
 # VMP-MemOS
 
+## VMP-v5.5.1 complete challenger protocol
+
+The completed V5.5 Dev run is protocol-invalid for model comparison: its prompt
+said to assess `C06..C10`, but its JSON example contained only C06 and C07.
+Qwen followed the shorter example on 196/200 selector calls, producing a 98%
+parse-fallback rate and skipping every boundary call. V5.5.1 fixes only that
+example and uses a distinct prompt version and artifact namespace. The frozen
+candidate pool, dual-view planner, local model, boundary verifier, and strict
+outcome gates are unchanged.
+
+With the same local vLLM already running, execute:
+
+```bash
+cd /home/shenshifan/projects/VMP-MemOS
+
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=dev_rerank \
+uv run --no-sync bash scripts/run_vmp_v551_experiment.sh
+```
+
+The log is `outputs/longmemeval/logs/vmp_v551_dev_rerank.log`, the run is
+`outputs/longmemeval/runs/lme_dev_vmp_v551_rerank_seed42`, and a passing run
+creates `outputs/longmemeval/gates/vmp_v551_seed42_dev_pass.json`. Add
+`RERANK_RESUME=1` only when resuming that exact V5.5.1 run.
+
 ## VMP-v5.5 dual-view challenger scan
 
 V5.5 addresses the position bias observed in the completed V5.4 Dev run. It

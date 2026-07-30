@@ -1194,11 +1194,17 @@ P15.4. [done: experiment failed strict gate] framework-blind Cxx candidate label
        Dev gate, and frozen V5.3.2 Dev candidate reuse; Dev Recall-All@5=0.9149,
        one recovery and zero regressions; position audit found 216/218 cited
        evidence owners in C01-C05 and no citations in C11-C30
-P15.5. [done: implementation, server Dev experiment pending] label-free
+P15.5. [done: experiment invalidated by protocol fallback] label-free
        hierarchical/session-semantic weighted-RRF candidate planning, equal
        Top-10 LLM input, mandatory C06-C10 challenger assessments, fail-closed
        incomplete scans, per-record planner provenance, unchanged V5.4 symbolic
-       boundary, unchanged strict outcome gate, and sealed Test workflow
+       boundary, unchanged strict outcome gate, and sealed Test workflow;
+       Dev run completed but the JSON example omitted C08-C10, causing 98%
+       selector fallback and zero boundary calls, so it is not an effect result
+P15.5.1. [done: implementation, server Dev experiment pending] distinct complete
+         five-challenger prompt version and artifact namespace, with the V5.5
+         planner, frozen candidates, local model, boundary, and strict outcome
+         gates unchanged
 P16. Local-vLLM atomic-memory writer + hierarchical-memory ablation
 P17. Fresh external/final benchmark after architecture freeze
 P18. Fallback style baselines only if needed

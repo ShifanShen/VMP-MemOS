@@ -94,8 +94,8 @@ def test_v54_gate_accepts_symbolic_span_selector_and_boundary(tmp_path) -> None:
     )
 
 
-def test_v55_gate_requires_label_free_dual_view_planner_audit(tmp_path) -> None:
-    selector_prompt_version = "vmp_v55_challenger_span_selector_v1"
+def test_v551_gate_requires_label_free_dual_view_planner_audit(tmp_path) -> None:
+    selector_prompt_version = "vmp_v551_complete_challenger_selector_v1"
     boundary_prompt_version = "vmp_v54_symbolic_span_boundary_v1"
     planner_version = "vmp_v55_dual_view_rrf_v1"
     candidate_run, rerank_run = _write_runs(
@@ -157,6 +157,7 @@ def _write_runs(
                     in {
                         "vmp_v54_symbolic_span_selector_v1",
                         "vmp_v55_challenger_span_selector_v1",
+                        "vmp_v551_complete_challenger_selector_v1",
                     }
                 ),
                 "selector_evidence_span_binding": (
@@ -164,6 +165,7 @@ def _write_runs(
                     in {
                         "vmp_v54_symbolic_span_selector_v1",
                         "vmp_v55_challenger_span_selector_v1",
+                        "vmp_v551_complete_challenger_selector_v1",
                     }
                 ),
                 "boundary_evidence_span_binding": (

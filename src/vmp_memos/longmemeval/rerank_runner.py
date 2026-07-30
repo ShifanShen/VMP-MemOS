@@ -22,6 +22,7 @@ from vmp_memos.llm import (
     LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LongMemEvalRerankDecision,
     LongMemEvalRerankerConfig,
     plan_longmemeval_rerank_candidates,
@@ -701,6 +702,7 @@ def _prepare_manifest(
                     in {
                         LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
                         LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+                        LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
                     }
                 ),
                 "selector_evidence_span_binding": (
@@ -708,6 +710,7 @@ def _prepare_manifest(
                     in {
                         LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
                         LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+                        LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
                     }
                 ),
                 "boundary_evidence_span_binding": (

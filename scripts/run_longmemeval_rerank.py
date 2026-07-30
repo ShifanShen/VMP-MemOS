@@ -20,6 +20,7 @@ from vmp_memos.llm import (
     LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LLMGenerationConfig,
     LongMemEvalEvidenceReranker,
     LongMemEvalRerankerConfig,
@@ -43,6 +44,13 @@ def _paper_version(
     boundary_prompt_version: str,
     boundary_verification: bool,
 ) -> str:
+    if (
+        selector_prompt_version
+        == LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION
+        and boundary_prompt_version
+        == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
+    ):
+        return "VMP-v5.5.1"
     if (
         selector_prompt_version == LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION
         and boundary_prompt_version

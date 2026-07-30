@@ -38,11 +38,15 @@ LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION = (
 LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION = (
     "vmp_v55_challenger_span_selector_v1"
 )
+LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION = (
+    "vmp_v551_complete_challenger_selector_v1"
+)
 LONGMEMEVAL_RERANK_PROMPT_VERSIONS = frozenset(
     {
         LONGMEMEVAL_RERANK_PROMPT_VERSION,
         LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
         LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+        LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
     }
 )
 LONGMEMEVAL_BOUNDARY_PROMPT_VERSION = "vmp_v53_selective_boundary_v1"
@@ -164,7 +168,13 @@ Never output a session ID or answer the question. Return one JSON object:
       {{"candidate":"C06","supports_needs":[],
         "evidence_spans":[],"adds_missing_evidence":false}},
       {{"candidate":"C07","supports_needs":["N1"],
-        "evidence_spans":["C07:S02"],"adds_missing_evidence":true}}
+        "evidence_spans":["C07:S02"],"adds_missing_evidence":true}},
+      {{"candidate":"C08","supports_needs":[],
+        "evidence_spans":[],"adds_missing_evidence":false}},
+      {{"candidate":"C09","supports_needs":[],
+        "evidence_spans":[],"adds_missing_evidence":false}},
+      {{"candidate":"C10","supports_needs":[],
+        "evidence_spans":[],"adds_missing_evidence":false}}
     ],
     "selected_candidates":["C01","C02","C03","C04","C05"],
     "ranked_candidates":["C01","C02","C03","C04","C05"]}}
@@ -429,6 +439,7 @@ class LongMemEvalRerankerConfig(SchemaModel):
         symbolic_span_selector = self.prompt_version in {
             LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
             LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+            LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
         }
         symbolic_span_boundary = (
             self.boundary_prompt_version
@@ -440,7 +451,10 @@ class LongMemEvalRerankerConfig(SchemaModel):
             raise ValueError(
                 "V5.4 symbolic span selector and boundary versions must be enabled together"
             )
-        if self.prompt_version == LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION:
+        if self.prompt_version in {
+            LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+            LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
+        }:
             if (
                 self.candidate_planner_version
                 != LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
@@ -622,6 +636,7 @@ class LongMemEvalEvidenceReranker:
         if self.config.prompt_version in {
             LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
             LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+            LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
         }:
             candidate_label_session_ids = _candidate_label_session_map(unique_candidates)
             raw_selected_candidate_labels = [
@@ -642,7 +657,10 @@ class LongMemEvalEvidenceReranker:
             ]
             if (
                 self.config.prompt_version
-                == LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION
+                in {
+                    LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+                    LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
+                }
             ):
                 (
                     selector_evidence_selections,
@@ -726,6 +744,7 @@ class LongMemEvalEvidenceReranker:
                     in {
                         LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
                         LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+                        LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
                     }
                     else "response contained no valid candidate IDs"
                 )
@@ -1043,7 +1062,10 @@ def build_longmemeval_rerank_prompt(
 ) -> str:
     """Render the fixed framework-agnostic evidence-selection prompt."""
 
-    if config.prompt_version == LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION:
+    if config.prompt_version in {
+        LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+        LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
+    }:
         rendered = [
             _format_symbolic_span_candidate(
                 rank,

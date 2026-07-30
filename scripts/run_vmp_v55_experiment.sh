@@ -2,6 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PAPER_VERSION_NAME="${PAPER_VERSION_NAME:-VMP-v5.5}"
 STAGE="${STAGE:-dev_rerank}"
 DATA_PATH="${DATA_PATH:-data/longmemeval/longmemeval_s_cleaned.json}"
 SPLIT_PATH="${SPLIT_PATH:-outputs/longmemeval/splits/dev_test_seed42.json}"
@@ -69,11 +70,11 @@ log_stage() {
 on_exit() {
   exit_code=$?
   if [[ "${exit_code}" -eq 0 ]]; then
-    log_stage "VMP-v5.5 stage ${STAGE} completed successfully."
+    log_stage "${PAPER_VERSION_NAME} stage ${STAGE} completed successfully."
   elif [[ "${exit_code}" -eq 3 ]]; then
-    log_stage "VMP-v5.5 run completed, but the strict quality gate failed (exit_code=3)."
+    log_stage "${PAPER_VERSION_NAME} run completed, but the strict quality gate failed (exit_code=3)."
   else
-    log_stage "VMP-v5.5 stage ${STAGE} failed or was interrupted (exit_code=${exit_code})."
+    log_stage "${PAPER_VERSION_NAME} stage ${STAGE} failed or was interrupted (exit_code=${exit_code})."
   fi
 }
 trap on_exit EXIT

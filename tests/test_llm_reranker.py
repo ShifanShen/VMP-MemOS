@@ -10,8 +10,8 @@ from vmp_memos.frameworks import RetrievedMemory
 from vmp_memos.llm import (
     LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
-    LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION,
+    LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LLMGenerationConfig,
     LLMResponse,
     LongMemEvalEvidenceReranker,
@@ -743,7 +743,9 @@ def test_v55_challenger_scan_promotes_grounded_late_candidate() -> None:
             candidate_planner_version=(
                 LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
             ),
-            prompt_version=LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+            prompt_version=(
+                LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION
+            ),
             candidate_count=10,
             protected_top_n=3,
             ranked_output_count=10,
@@ -765,6 +767,8 @@ def test_v55_challenger_scan_promotes_grounded_late_candidate() -> None:
     assert decision.boundary.replacement_accepted is True
     selector_prompt = client.all_messages[0][1].content
     assert "Inspect every challenger" in selector_prompt
+    for label in ("C06", "C07", "C08", "C09", "C10"):
+        assert f'"candidate":"{label}"' in selector_prompt
     assert "[C06:S01]" in selector_prompt
     assert "[C10:S01]" in selector_prompt
     assert "session_id=" not in selector_prompt
@@ -790,7 +794,9 @@ def test_v55_challenger_scan_fails_closed_when_assessment_is_missing() -> None:
             candidate_planner_version=(
                 LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
             ),
-            prompt_version=LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+            prompt_version=(
+                LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION
+            ),
             candidate_count=10,
             protected_top_n=3,
             ranked_output_count=10,
