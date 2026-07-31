@@ -4,6 +4,7 @@ from pathlib import Path
 
 SCRIPT_PATH = Path("scripts/run_vmp_v55_experiment.sh")
 V551_SCRIPT_PATH = Path("scripts/run_vmp_v551_experiment.sh")
+V552_SCRIPT_PATH = Path("scripts/run_vmp_v552_experiment.sh")
 
 
 def test_v55_reuses_frozen_dev_candidates_and_keeps_outcome_gates() -> None:
@@ -41,4 +42,14 @@ def test_v551_uses_distinct_prompt_and_artifact_names() -> None:
     assert "vmp_v551_complete_challenger_selector_v1" in script
     assert "lme_dev_vmp_v551_rerank_seed42" in script
     assert "vmp_v551_seed42_dev_pass.json" in script
+    assert "run_vmp_v55_experiment.sh" in script
+
+
+def test_v552_uses_anonymous_pairwise_protocol_and_role_aware_excerpt() -> None:
+    script = V552_SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert "vmp_v552_anonymous_pairwise_selector_v1" in script
+    assert "vmp_v552_integrated_pairwise_boundary_v1" in script
+    assert "role_aware_fact_v2" in script
+    assert "lme_dev_vmp_v552_rerank_seed42" in script
     assert "run_vmp_v55_experiment.sh" in script

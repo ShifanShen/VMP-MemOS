@@ -9,9 +9,12 @@ import pytest
 from vmp_memos.frameworks import RetrievedMemory
 from vmp_memos.llm import (
     LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
+    LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION,
     LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
+    LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
     LLMGenerationConfig,
     LLMResponse,
     LongMemEvalEvidenceReranker,
@@ -818,6 +821,152 @@ def test_v55_challenger_scan_fails_closed_when_assessment_is_missing() -> None:
     assert "missing_assessments:C08,C09,C10" in decision.selector_span_binding_failures
     assert decision.boundary is not None
     assert decision.boundary.call_made is False
+
+
+def test_role_aware_excerpt_keeps_concise_user_fact_over_verbose_assistant() -> None:
+    verbose = " ".join(["magazine subscription advice"] * 120)
+    content = (
+        "assistant: " + verbose + "\n"
+        "user: Yesterday I attended the Nordstrom friends and family sale.\n"
+        "assistant: " + verbose
+    )
+
+    excerpt = candidate_excerpt(
+        "How many weeks ago was the Nordstrom friends and family sale?",
+        content,
+        max_chars=500,
+        max_turns=4,
+        excerpt_version=LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
+    )
+
+    assert "Yesterday I attended the Nordstrom friends and family sale" in excerpt
+    assert excerpt.count("magazine subscription advice") < 20
+
+
+def test_v552_pairwise_selector_combines_two_grounded_challengers() -> None:
+    reject = """
+    {
+      "decision":"reject",
+      "evidence_needs":["N1: first fact","N2: second fact"],
+      "supports_needs":[],
+      "challenger_spans":[],
+      "displaced_slot":null,
+      "adds_missing_evidence":false,
+      "displaced_slot_redundant":false,
+      "confidence":"high"
+    }
+    """
+    replace_b1 = """
+    {
+      "decision":"replace_B1",
+      "evidence_needs":["N1: first fact","N2: second fact"],
+      "supports_needs":["N1"],
+      "challenger_spans":["X:S01"],
+      "displaced_slot":"B1",
+      "adds_missing_evidence":true,
+      "displaced_slot_redundant":true,
+      "confidence":"high"
+    }
+    """
+    replace_b2 = """
+    {
+      "decision":"replace_B2",
+      "evidence_needs":["N1: first fact","N2: second fact"],
+      "supports_needs":["N2"],
+      "challenger_spans":["X:S01"],
+      "displaced_slot":"B2",
+      "adds_missing_evidence":true,
+      "displaced_slot_redundant":true,
+      "confidence":"high"
+    }
+    """
+    client = FakeRerankClient([reject, replace_b1, reject, reject, replace_b2])
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(
+            candidate_planner_version=(
+                LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
+            ),
+            prompt_version=LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
+            candidate_excerpt_version=LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
+            candidate_count=10,
+            protected_top_n=3,
+            ranked_output_count=10,
+            boundary_verification=True,
+            boundary_prompt_version=LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
+        ),
+    )
+
+    decision = reranker.rerank(
+        question="Which two missing facts are required?",
+        question_date="2024-02-01",
+        candidates=_memories(10),
+    )
+
+    assert client.calls == 5
+    assert decision.selector_call_count == 5
+    assert decision.selector_call_fallbacks == 0
+    assert decision.selected_session_ids == ["s1", "s2", "s3", "s7", "s10"]
+    assert decision.selector_grounded_promotion_labels == ["C07", "C10"]
+    assert decision.boundary is not None
+    assert decision.boundary.replacement_accepted is True
+    assert decision.boundary.proposed_promotion_session_ids == ["s7", "s10"]
+    assert [item["slot"] for item in decision.boundary.slot_assessments] == [
+        "P1",
+        "P2",
+    ]
+    assert all(
+        item["span_valid"] is True for item in decision.boundary.slot_assessments
+    )
+    for messages in client.all_messages:
+        prompt = messages[1].content
+        assert "[X |" in prompt
+        assert "C06" not in prompt
+        assert "C07" not in prompt
+        assert '"decision":"replace_B1"' not in prompt
+
+
+def test_v552_pairwise_selector_rejects_invalid_owned_spans_per_candidate() -> None:
+    invalid = """
+    {
+      "decision":"replace_B1",
+      "evidence_needs":["N1: missing fact"],
+      "supports_needs":["N1"],
+      "challenger_spans":["B1:S01"],
+      "displaced_slot":"B1",
+      "adds_missing_evidence":true,
+      "displaced_slot_redundant":true,
+      "confidence":"high"
+    }
+    """
+    client = FakeRerankClient([invalid] * 5)
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(
+            candidate_planner_version=(
+                LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
+            ),
+            prompt_version=LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
+            candidate_excerpt_version=LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
+            candidate_count=10,
+            protected_top_n=3,
+            ranked_output_count=10,
+            boundary_verification=True,
+            boundary_prompt_version=LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
+        ),
+    )
+
+    decision = reranker.rerank(
+        question="Which missing fact is required?",
+        question_date="2024-02-01",
+        candidates=_memories(10),
+    )
+
+    assert client.calls == 5
+    assert decision.selected_session_ids == ["s1", "s2", "s3", "s4", "s5"]
+    assert decision.selector_grounded_promotion_labels == []
+    assert len(decision.selector_span_binding_failures) == 5
+    assert decision.parse_fallback is False
 
 
 def json_response(*, selected: list[str], ranked: list[str]) -> str:

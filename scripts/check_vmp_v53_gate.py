@@ -29,6 +29,7 @@ def main() -> int:
     parser.add_argument("--max-type-regression-vs-raw-v5", type=float, default=0.03)
     parser.add_argument("--max-parse-fallback-rate", type=float, default=0.02)
     parser.add_argument("--max-boundary-fallback-rate", type=float, default=0.02)
+    parser.add_argument("--max-selector-call-fallback-rate", type=float, default=0.02)
     parser.add_argument("--max-regressed-questions", type=int, default=0)
     parser.add_argument("--min-recovered-questions", type=int, default=3)
     parser.add_argument("--min-candidate-count", type=int, default=30)
@@ -42,6 +43,10 @@ def main() -> int:
     )
     parser.add_argument(
         "--expected-candidate-planner-version",
+        default=None,
+    )
+    parser.add_argument(
+        "--expected-candidate-excerpt-version",
         default=None,
     )
     args = parser.parse_args()
@@ -58,12 +63,14 @@ def main() -> int:
         max_type_regression_vs_raw_v5=args.max_type_regression_vs_raw_v5,
         max_parse_fallback_rate=args.max_parse_fallback_rate,
         max_boundary_fallback_rate=args.max_boundary_fallback_rate,
+        max_selector_call_fallback_rate=args.max_selector_call_fallback_rate,
         max_regressed_questions=args.max_regressed_questions,
         min_recovered_questions=args.min_recovered_questions,
         min_candidate_count=args.min_candidate_count,
         expected_selector_prompt_version=args.expected_selector_prompt_version,
         expected_boundary_prompt_version=args.expected_boundary_prompt_version,
         expected_candidate_planner_version=args.expected_candidate_planner_version,
+        expected_candidate_excerpt_version=args.expected_candidate_excerpt_version,
     )
     if report["status"] == "passed" and args.receipt is not None:
         report["receipt"] = str(write_gate_receipt(report, args.receipt))

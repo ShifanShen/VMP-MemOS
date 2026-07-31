@@ -10,6 +10,10 @@ import pytest
 from vmp_memos.evaluation import compute_retrieval_metrics
 from vmp_memos.frameworks import RetrievedMemory
 from vmp_memos.llm import (
+    LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
+    LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION,
+    LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
+    LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
     LLMResponse,
     LongMemEvalEvidenceReranker,
     LongMemEvalRerankerConfig,
@@ -69,6 +73,31 @@ class BoundaryCountingClient:
             model="Qwen/Qwen2.5-7B-Instruct",
             text=json.dumps(payload),
             usage={"prompt_tokens": 40, "completion_tokens": 12},
+        )
+
+
+class RejectingPairwiseClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def chat(self, messages: list[Any], *, generation: Any = None) -> LLMResponse:
+        self.calls += 1
+        return LLMResponse(
+            provider="vllm",
+            model="Qwen/Qwen2.5-7B-Instruct",
+            text=json.dumps(
+                {
+                    "decision": "reject",
+                    "evidence_needs": ["N1: buried evidence"],
+                    "supports_needs": [],
+                    "challenger_spans": [],
+                    "displaced_slot": None,
+                    "adds_missing_evidence": False,
+                    "displaced_slot_redundant": False,
+                    "confidence": "high",
+                }
+            ),
+            usage={"prompt_tokens": 120, "completion_tokens": 20},
         )
 
 
@@ -264,6 +293,74 @@ def test_v53_runner_audits_shared_boundary_verification(tmp_path) -> None:
     assert resumed.summaries["vmp_hierarchical__vllm_boundary"].processed_questions == 1
 
 
+def test_v552_runner_counts_five_selector_calls_without_extra_boundary_call(
+    tmp_path,
+) -> None:
+    source_run = tmp_path / "outputs" / "runs" / "source-v552"
+    method_dir = source_run / "vmp_hierarchical"
+    method_dir.mkdir(parents=True)
+    (source_run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "run_id": "source-v552",
+                "sample_count": 1,
+                "split": {"name": "dev", "split_id": "split"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    source_record = _source_record(10)
+    (method_dir / "retrieval.jsonl").write_text(
+        source_record.model_dump_json() + "\n",
+        encoding="utf-8",
+    )
+    client = RejectingPairwiseClient()
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(
+            prompt_version=LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
+            boundary_prompt_version=LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
+            candidate_excerpt_version=LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
+            candidate_planner_version=(
+                LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
+            ),
+            candidate_count=10,
+            protected_top_n=3,
+            ranked_output_count=10,
+            boundary_verification=True,
+        ),
+    )
+
+    result = run_longmemeval_rerank(
+        LongMemEvalRerankRunConfig(
+            source_run=source_run,
+            methods=["vmp_hierarchical"],
+            output_dir=tmp_path / "outputs",
+            require_full_candidate_count=True,
+        ),
+        reranker=reranker,
+        run_id="v552",
+    )
+
+    assert client.calls == 5
+    summary = result.summaries["vmp_hierarchical__vllm_boundary"]
+    assert summary.selector_calls == 5
+    assert summary.selector_call_fallbacks == 0
+    assert summary.boundary_calls == 0
+    record = _read_jsonl(
+        result.run_dir
+        / "vmp_hierarchical__vllm_boundary"
+        / "retrieval.jsonl"
+    )[0]
+    assert record["adapter_stats"]["rerank_calls"] == 5
+    assert record["rerank_metadata"]["selector_call_count"] == 5
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["fairness"]["anonymous_pairwise_challenger_protocol"] is True
+    assert manifest["fairness"]["integrated_pairwise_boundary_verification"] is True
+    assert manifest["fairness"]["two_stage_boundary_verification"] is False
+
+
 def test_rerank_preflight_rejects_truncated_duplicate_session_pool(tmp_path) -> None:
     source_run = tmp_path / "outputs" / "runs" / "source"
     method_dir = source_run / "vmp_hierarchical"
@@ -314,7 +411,7 @@ def test_rerank_preflight_rejects_truncated_duplicate_session_pool(tmp_path) -> 
     assert client.calls == 0
 
 
-def _source_record() -> RetrievalSampleRecord:
+def _source_record(count: int = 6) -> RetrievalSampleRecord:
     unique_memories = [
         RetrievedMemory(
             memory_id=f"s{index}",
@@ -323,7 +420,7 @@ def _source_record() -> RetrievalSampleRecord:
             score=1.0 / index,
             token_count=8,
         )
-        for index in range(1, 7)
+        for index in range(1, count + 1)
     ]
     duplicate_first_session = unique_memories[0].model_copy(
         update={"memory_id": "s1-duplicate-chunk"}

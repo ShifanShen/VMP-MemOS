@@ -15,12 +15,15 @@ from vmp_memos.llm import (
     LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_IDENTITY_CANDIDATE_PLANNER_VERSION,
+    LONGMEMEVAL_LEXICAL_EXCERPT_VERSION,
     LONGMEMEVAL_RERANK_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
+    LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
     LLMGenerationConfig,
     LongMemEvalEvidenceReranker,
     LongMemEvalRerankerConfig,
@@ -44,6 +47,11 @@ def _paper_version(
     boundary_prompt_version: str,
     boundary_verification: bool,
 ) -> str:
+    if (
+        selector_prompt_version == LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION
+        and boundary_prompt_version == LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION
+    ):
+        return "VMP-v5.5.2"
     if (
         selector_prompt_version
         == LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION
@@ -116,6 +124,10 @@ def main() -> int:
     parser.add_argument("--ranked-output-count", type=int, default=10)
     parser.add_argument("--max-candidate-chars", type=int, default=1200)
     parser.add_argument("--max-excerpt-turns", type=int, default=4)
+    parser.add_argument(
+        "--candidate-excerpt-version",
+        default=LONGMEMEVAL_LEXICAL_EXCERPT_VERSION,
+    )
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument(
         "--prompt-version",
@@ -154,6 +166,11 @@ def main() -> int:
         parser.error("--methods must contain at least one method")
     if args.selector_replay_run is not None and not args.boundary_verification:
         parser.error("--selector-replay-run requires --boundary-verification")
+    if (
+        args.selector_replay_run is not None
+        and args.prompt_version == LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION
+    ):
+        parser.error("VMP-v5.5.2 does not support selector replay")
     generation = LLMGenerationConfig(
         max_tokens=args.max_tokens,
         temperature=0.0,
@@ -188,6 +205,7 @@ def main() -> int:
         ranked_output_count=args.ranked_output_count,
         max_candidate_chars=args.max_candidate_chars,
         max_excerpt_turns=args.max_excerpt_turns,
+        candidate_excerpt_version=args.candidate_excerpt_version,
         generation=generation,
         boundary_verification=args.boundary_verification,
         boundary_prompt_version=args.boundary_prompt_version,

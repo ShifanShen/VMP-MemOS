@@ -1201,10 +1201,18 @@ P15.5. [done: experiment invalidated by protocol fallback] label-free
        boundary, unchanged strict outcome gate, and sealed Test workflow;
        Dev run completed but the JSON example omitted C08-C10, causing 98%
        selector fallback and zero boundary calls, so it is not an effect result
-P15.5.1. [done: implementation, server Dev experiment pending] distinct complete
+P15.5.1. [done: experiment failed strict gate] distinct complete
          five-challenger prompt version and artifact namespace, with the V5.5
          planner, frozen candidates, local model, boundary, and strict outcome
-         gates unchanged
+         gates unchanged; protocol completeness was fixed, but the positive
+         C07 example caused severe position bias: the planner reached 86/94,
+         selector/final fell to 83/94, with zero recoveries and two regressions
+P15.5.2. [done: implementation, server Dev experiment pending] five identical
+         anonymous-X pairwise challenger calls, role-aware deterministic
+         evidence excerpts, locally owned X:Sxx validation, integrated B1/B2
+         replacement decisions, deterministic two-slot combination, explicit
+         selector-call/fallback audit, frozen V5.3.2 candidates and V5.5 planner,
+         unchanged local Qwen model and unchanged strict Dev outcome gates
 P16. Local-vLLM atomic-memory writer + hierarchical-memory ablation
 P17. Fresh external/final benchmark after architecture freeze
 P18. Fallback style baselines only if needed

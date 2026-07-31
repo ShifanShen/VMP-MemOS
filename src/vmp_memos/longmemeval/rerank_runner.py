@@ -23,6 +23,8 @@ from vmp_memos.llm import (
     LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
+    LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
     LongMemEvalRerankDecision,
     LongMemEvalRerankerConfig,
     plan_longmemeval_rerank_candidates,
@@ -80,6 +82,7 @@ class RerankMethodSummary(RetrievalMethodSummary):
     reranker_provider: str | None = None
     reranker_model: str | None = None
     prompt_version: NonEmptyStr
+    candidate_excerpt_version: NonEmptyStr
     candidate_planner_version: NonEmptyStr
     candidate_planner_applied_questions: NonNegativeInt = 0
     candidate_planner_identity_questions: NonNegativeInt = 0
@@ -107,6 +110,9 @@ class RerankMethodSummary(RetrievalMethodSummary):
     invalid_candidate_label_count: NonNegativeInt = 0
     selector_span_binding_failure_count: NonNegativeInt = 0
     selector_grounded_promotion_count: NonNegativeInt = 0
+    selector_calls: NonNegativeInt = 0
+    selector_call_fallbacks: NonNegativeInt = 0
+    selector_call_fallback_rate: NonNegativeFloat = 0.0
     selector_replay_records: NonNegativeInt = 0
     selector_prompt_mismatch_count: NonNegativeInt = 0
     recovered_questions: NonNegativeInt = 0
@@ -239,12 +245,25 @@ def run_longmemeval_rerank(
                     if index == 1 or index % 10 == 0 or index == len(pending):
                         LOGGER.info(
                             "Rerank method %s progress %d/%d: question_id=%s "
-                            "fallback=%s latency=%.1fms elapsed=%.1fs",
+                            "fallback=%s selector_calls=%d selector_call_fallbacks=%d "
+                            "latency=%.1fms elapsed=%.1fs",
                             source_method,
                             index,
                             len(pending),
                             output_record.question_id,
                             output_record.rerank_metadata.get("parse_fallback"),
+                            int(
+                                _metadata_number(
+                                    output_record,
+                                    "selector_call_count",
+                                )
+                            ),
+                            int(
+                                _metadata_number(
+                                    output_record,
+                                    "selector_call_fallbacks",
+                                )
+                            ),
                             _metadata_number(output_record, "rerank_latency_ms"),
                             perf_counter() - method_started,
                         )
@@ -337,7 +356,21 @@ def summarize_rerank_method(
     provider, model = next(iter(observations)) if observations else (None, None)
     fallback_count = sum(record.rerank_metadata.get("parse_fallback") is True for record in records)
     boundary_calls = sum(_boundary_bool(record, "call_made") for record in records)
+    actual_boundary_calls = sum(
+        int(_metadata_number(record, "boundary_call_count"))
+        if "boundary_call_count" in record.rerank_metadata
+        else int(_boundary_bool(record, "call_made"))
+        for record in records
+    )
     boundary_fallbacks = sum(_boundary_bool(record, "parse_fallback") for record in records)
+    selector_calls = sum(
+        max(1, int(_metadata_number(record, "selector_call_count")))
+        for record in records
+    )
+    selector_call_fallbacks = sum(
+        int(_metadata_number(record, "selector_call_fallbacks"))
+        for record in records
+    )
     payload = base.model_dump(mode="python")
     payload.update(
         {
@@ -345,6 +378,7 @@ def summarize_rerank_method(
             "reranker_provider": provider,
             "reranker_model": model,
             "prompt_version": config.prompt_version,
+            "candidate_excerpt_version": config.candidate_excerpt_version,
             "candidate_planner_version": config.candidate_planner_version,
             "candidate_planner_applied_questions": sum(
                 _candidate_plan_bool(record, "applied") for record in records
@@ -366,10 +400,15 @@ def summarize_rerank_method(
             "boundary_protected_top_n": (
                 config.boundary_protected_top_n if config.boundary_verification else 0
             ),
-            "boundary_calls": boundary_calls,
-            "boundary_skips": sum(not _boundary_bool(record, "call_made") for record in records)
-            if config.boundary_verification
-            else 0,
+            "boundary_calls": actual_boundary_calls,
+            "boundary_skips": (
+                0
+                if config.boundary_prompt_version
+                == LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION
+                else sum(not _boundary_bool(record, "call_made") for record in records)
+                if config.boundary_verification
+                else 0
+            ),
             "boundary_parse_fallbacks": boundary_fallbacks,
             "boundary_parse_fallback_rate": (
                 boundary_fallbacks / boundary_calls if boundary_calls else 0.0
@@ -411,6 +450,11 @@ def summarize_rerank_method(
             "selector_grounded_promotion_count": sum(
                 len(_metadata_list(record, "selector_grounded_promotion_labels"))
                 for record in records
+            ),
+            "selector_calls": selector_calls,
+            "selector_call_fallbacks": selector_call_fallbacks,
+            "selector_call_fallback_rate": (
+                selector_call_fallbacks / selector_calls if selector_calls else 0.0
             ),
             "selector_replay_records": sum(
                 record.rerank_metadata.get("selector_replay") is True for record in records
@@ -509,7 +553,7 @@ def _rerank_record(
         {
             "source_method": source.method,
             "source_retrieval_latency_ms": source_retrieval_latency,
-            "rerank_calls": 1 + int(decision.boundary is not None and decision.boundary.call_made),
+            "rerank_calls": decision.selector_call_count + decision.boundary_call_count,
             "total_rerank_latency_ms": rerank_latency_ms,
             "total_retrieval_latency_ms": source_retrieval_latency + rerank_latency_ms,
             "reranker_provider": decision.provider,
@@ -521,6 +565,7 @@ def _rerank_record(
         "schema_version": "2.0" if decision.boundary is not None else "1.0",
         "source_method": source.method,
         "prompt_version": decision.prompt_version,
+        "candidate_excerpt_version": reranker.config.candidate_excerpt_version,
         "prompt_sha256": decision.prompt_sha256,
         "provider": decision.provider,
         "model": decision.model,
@@ -570,6 +615,9 @@ def _rerank_record(
             JsonValue,
             decision.selector_grounded_promotion_labels,
         ),
+        "selector_call_count": decision.selector_call_count,
+        "selector_call_fallbacks": decision.selector_call_fallbacks,
+        "boundary_call_count": decision.boundary_call_count,
         "raw_selected_session_ids": cast(
             JsonValue,
             decision.raw_selected_session_ids,
@@ -696,6 +744,13 @@ def _prepare_manifest(
                 "same_generation": True,
                 "two_stage_boundary_verification": bool(
                     reranker_signature.get("boundary_verification")
+                    and reranker_signature.get("boundary_prompt_version")
+                    != LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION
+                ),
+                "integrated_pairwise_boundary_verification": (
+                    reranker_signature.get("boundary_verification") is True
+                    and reranker_signature.get("boundary_prompt_version")
+                    == LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION
                 ),
                 "symbolic_selector_labels": (
                     reranker_signature.get("prompt_version")
@@ -703,6 +758,7 @@ def _prepare_manifest(
                         LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
                         LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
                         LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
+                        LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
                     }
                 ),
                 "selector_evidence_span_binding": (
@@ -711,11 +767,21 @@ def _prepare_manifest(
                         LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
                         LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
                         LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
+                        LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
                     }
                 ),
                 "boundary_evidence_span_binding": (
                     reranker_signature.get("boundary_prompt_version")
                     == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
+                ),
+                "anonymous_pairwise_challenger_protocol": (
+                    reranker_signature.get("prompt_version")
+                    == LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION
+                    and reranker_signature.get("boundary_prompt_version")
+                    == LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION
+                ),
+                "candidate_excerpt_version": reranker_signature.get(
+                    "candidate_excerpt_version"
                 ),
                 "selector_replayed": metadata.get("selector_replay") is True,
                 "selector_replay_run": metadata.get("selector_replay_run"),

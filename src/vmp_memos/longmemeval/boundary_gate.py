@@ -17,6 +17,8 @@ from vmp_memos.llm import (
     LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION,
     LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
+    LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
 )
 from vmp_memos.longmemeval.rerank_runner import reranked_method_name
 
@@ -34,12 +36,14 @@ def evaluate_v53_gate(
     max_type_regression_vs_raw_v5: float = 0.03,
     max_parse_fallback_rate: float = 0.02,
     max_boundary_fallback_rate: float = 0.02,
+    max_selector_call_fallback_rate: float = 0.02,
     max_regressed_questions: int = 0,
     min_recovered_questions: int = 3,
     min_candidate_count: int = 30,
     expected_selector_prompt_version: str = LONGMEMEVAL_RERANK_PROMPT_VERSION,
     expected_boundary_prompt_version: str = LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
     expected_candidate_planner_version: str | None = None,
+    expected_candidate_excerpt_version: str | None = None,
 ) -> dict[str, JsonValue]:
     """Evaluate the two-stage policy without reading Test labels or dataset rows."""
 
@@ -91,6 +95,12 @@ def evaluate_v53_gate(
         reranked_v43.get("boundary_parse_fallback_rate"),
         default=1.0,
     )
+    selector_call_fallback_rate = _number(
+        reranked_v5.get("selector_call_fallback_rate")
+    )
+    baseline_selector_call_fallback_rate = _number(
+        reranked_v43.get("selector_call_fallback_rate")
+    )
     recovered_questions = _integer(reranked_v5.get("recovered_questions"))
     regressed_questions = _integer(reranked_v5.get("regressed_questions"))
     candidate_count = _integer(reranked_v5.get("candidate_count"))
@@ -111,6 +121,10 @@ def evaluate_v53_gate(
     baseline_boundary_prompt = reranked_v43.get("boundary_prompt_version")
     candidate_planner = reranked_v5.get("candidate_planner_version")
     baseline_candidate_planner = reranked_v43.get("candidate_planner_version")
+    candidate_excerpt_version = reranked_v5.get("candidate_excerpt_version")
+    baseline_candidate_excerpt_version = reranked_v43.get(
+        "candidate_excerpt_version"
+    )
     candidate_planner_applied_questions = _integer(
         reranked_v5.get("candidate_planner_applied_questions")
     )
@@ -142,6 +156,23 @@ def evaluate_v53_gate(
         and rerank_fairness.get("symbolic_selector_labels") is True
         and rerank_fairness.get("selector_evidence_span_binding") is True
         and rerank_fairness.get("boundary_evidence_span_binding") is True
+    )
+    anonymous_pairwise_expected = (
+        expected_selector_prompt_version
+        == LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION
+        or expected_boundary_prompt_version
+        == LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION
+    )
+    anonymous_pairwise_marked = (
+        isinstance(rerank_fairness, dict)
+        and rerank_fairness.get("anonymous_pairwise_challenger_protocol") is True
+    )
+    integrated_pairwise_marked = (
+        isinstance(rerank_fairness, dict)
+        and rerank_fairness.get("integrated_pairwise_boundary_verification") is True
+    )
+    boundary_protocol_marked = (
+        integrated_pairwise_marked if anonymous_pairwise_expected else two_stage_marked
     )
     sample_count = _integer(candidate_manifest.get("sample_count"))
     summaries = (raw_v5, raw_v43, reranked_v5, reranked_v43)
@@ -189,7 +220,7 @@ def evaluate_v53_gate(
             and baseline_model == model
         ),
         "shared_two_stage_prompts": (
-            two_stage_marked
+            boundary_protocol_marked
             and reranked_v5.get("boundary_verification") is True
             and reranked_v43.get("boundary_verification") is True
             and selector_prompt == expected_selector_prompt_version
@@ -199,6 +230,16 @@ def evaluate_v53_gate(
         ),
         "shared_symbolic_span_protocol": (
             symbolic_span_marked if symbolic_span_expected else True
+        ),
+        "shared_anonymous_pairwise_protocol": (
+            anonymous_pairwise_marked if anonymous_pairwise_expected else True
+        ),
+        "shared_candidate_excerpt": (
+            candidate_excerpt_version == baseline_candidate_excerpt_version
+            and (
+                expected_candidate_excerpt_version is None
+                or candidate_excerpt_version == expected_candidate_excerpt_version
+            )
         ),
         "label_free_candidate_planner": candidate_planner_contract,
         "candidate_depth": (
@@ -214,6 +255,11 @@ def evaluate_v53_gate(
         "boundary_fallback_rate": (
             boundary_fallback_rate <= max_boundary_fallback_rate
             and baseline_boundary_fallback_rate <= max_boundary_fallback_rate
+        ),
+        "selector_call_fallback_rate": (
+            selector_call_fallback_rate <= max_selector_call_fallback_rate
+            and baseline_selector_call_fallback_rate
+            <= max_selector_call_fallback_rate
         ),
         "min_recall_all_at_5": v53_recall >= min_recall_all_at_5,
         "delta_vs_raw_v5": delta_raw_v5 >= min_delta_vs_raw_v5,
@@ -268,6 +314,10 @@ def evaluate_v53_gate(
                 "expected_boundary_prompt_version": expected_boundary_prompt_version,
                 "candidate_count": candidate_count,
                 "candidate_planner_version": candidate_planner,
+                "candidate_excerpt_version": candidate_excerpt_version,
+                "expected_candidate_excerpt_version": (
+                    expected_candidate_excerpt_version
+                ),
                 "expected_candidate_planner_version": (
                     expected_candidate_planner_version
                 ),
@@ -285,6 +335,14 @@ def evaluate_v53_gate(
                 "output_top_k": reranked_v5.get("output_top_k"),
                 "parse_fallback_rate": fallback_rate,
                 "boundary_parse_fallback_rate": boundary_fallback_rate,
+                "selector_call_fallback_rate": selector_call_fallback_rate,
+                "baseline_selector_call_fallback_rate": (
+                    baseline_selector_call_fallback_rate
+                ),
+                "selector_calls": reranked_v5.get("selector_calls"),
+                "selector_call_fallbacks": reranked_v5.get(
+                    "selector_call_fallbacks"
+                ),
                 "recovered_questions": recovered_questions,
                 "regressed_questions": regressed_questions,
                 "boundary_calls": reranked_v5.get("boundary_calls"),
@@ -321,11 +379,17 @@ def evaluate_v53_gate(
                 "max_type_regression_vs_raw_v5": max_type_regression_vs_raw_v5,
                 "max_parse_fallback_rate": max_parse_fallback_rate,
                 "max_boundary_fallback_rate": max_boundary_fallback_rate,
+                "max_selector_call_fallback_rate": (
+                    max_selector_call_fallback_rate
+                ),
                 "max_regressed_questions": max_regressed_questions,
                 "min_recovered_questions": min_recovered_questions,
                 "min_candidate_count": min_candidate_count,
                 "expected_candidate_planner_version": (
                     expected_candidate_planner_version
+                ),
+                "expected_candidate_excerpt_version": (
+                    expected_candidate_excerpt_version
                 ),
             },
         ),

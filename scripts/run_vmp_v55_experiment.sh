@@ -29,6 +29,7 @@ SELECTOR_PROMPT_VERSION="${SELECTOR_PROMPT_VERSION:-vmp_v55_challenger_span_sele
 BOUNDARY_PROMPT_VERSION="${BOUNDARY_PROMPT_VERSION:-vmp_v54_symbolic_span_boundary_v1}"
 MAX_CANDIDATE_CHARS="${MAX_CANDIDATE_CHARS:-1200}"
 MAX_EXCERPT_TURNS="${MAX_EXCERPT_TURNS:-4}"
+CANDIDATE_EXCERPT_VERSION="${CANDIDATE_EXCERPT_VERSION:-lexical_turn_v1}"
 RERANK_MAX_TOKENS="${RERANK_MAX_TOKENS:-768}"
 BOUNDARY_MAX_TOKENS="${BOUNDARY_MAX_TOKENS:-512}"
 RERANK_RESUME="${RERANK_RESUME:-0}"
@@ -56,6 +57,7 @@ MIN_DEV_MACRO_DELTA_VS_RAW_V5="${MIN_DEV_MACRO_DELTA_VS_RAW_V5:-0.0}"
 MAX_DEV_TYPE_REGRESSION_VS_RAW_V5="${MAX_DEV_TYPE_REGRESSION_VS_RAW_V5:-0.03}"
 MAX_PARSE_FALLBACK_RATE="${MAX_PARSE_FALLBACK_RATE:-0.02}"
 MAX_BOUNDARY_FALLBACK_RATE="${MAX_BOUNDARY_FALLBACK_RATE:-0.02}"
+MAX_SELECTOR_CALL_FALLBACK_RATE="${MAX_SELECTOR_CALL_FALLBACK_RATE:-0.02}"
 MAX_REGRESSED_QUESTIONS="${MAX_REGRESSED_QUESTIONS:-0}"
 MIN_RECOVERED_QUESTIONS="${MIN_RECOVERED_QUESTIONS:-3}"
 
@@ -151,6 +153,7 @@ run_rerank() {
     --ranked-output-count 10 \
     --max-candidate-chars "${MAX_CANDIDATE_CHARS}" \
     --max-excerpt-turns "${MAX_EXCERPT_TURNS}" \
+    --candidate-excerpt-version "${CANDIDATE_EXCERPT_VERSION}" \
     --max-tokens "${RERANK_MAX_TOKENS}" \
     --prompt-version "${SELECTOR_PROMPT_VERSION}" \
     --boundary-verification \
@@ -172,6 +175,7 @@ check_dev_gate() {
     --expected-selector-prompt-version "${SELECTOR_PROMPT_VERSION}" \
     --expected-boundary-prompt-version "${BOUNDARY_PROMPT_VERSION}" \
     --expected-candidate-planner-version "${CANDIDATE_PLANNER_VERSION}" \
+    --expected-candidate-excerpt-version "${CANDIDATE_EXCERPT_VERSION}" \
     --min-recall-all-at-5 "${MIN_DEV_RECALL_ALL_5}" \
     --min-delta-vs-raw-v5 "${MIN_DEV_DELTA_VS_RAW_V5}" \
     --min-delta-vs-shared-v43 "${MIN_DEV_DELTA_VS_SHARED_V43}" \
@@ -179,6 +183,7 @@ check_dev_gate() {
     --max-type-regression-vs-raw-v5 "${MAX_DEV_TYPE_REGRESSION_VS_RAW_V5}" \
     --max-parse-fallback-rate "${MAX_PARSE_FALLBACK_RATE}" \
     --max-boundary-fallback-rate "${MAX_BOUNDARY_FALLBACK_RATE}" \
+    --max-selector-call-fallback-rate "${MAX_SELECTOR_CALL_FALLBACK_RATE}" \
     --max-regressed-questions "${MAX_REGRESSED_QUESTIONS}" \
     --min-recovered-questions "${MIN_RECOVERED_QUESTIONS}" \
     --min-candidate-count "${CANDIDATE_COUNT}"
@@ -187,15 +192,15 @@ check_dev_gate() {
 case "${STAGE}" in
   dev_rerank)
     require_completed_run "${DEV_CANDIDATE_RUN}"
-    log_stage "Stage 1/3: running V5.5 on the frozen V5.3.2 Dev candidate pool."
+    log_stage "Stage 1/3: running ${PAPER_VERSION_NAME} on the frozen V5.3.2 Dev candidate pool."
     log_stage "The label-free dual-view planner emits exactly 10 candidates for both methods."
-    log_stage "The selector must explicitly assess challengers C06-C10 before boundary verification."
+    log_stage "The selector protocol must assess every challenger before producing the guarded Top-5."
     run_rerank "${DEV_CANDIDATE_RUN}" "${DEV_RERANK_RUN_ID}"
     log_stage "Enforcing the unchanged strict Dev-only outcome gate plus planner audit."
     check_dev_gate
     ;;
   test_candidates)
-    log_stage "Stage 2/3: rechecking the sealed V5.5 Dev gate."
+    log_stage "Stage 2/3: rechecking the sealed ${PAPER_VERSION_NAME} Dev gate."
     check_dev_gate
     if [[ ! -f "${V43_MODEL_PATH}" || ! -f "${V5_MODEL_PATH}" ]]; then
       echo "Missing frozen V4.3 or V5 model artifact." >&2
@@ -206,10 +211,10 @@ case "${STAGE}" in
     run_candidates test "${TEST_CANDIDATE_RUN_ID}"
     ;;
   test_rerank)
-    log_stage "Stage 3/3: rechecking the V5.5 Dev gate before sealed Test."
+    log_stage "Stage 3/3: rechecking the ${PAPER_VERSION_NAME} Dev gate before sealed Test."
     check_dev_gate
     require_completed_run "${TEST_CANDIDATE_RUN}"
-    log_stage "Running the shared V5.5 selector and boundary protocol on sealed Test."
+    log_stage "Running the shared ${PAPER_VERSION_NAME} selector protocol on sealed Test."
     run_rerank "${TEST_CANDIDATE_RUN}" "${TEST_RERANK_RUN_ID}"
     RERANKED_METHODS="$(
       python - "${CANDIDATE_METHODS}" <<'PY'

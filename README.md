@@ -1,14 +1,68 @@
 # VMP-MemOS
 
+## VMP-v5.5.2 anonymous pairwise challenger audit
+
+The completed V5.5.1 Dev run exposed a second protocol bias: the positive JSON
+example always used `C07`, and the model promoted that position on 85/94
+evaluated VMP questions although it was gold only once. The deterministic
+dual-view planner improved VMP from 85/94 to 86/94, but the selector reduced it
+to 83/94. V5.5.2 therefore changes the LLM decision layer without changing the
+frozen candidate pool, model, planner, split, or strict outcome gate:
+
+- `C06..C10` are evaluated in five separate calls at the same anonymous `X`
+  position; no candidate rank and no positive replacement example is shown.
+- Each call compares `X` against both original open slots `B1/B2`, binds the
+  decision to an owned `X:Sxx` span, and fails only that challenger closed.
+- A deterministic merge accepts at most one earliest-ranked valid challenger
+  per boundary slot, allowing two complementary replacements.
+- `role_aware_fact_v2` prefers concise user facts, dates, and numbers over
+  verbose assistant text. Old experiment versions retain `lexical_turn_v1`.
+- Logs and summaries report actual selector calls and per-call fallback rates.
+
+Keep the same local vLLM running and verify that its served model ID is
+`Qwen/Qwen2.5-7B-Instruct`:
+
+```bash
+curl -s -H "Authorization: Bearer local-vllm-key" \
+  http://127.0.0.1:8000/v1/models
+```
+
+Then run the Dev experiment:
+
+```bash
+cd /home/shenshifan/projects/VMP-MemOS
+
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=dev_rerank \
+uv run --no-sync bash scripts/run_vmp_v552_experiment.sh
+```
+
+This reuses
+`outputs/longmemeval/runs/lme_dev_vmp_v532_candidates_seed42` and makes 1,000
+selector calls (100 Dev samples × 2 methods × 5 challengers), with no separate
+boundary-model call. Progress is appended to
+`outputs/longmemeval/logs/vmp_v552_dev_rerank.log`; records are written under
+`outputs/longmemeval/runs/lme_dev_vmp_v552_rerank_seed42`. For an interrupted
+run, repeat the command with `RERANK_RESUME=1`. Exit code 3 means the run
+completed but the unchanged paper-quality gate failed; it is not a pipeline
+crash. Test remains sealed unless
+`outputs/longmemeval/gates/vmp_v552_seed42_dev_pass.json` exists.
+
 ## VMP-v5.5.1 complete challenger protocol
 
-The completed V5.5 Dev run is protocol-invalid for model comparison: its prompt
+The completed V5.5 Dev run was protocol-invalid for model comparison: its prompt
 said to assess `C06..C10`, but its JSON example contained only C06 and C07.
 Qwen followed the shorter example on 196/200 selector calls, producing a 98%
 parse-fallback rate and skipping every boundary call. V5.5.1 fixes only that
 example and uses a distinct prompt version and artifact namespace. The frozen
 candidate pool, dual-view planner, local model, boundary verifier, and strict
-outcome gates are unchanged.
+outcome gates were unchanged. The corrected run completed with no parser
+fallbacks, but the fixed positive `C07` example introduced position bias:
+VMP ended at 83/94 with zero recoveries and two regressions, so its strict gate
+failed and it has been superseded by V5.5.2.
 
 With the same local vLLM already running, execute:
 

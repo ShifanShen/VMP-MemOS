@@ -41,12 +41,16 @@ LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION = (
 LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION = (
     "vmp_v551_complete_challenger_selector_v1"
 )
+LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION = (
+    "vmp_v552_anonymous_pairwise_selector_v1"
+)
 LONGMEMEVAL_RERANK_PROMPT_VERSIONS = frozenset(
     {
         LONGMEMEVAL_RERANK_PROMPT_VERSION,
         LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
         LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
         LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
+        LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
     }
 )
 LONGMEMEVAL_BOUNDARY_PROMPT_VERSION = "vmp_v53_selective_boundary_v1"
@@ -55,18 +59,74 @@ LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION = "vmp_v532_atomic_set_boundary_v1"
 LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION = (
     "vmp_v54_symbolic_span_boundary_v1"
 )
+LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION = (
+    "vmp_v552_integrated_pairwise_boundary_v1"
+)
 LONGMEMEVAL_BOUNDARY_PROMPT_VERSIONS = frozenset(
     {
         LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
         LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
         LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
         LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
+        LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
+    }
+)
+LONGMEMEVAL_LEXICAL_EXCERPT_VERSION = "lexical_turn_v1"
+LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION = "role_aware_fact_v2"
+LONGMEMEVAL_EXCERPT_VERSIONS = frozenset(
+    {
+        LONGMEMEVAL_LEXICAL_EXCERPT_VERSION,
+        LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
     }
 )
 LONGMEMEVAL_RERANK_SYSTEM_PROMPT = (
     "You rank long-term memory evidence. Do not answer the question. "
     "Return only the requested JSON object."
 )
+LONGMEMEVAL_V552_PAIRWISE_SYSTEM_PROMPT = (
+    "You conservatively compare one anonymous challenger with two open slots "
+    "of a long-term-memory evidence set. Do not answer the question. "
+    "Return only one JSON object."
+)
+LONGMEMEVAL_V552_PAIRWISE_USER_PROMPT = """\
+Decide whether the anonymous challenger X supplies essential evidence missing
+from a Top-5 long-term-memory evidence set. This call evaluates only X.
+
+Question date:
+{question_date}
+
+Question:
+{question}
+
+Locked evidence retained in every result:
+{protected_context}
+
+Original open slots:
+{boundary_context}
+
+Anonymous challenger:
+{challenger_context}
+
+Conservative comparison procedure:
+1. Decompose the question into at most four atomic needs named N1 through N4.
+2. Compare X against both B1 and B2 in the context of the locked evidence.
+3. Reject X unless one or more spans owned by X directly support a named need
+   that the locked evidence and retained boundary slot do not cover.
+4. A replacement is valid only if the displaced slot is redundant for the
+   complete evidence set. Counting, list, duration, and ordering questions may
+   require several distinct sessions.
+5. Use session dates for temporal and knowledge-update questions. Preserve all
+   dated states needed for comparison.
+6. Default to reject. Use high confidence only for directly grounded changes.
+
+Allowed decision values are reject, replace_B1, and replace_B2.
+Return these keys: decision, evidence_needs, supports_needs,
+challenger_spans, displaced_slot, adds_missing_evidence,
+displaced_slot_redundant, and confidence.
+challenger_spans may contain only X span labels shown above. displaced_slot
+must be null for reject, otherwise it must match the selected B slot. Never
+output a session ID, a candidate-rank label, or an answer to the question.
+"""
 LONGMEMEVAL_RERANK_USER_PROMPT = """\
 Select a joint set of memory sessions that would be sufficient to answer the
 question. Candidate session IDs are opaque identifiers.
@@ -396,6 +456,7 @@ class LongMemEvalRerankerConfig(SchemaModel):
     ranked_output_count: PositiveInt = 10
     max_candidate_chars: PositiveInt = 1200
     max_excerpt_turns: PositiveInt = 4
+    candidate_excerpt_version: NonEmptyStr = LONGMEMEVAL_LEXICAL_EXCERPT_VERSION
     boundary_verification: bool = False
     boundary_prompt_version: NonEmptyStr = LONGMEMEVAL_BOUNDARY_PROMPT_VERSION
     boundary_protected_top_n: NonNegativeInt = 3
@@ -424,6 +485,8 @@ class LongMemEvalRerankerConfig(SchemaModel):
             raise ValueError("unsupported LongMemEval reranker prompt version")
         if self.candidate_planner_version not in LONGMEMEVAL_CANDIDATE_PLANNER_VERSIONS:
             raise ValueError("unsupported LongMemEval candidate planner version")
+        if self.candidate_excerpt_version not in LONGMEMEVAL_EXCERPT_VERSIONS:
+            raise ValueError("unsupported LongMemEval candidate excerpt version")
         if float(self.candidate_planner_hierarchical_weight) > 1.0:
             raise ValueError("candidate planner hierarchical weight must be in [0, 1]")
         if self.candidate_count < self.output_top_k:
@@ -447,13 +510,14 @@ class LongMemEvalRerankerConfig(SchemaModel):
         )
         if self.boundary_verification and (
             symbolic_span_selector != symbolic_span_boundary
-        ):
+        ) and self.prompt_version != LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION:
             raise ValueError(
                 "V5.4 symbolic span selector and boundary versions must be enabled together"
             )
         if self.prompt_version in {
             LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
             LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
+            LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
         }:
             if (
                 self.candidate_planner_version
@@ -470,6 +534,18 @@ class LongMemEvalRerankerConfig(SchemaModel):
                     "V5.5 paper contract requires candidates=10, top_k=5, "
                     "protected=3, ranked=10"
                 )
+        if self.prompt_version == LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION:
+            if not self.boundary_verification:
+                raise ValueError("V5.5.2 pairwise protocol requires boundary verification")
+            if (
+                self.boundary_prompt_version
+                != LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION
+            ):
+                raise ValueError(
+                    "V5.5.2 pairwise selector and boundary versions must be enabled together"
+                )
+            if self.candidate_excerpt_version != LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION:
+                raise ValueError("V5.5.2 requires the role-aware candidate excerpt")
         if self.boundary_verification:
             if self.boundary_protected_top_n >= self.output_top_k:
                 raise ValueError("V5.3 boundary verification must leave open Top-k slots")
@@ -547,6 +623,9 @@ class LongMemEvalRerankDecision(SchemaModel):
     selector_grounded_promotion_labels: list[NonEmptyStr] = Field(
         default_factory=list
     )
+    selector_call_count: NonNegativeInt = 1
+    selector_call_fallbacks: NonNegativeInt = 0
+    boundary_call_count: NonNegativeInt = 0
     raw_selected_session_ids: list[NonEmptyStr] = Field(default_factory=list)
     raw_ranked_session_ids: list[NonEmptyStr] = Field(default_factory=list)
     selector_selected_session_ids: list[NonEmptyStr] = Field(default_factory=list)
@@ -595,6 +674,16 @@ class LongMemEvalEvidenceReranker:
         if not unique_candidates:
             raise ValueError("at least one retrieval candidate is required")
         original_ids = [_session_id(memory) for memory in unique_candidates]
+        if self.config.prompt_version == LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION:
+            if len(unique_candidates) != self.config.candidate_count:
+                raise ValueError(
+                    "V5.5.2 requires exactly 10 unique candidates before any LLM call"
+                )
+            return self._rerank_anonymous_pairwise(
+                question=question,
+                question_date=question_date,
+                candidates=unique_candidates,
+            )
         prompt = build_longmemeval_rerank_prompt(
             question=question,
             question_date=question_date,
@@ -796,6 +885,9 @@ class LongMemEvalEvidenceReranker:
             selector_evidence_selections=selector_evidence_selections,
             selector_span_binding_failures=selector_span_binding_failures,
             selector_grounded_promotion_labels=selector_grounded_promotion_labels,
+            selector_call_count=1,
+            selector_call_fallbacks=int(selector_protocol_fallback),
+            boundary_call_count=int(boundary is not None and boundary.call_made),
             raw_selected_session_ids=raw_selected,
             raw_ranked_session_ids=raw_ranked,
             selector_selected_session_ids=selector_ranked_ids[: self.config.output_top_k],
@@ -818,6 +910,230 @@ class LongMemEvalEvidenceReranker:
             selector_current_prompt_sha256=_optional_string(
                 response.raw_response.get("current_prompt_sha256")
             ),
+            boundary=boundary,
+        )
+
+    def _rerank_anonymous_pairwise(
+        self,
+        *,
+        question: str,
+        question_date: str | None,
+        candidates: Sequence[RetrievedMemory],
+    ) -> LongMemEvalRerankDecision:
+        """Evaluate each challenger in the same anonymous prompt position."""
+
+        original_ids = [_session_id(memory) for memory in candidates]
+        candidate_label_session_ids = _candidate_label_session_map(candidates)
+        protected = list(candidates[: self.config.protected_top_n])
+        original_boundary = list(
+            candidates[self.config.protected_top_n : self.config.output_top_k]
+        )
+        challengers = list(candidates[self.config.output_top_k :])
+        prompts: list[str] = []
+        responses: list[LLMResponse] = []
+        assessments: list[dict[str, JsonValue]] = []
+        failures: list[str] = []
+        proposals: list[tuple[int, str, str, dict[str, JsonValue]]] = []
+        evidence_needs: list[str] = []
+        selector_call_fallbacks = 0
+        total_latency_ms = 0.0
+
+        for rank, challenger in enumerate(
+            challengers,
+            start=self.config.output_top_k + 1,
+        ):
+            prompt = _build_v552_pairwise_prompt(
+                question=question,
+                question_date=question_date,
+                protected=protected,
+                original_boundary=original_boundary,
+                challenger=challenger,
+                config=self.config,
+            )
+            started_at = perf_counter()
+            response = self.client.chat(
+                [
+                    ChatMessage(
+                        role="system",
+                        content=LONGMEMEVAL_V552_PAIRWISE_SYSTEM_PROMPT,
+                    ),
+                    ChatMessage(role="user", content=prompt),
+                ],
+                generation=self.config.generation,
+            )
+            total_latency_ms += (perf_counter() - started_at) * 1000.0
+            if responses and (
+                response.provider != responses[0].provider
+                or response.model != responses[0].model
+            ):
+                raise ValueError("all pairwise selector calls must use one provider/model")
+            prompts.append(prompt)
+            responses.append(response)
+            parsed, parse_error = _parse_rerank_response(response.text)
+            label = _candidate_label(rank)
+            if parse_error is not None:
+                selector_call_fallbacks += 1
+                failures.append(f"{label}:parse_fallback")
+                assessments.append(
+                    {
+                        "candidate": label,
+                        "decision": "reject",
+                        "parse_fallback": True,
+                        "fallback_reason": parse_error,
+                    }
+                )
+                continue
+            assessment, failure, target_slot = _validate_v552_pairwise_assessment(
+                parsed,
+                challenger=challenger,
+                candidate_label=label,
+                question=question,
+                config=self.config,
+            )
+            assessments.append(assessment)
+            evidence_needs.extend(_string_list(parsed.get("evidence_needs"))[:4])
+            if failure is not None:
+                failures.append(f"{label}:{failure}")
+                continue
+            if target_slot is not None:
+                proposals.append((rank, target_slot, label, assessment))
+
+        if not responses:
+            raise ValueError("V5.5.2 requires challenger candidates C06 through C10")
+
+        chosen_by_slot: dict[str, tuple[int, str, dict[str, JsonValue]]] = {}
+        for rank, target_slot, label, assessment in proposals:
+            chosen_by_slot.setdefault(target_slot, (rank, label, assessment))
+
+        selected_boundary_ids: list[str] = []
+        selected_slot_labels: list[str] = []
+        grounded_labels: list[str] = []
+        accepted_assessments: list[dict[str, JsonValue]] = []
+        promotion_ids: list[str] = []
+        slot_session_ids = {
+            f"B{index}": _session_id(memory)
+            for index, memory in enumerate(original_boundary, start=1)
+        }
+        for index, memory in enumerate(original_boundary, start=1):
+            boundary_label = f"B{index}"
+            chosen = chosen_by_slot.get(boundary_label)
+            if chosen is None:
+                selected_boundary_ids.append(_session_id(memory))
+                selected_slot_labels.append(boundary_label)
+                continue
+            _, candidate_label, assessment = chosen
+            promoted_id = candidate_label_session_ids[candidate_label]
+            promotion_label = f"P{len(promotion_ids) + 1}"
+            promotion_ids.append(promoted_id)
+            slot_session_ids[promotion_label] = promoted_id
+            selected_boundary_ids.append(promoted_id)
+            selected_slot_labels.append(promotion_label)
+            grounded_labels.append(candidate_label)
+            accepted_assessments.append(
+                {
+                    **assessment,
+                    "slot": promotion_label,
+                    "evidence_spans": assessment.get("challenger_spans", []),
+                    "span_valid": True,
+                }
+            )
+
+        protected_ids = [_session_id(memory) for memory in protected]
+        final_top_k = _ordered_unique([*protected_ids, *selected_boundary_ids])
+        ranked_ids = _ordered_unique([*final_top_k, *original_ids])
+        ranked_labels_by_session = {
+            session_id: label for label, session_id in candidate_label_session_ids.items()
+        }
+        ranked_labels = [
+            ranked_labels_by_session[session_id]
+            for session_id in ranked_ids
+            if session_id in ranked_labels_by_session
+        ]
+        input_tokens = sum(
+            _usage_tokens(
+                response.usage,
+                "prompt_tokens",
+                fallback=estimate_tokens(
+                    LONGMEMEVAL_V552_PAIRWISE_SYSTEM_PROMPT + "\n" + prompt
+                ),
+            )
+            for prompt, response in zip(prompts, responses, strict=True)
+        )
+        output_tokens = sum(
+            _usage_tokens(
+                response.usage,
+                "completion_tokens",
+                fallback=estimate_tokens(response.text) if response.text else 0,
+            )
+            for response in responses
+        )
+        response_text = json.dumps(
+            [
+                {
+                    "candidate": _candidate_label(
+                        self.config.output_top_k + index
+                    ),
+                    "response": response.text.strip(),
+                }
+                for index, response in enumerate(responses, start=1)
+            ],
+            ensure_ascii=False,
+        )
+        prompt_sha256 = hashlib.sha256(
+            "\n\n--- pairwise call ---\n\n".join(prompts).encode("utf-8")
+        ).hexdigest()
+        boundary = LongMemEvalBoundaryDecision(
+            call_made=True,
+            prompt_version=self.config.boundary_prompt_version,
+            prompt_sha256=prompt_sha256,
+            provider=responses[0].provider,
+            model=responses[0].model,
+            finish_reason=responses[-1].finish_reason,
+            evidence_needs=_ordered_unique(evidence_needs)[:4],
+            original_boundary_session_ids=[
+                _session_id(memory) for memory in original_boundary
+            ],
+            proposed_promotion_session_ids=promotion_ids,
+            slot_session_ids=slot_session_ids,
+            raw_selected_slot_labels=selected_slot_labels,
+            selected_slot_labels=selected_slot_labels,
+            raw_selected_boundary_session_ids=selected_boundary_ids,
+            selected_boundary_session_ids=selected_boundary_ids,
+            slot_assessments=accepted_assessments,
+            decision=_boundary_decision_name(selected_slot_labels),
+            confidence="high" if promotion_ids else None,
+            replacement_accepted=bool(promotion_ids),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            usage=_aggregate_llm_usage(responses),
+            response_text=response_text,
+            latency_ms=total_latency_ms,
+        )
+        return LongMemEvalRerankDecision(
+            prompt_version=self.config.prompt_version,
+            prompt_sha256=prompt_sha256,
+            provider=responses[0].provider,
+            model=responses[0].model,
+            finish_reason=responses[-1].finish_reason,
+            evidence_needs=_ordered_unique(evidence_needs)[:4],
+            candidate_label_session_ids=candidate_label_session_ids,
+            raw_selected_candidate_labels=ranked_labels[: self.config.output_top_k],
+            raw_ranked_candidate_labels=ranked_labels,
+            selector_evidence_selections=assessments,
+            selector_span_binding_failures=failures,
+            selector_grounded_promotion_labels=grounded_labels,
+            selector_call_count=len(responses),
+            selector_call_fallbacks=selector_call_fallbacks,
+            boundary_call_count=0,
+            raw_selected_session_ids=final_top_k,
+            raw_ranked_session_ids=ranked_ids,
+            selector_selected_session_ids=final_top_k,
+            ranked_session_ids=ranked_ids,
+            selected_session_ids=final_top_k,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            usage=_aggregate_llm_usage(responses),
+            response_text=response_text,
             boundary=boundary,
         )
 
@@ -1073,6 +1389,7 @@ def build_longmemeval_rerank_prompt(
                 question=question,
                 max_chars=config.max_candidate_chars,
                 max_turns=config.max_excerpt_turns,
+                excerpt_version=config.candidate_excerpt_version,
             )
             for rank, memory in enumerate(
                 candidates[: config.candidate_count],
@@ -1097,6 +1414,7 @@ def build_longmemeval_rerank_prompt(
                 question=question,
                 max_chars=config.max_candidate_chars,
                 max_turns=config.max_excerpt_turns,
+                excerpt_version=config.candidate_excerpt_version,
             )
             for rank, memory in enumerate(
                 candidates[: config.candidate_count],
@@ -1119,6 +1437,7 @@ def build_longmemeval_rerank_prompt(
             question=question,
             max_chars=config.max_candidate_chars,
             max_turns=config.max_excerpt_turns,
+            excerpt_version=config.candidate_excerpt_version,
         )
         for rank, memory in enumerate(candidates[: config.candidate_count], start=1)
     )
@@ -1128,6 +1447,57 @@ def build_longmemeval_rerank_prompt(
         candidate_context=candidate_context,
         output_top_k=config.output_top_k,
         ranked_output_count=config.ranked_output_count,
+    ).strip()
+
+
+def _build_v552_pairwise_prompt(
+    *,
+    question: str,
+    question_date: str | None,
+    protected: Sequence[RetrievedMemory],
+    original_boundary: Sequence[RetrievedMemory],
+    challenger: RetrievedMemory,
+    config: LongMemEvalRerankerConfig,
+) -> str:
+    protected_context = "\n\n".join(
+        _format_labeled_span_memory(
+            f"LOCKED-{index}",
+            memory,
+            question=question,
+            description="always retained",
+            max_chars=config.max_candidate_chars,
+            max_turns=config.max_excerpt_turns,
+            excerpt_version=config.candidate_excerpt_version,
+        )
+        for index, memory in enumerate(protected, start=1)
+    )
+    boundary_context = "\n\n".join(
+        _format_labeled_span_memory(
+            f"B{index}",
+            memory,
+            question=question,
+            description="original open slot",
+            max_chars=config.max_candidate_chars,
+            max_turns=config.max_excerpt_turns,
+            excerpt_version=config.candidate_excerpt_version,
+        )
+        for index, memory in enumerate(original_boundary, start=1)
+    )
+    challenger_context = _format_labeled_span_memory(
+        "X",
+        challenger,
+        question=question,
+        description="anonymous challenger",
+        max_chars=config.max_candidate_chars,
+        max_turns=config.max_excerpt_turns,
+        excerpt_version=config.candidate_excerpt_version,
+    )
+    return LONGMEMEVAL_V552_PAIRWISE_USER_PROMPT.format(
+        question_date=question_date or "unknown",
+        question=question,
+        protected_context=protected_context or "(none)",
+        boundary_context=boundary_context or "(none)",
+        challenger_context=challenger_context,
     ).strip()
 
 
@@ -1195,6 +1565,7 @@ def build_longmemeval_boundary_prompt(
                 memory.content,
                 max_chars=config.max_candidate_chars,
                 max_turns=config.max_excerpt_turns,
+                excerpt_version=config.candidate_excerpt_version,
             )
             blocks.append(
                 f"[{role} | session_id={_session_id(memory)} | "
@@ -1239,6 +1610,7 @@ def _build_symbolic_boundary_prompt(
                 memory.content,
                 max_chars=config.max_candidate_chars,
                 max_turns=config.max_excerpt_turns,
+                excerpt_version=config.candidate_excerpt_version,
             )
             blocks.append(
                 f"[{prefix}{index} | {description} | "
@@ -1300,6 +1672,7 @@ def _build_atomic_boundary_prompt(
                 memory.content,
                 max_chars=config.max_candidate_chars,
                 max_turns=config.max_excerpt_turns,
+                excerpt_version=config.candidate_excerpt_version,
             )
             blocks.append(
                 f"[{prefix}{index} | {description} | "
@@ -1362,6 +1735,7 @@ def _build_symbolic_span_boundary_prompt(
                 description=description,
                 max_chars=config.max_candidate_chars,
                 max_turns=config.max_excerpt_turns,
+                excerpt_version=config.candidate_excerpt_version,
             )
             for index, memory in enumerate(memories, start=1)
         )
@@ -1453,6 +1827,7 @@ def _validate_atomic_slot_assessments(
                     memory.content,
                     max_chars=config.max_candidate_chars,
                     max_turns=config.max_excerpt_turns,
+                    excerpt_version=config.candidate_excerpt_version,
                 ),
             )
         )
@@ -1544,6 +1919,84 @@ def _validate_selector_evidence_selections(
         if span_valid and supports_known_need:
             grounded_labels.extend(owner_labels)
     return selections, failures, _ordered_unique(grounded_labels)
+
+
+def _validate_v552_pairwise_assessment(
+    parsed: dict[str, object],
+    *,
+    challenger: RetrievedMemory,
+    candidate_label: str,
+    question: str,
+    config: LongMemEvalRerankerConfig,
+) -> tuple[dict[str, JsonValue], str | None, str | None]:
+    """Validate one anonymous comparison and fail only that challenger closed."""
+
+    decision = (_normalized_string(parsed.get("decision")) or "").casefold()
+    supports_needs = _string_list(parsed.get("supports_needs"))[:4]
+    span_ids = [
+        _normalized_evidence_span_id(value)
+        for value in _string_list(parsed.get("challenger_spans"))[:4]
+    ]
+    displaced_value = parsed.get("displaced_slot")
+    displaced_slot = (
+        _normalized_slot_label(displaced_value)
+        if isinstance(displaced_value, str) and displaced_value.strip()
+        else None
+    )
+    evidence_need_ids = _evidence_need_ids(
+        _string_list(parsed.get("evidence_needs"))[:4]
+    )
+    supported_need_ids = _evidence_need_ids(supports_needs)
+    expected_span_ids = set(
+        _evidence_span_ids(
+            "X",
+            challenger,
+            question=question,
+            config=config,
+        )
+    )
+    adds_missing_evidence = parsed.get("adds_missing_evidence") is True
+    displaced_slot_redundant = parsed.get("displaced_slot_redundant") is True
+    confidence = (_normalized_string(parsed.get("confidence")) or "").casefold()
+    assessment: dict[str, JsonValue] = {
+        "candidate": candidate_label,
+        "anonymous_label": "X",
+        "decision": decision,
+        "supports_needs": cast(JsonValue, supports_needs),
+        "challenger_spans": cast(JsonValue, span_ids),
+        "displaced_slot": displaced_slot,
+        "adds_missing_evidence": adds_missing_evidence,
+        "displaced_slot_redundant": displaced_slot_redundant,
+        "confidence": confidence,
+        "parse_fallback": False,
+    }
+    if decision == "reject":
+        if displaced_slot is not None:
+            return assessment, "reject_has_displaced_slot", None
+        return assessment, None, None
+    expected_slot = {
+        "replace_b1": "B1",
+        "replace_b2": "B2",
+    }.get(decision)
+    if expected_slot is None:
+        return assessment, "invalid_decision", None
+    if displaced_slot != expected_slot:
+        return assessment, "displaced_slot_mismatch", None
+    if not span_ids or any(span_id not in expected_span_ids for span_id in span_ids):
+        return assessment, "span_not_owned", None
+    if (
+        not supports_needs
+        or not supported_need_ids
+        or not supported_need_ids.issubset(evidence_need_ids)
+    ):
+        return assessment, "need_not_grounded", None
+    if not adds_missing_evidence:
+        return assessment, "not_missing_evidence", None
+    if not displaced_slot_redundant:
+        return assessment, "displaced_slot_not_redundant", None
+    if confidence != config.boundary_min_confidence:
+        return assessment, "confidence_below_threshold", None
+    return assessment, None, expected_slot
 
 
 def _validate_challenger_assessments(
@@ -1749,6 +2202,9 @@ def _normalized_candidate_label(value: str) -> str:
 
 def _normalized_evidence_span_id(value: str) -> str:
     compact = re.sub(r"\s+", "", value).upper()
+    anonymous = re.fullmatch(r"X:S0*(\d+)", compact)
+    if anonymous:
+        return f"X:S{int(anonymous.group(1)):02d}"
     candidate = re.fullmatch(r"C0*(\d+):S0*(\d+)", compact)
     if candidate:
         return f"{_candidate_label(int(candidate.group(1)))}:S{int(candidate.group(2)):02d}"
@@ -1833,11 +2289,21 @@ def candidate_excerpt(
     *,
     max_chars: int,
     max_turns: int,
+    excerpt_version: str = LONGMEMEVAL_LEXICAL_EXCERPT_VERSION,
 ) -> str:
     """Select lexical query-matching turns with the same rule for every method."""
 
     if max_chars < 1 or max_turns < 1:
         raise ValueError("excerpt limits must be positive")
+    if excerpt_version not in LONGMEMEVAL_EXCERPT_VERSIONS:
+        raise ValueError("unsupported LongMemEval candidate excerpt version")
+    if excerpt_version == LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION:
+        return _role_aware_candidate_excerpt(
+            question,
+            content,
+            max_chars=max_chars,
+            max_turns=max_turns,
+        )
     lines = [line.strip() for line in content.splitlines() if line.strip()]
     if not lines:
         return _balanced_excerpt(content, max_chars=max_chars)
@@ -1865,6 +2331,90 @@ def candidate_excerpt(
     return _balanced_excerpt(excerpt, max_chars=max_chars)
 
 
+def _role_aware_candidate_excerpt(
+    question: str,
+    content: str,
+    *,
+    max_chars: int,
+    max_turns: int,
+) -> str:
+    """Prefer concise user facts while retaining deterministic lexical evidence."""
+
+    query_terms = _fact_terms(question)
+    pieces: list[tuple[int, str, str]] = []
+    for line_index, raw_line in enumerate(content.splitlines()):
+        line = raw_line.strip()
+        if not line:
+            continue
+        role_match = re.match(r"^(user|assistant|system)\s*:\s*(.*)$", line, re.I)
+        role = role_match.group(1).casefold() if role_match else "unknown"
+        body = role_match.group(2).strip() if role_match else line
+        sentences = [
+            value.strip()
+            for value in re.split(r"(?<=[.!?])\s+", body)
+            if value.strip()
+        ] or [body]
+        for sentence_index, sentence in enumerate(sentences):
+            rendered = f"{role}: {sentence}" if role != "unknown" else sentence
+            pieces.append((line_index * 1000 + sentence_index, role, rendered))
+    if not pieces:
+        return _balanced_excerpt(content, max_chars=max_chars)
+
+    scored: list[tuple[int, int, int, int, str]] = []
+    for _order, role, rendered in pieces:
+        piece_terms = _fact_terms(rendered)
+        overlap = len(query_terms.intersection(piece_terms))
+        user_fact_bonus = int(role == "user" and overlap > 0)
+        fact_bonus = int(
+            overlap > 0
+            and bool(
+                re.search(
+                    r"\b(?:yesterday|today|tomorrow|last|next|ago|"
+                    r"\d+|i|my|we|our)\b",
+                    rendered,
+                    flags=re.IGNORECASE,
+                )
+            )
+        )
+        scored.append(
+            (
+                overlap,
+                user_fact_bonus,
+                fact_bonus,
+                -len(piece_terms),
+                rendered,
+            )
+        )
+    matched_indices = [
+        index for index, score in enumerate(scored) if score[0] > 0
+    ]
+    ranked_indices = sorted(
+        matched_indices or range(len(pieces)),
+        key=lambda index: (
+            -scored[index][0],
+            -scored[index][1],
+            -scored[index][2],
+            -scored[index][3],
+            pieces[index][0],
+        ),
+    )
+    selected = ranked_indices[:max_turns]
+    excerpt = "\n".join(pieces[index][2] for index in sorted(selected))
+    return _balanced_excerpt(excerpt, max_chars=max_chars)
+
+
+def _fact_terms(value: str) -> set[str]:
+    normalized: set[str] = set()
+    for token in terms(value):
+        stem = token
+        for suffix in ("ing", "ed", "es", "s"):
+            if stem.endswith(suffix) and len(stem) > len(suffix) + 3:
+                stem = stem[: -len(suffix)]
+                break
+        normalized.add(stem)
+    return normalized
+
+
 def candidate_evidence_spans(
     question: str,
     content: str,
@@ -1872,6 +2422,7 @@ def candidate_evidence_spans(
     max_chars: int,
     max_turns: int,
     max_span_chars: int = 360,
+    excerpt_version: str = LONGMEMEVAL_LEXICAL_EXCERPT_VERSION,
 ) -> list[str]:
     """Split the deterministic candidate excerpt into locally addressable spans."""
 
@@ -1882,6 +2433,7 @@ def candidate_evidence_spans(
         content,
         max_chars=max_chars,
         max_turns=max_turns,
+        excerpt_version=excerpt_version,
     )
     pieces = [
         piece.strip()
@@ -1901,6 +2453,7 @@ def _format_symbolic_span_candidate(
     question: str,
     max_chars: int,
     max_turns: int,
+    excerpt_version: str = LONGMEMEVAL_LEXICAL_EXCERPT_VERSION,
 ) -> str:
     label = _candidate_label(rank)
     return _format_labeled_span_memory(
@@ -1910,6 +2463,7 @@ def _format_symbolic_span_candidate(
         description=f"candidate_rank={rank}",
         max_chars=max_chars,
         max_turns=max_turns,
+        excerpt_version=excerpt_version,
     )
 
 
@@ -1921,12 +2475,14 @@ def _format_labeled_span_memory(
     description: str,
     max_chars: int,
     max_turns: int,
+    excerpt_version: str = LONGMEMEVAL_LEXICAL_EXCERPT_VERSION,
 ) -> str:
     spans = candidate_evidence_spans(
         question,
         memory.content,
         max_chars=max_chars,
         max_turns=max_turns,
+        excerpt_version=excerpt_version,
     )
     evidence = "\n".join(
         f"[{label}:S{index:02d}] {span}"
@@ -1945,12 +2501,14 @@ def _format_candidate(
     question: str,
     max_chars: int,
     max_turns: int,
+    excerpt_version: str = LONGMEMEVAL_LEXICAL_EXCERPT_VERSION,
 ) -> str:
     excerpt = candidate_excerpt(
         question,
         memory.content,
         max_chars=max_chars,
         max_turns=max_turns,
+        excerpt_version=excerpt_version,
     )
     return (
         f"[Candidate {rank} | session_id={_session_id(memory)} | "
@@ -2004,6 +2562,7 @@ def _evidence_span_ids(
         memory.content,
         max_chars=config.max_candidate_chars,
         max_turns=config.max_excerpt_turns,
+        excerpt_version=config.candidate_excerpt_version,
     )
     return [f"{label}:S{index:02d}" for index in range(1, len(spans) + 1)]
 
@@ -2110,6 +2669,19 @@ def _split_evidence_span(text: str, *, max_chars: int) -> list[str]:
     if current:
         chunks.append(" ".join(current))
     return chunks
+
+
+def _aggregate_llm_usage(responses: Sequence[LLMResponse]) -> dict[str, JsonValue]:
+    usage: dict[str, JsonValue] = {}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        observed = [
+            response.usage.get(key)
+            for response in responses
+            if isinstance(response.usage.get(key), int | float)
+        ]
+        if observed:
+            usage[key] = sum(cast(float, value) for value in observed)
+    return usage
 
 
 def _usage_tokens(

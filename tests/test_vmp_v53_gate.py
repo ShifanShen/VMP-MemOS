@@ -121,6 +121,36 @@ def test_v551_gate_requires_label_free_dual_view_planner_audit(tmp_path) -> None
     assert report["reranker"]["baseline_candidate_planner_identity_questions"] == 100
 
 
+def test_v552_gate_audits_anonymous_pairwise_calls_and_excerpt_version(tmp_path) -> None:
+    selector_version = "vmp_v552_anonymous_pairwise_selector_v1"
+    boundary_version = "vmp_v552_integrated_pairwise_boundary_v1"
+    excerpt_version = "role_aware_fact_v2"
+    planner_version = "vmp_v55_dual_view_rrf_v1"
+    candidate_run, rerank_run = _write_runs(
+        tmp_path,
+        selector_prompt_version=selector_version,
+        boundary_prompt_version=boundary_version,
+        candidate_planner_version=planner_version,
+        candidate_excerpt_version=excerpt_version,
+        candidate_count=10,
+    )
+
+    report = evaluate_v53_gate(
+        candidate_run,
+        rerank_run,
+        expected_selector_prompt_version=selector_version,
+        expected_boundary_prompt_version=boundary_version,
+        expected_candidate_planner_version=planner_version,
+        expected_candidate_excerpt_version=excerpt_version,
+        min_candidate_count=10,
+    )
+
+    assert report["status"] == "passed"
+    assert report["checks"]["shared_anonymous_pairwise_protocol"] is True
+    assert report["checks"]["shared_candidate_excerpt"] is True
+    assert report["checks"]["selector_call_fallback_rate"] is True
+
+
 def _write_runs(
     tmp_path,
     *,
@@ -128,6 +158,7 @@ def _write_runs(
     selector_prompt_version: str = "vmp_v52_evidence_set_v1",
     boundary_prompt_version: str = "vmp_v53_selective_boundary_v1",
     candidate_planner_version: str | None = None,
+    candidate_excerpt_version: str | None = None,
     candidate_count: int = 30,
 ):
     candidate_run = tmp_path / "candidates"
@@ -151,7 +182,10 @@ def _write_runs(
             "split": {"name": "dev"},
             "source_retrieval_manifest_sha256": _sha256(candidate_manifest),
             "fairness": {
-                "two_stage_boundary_verification": True,
+                "two_stage_boundary_verification": (
+                    boundary_prompt_version
+                    != "vmp_v552_integrated_pairwise_boundary_v1"
+                ),
                 "symbolic_selector_labels": (
                     selector_prompt_version
                     in {
@@ -174,6 +208,17 @@ def _write_runs(
                 "shared_candidate_planner": candidate_planner_version is not None,
                 "candidate_planner_version": candidate_planner_version,
                 "candidate_planner_uses_gold_labels": False,
+                "anonymous_pairwise_challenger_protocol": (
+                    selector_prompt_version
+                    == "vmp_v552_anonymous_pairwise_selector_v1"
+                    and boundary_prompt_version
+                    == "vmp_v552_integrated_pairwise_boundary_v1"
+                ),
+                "integrated_pairwise_boundary_verification": (
+                    boundary_prompt_version
+                    == "vmp_v552_integrated_pairwise_boundary_v1"
+                ),
+                "candidate_excerpt_version": candidate_excerpt_version,
             },
             "test_labels_used": False,
         },
@@ -189,6 +234,7 @@ def _write_runs(
         selector_prompt_version=selector_prompt_version,
         boundary_prompt_version=boundary_prompt_version,
         candidate_planner_version=candidate_planner_version,
+        candidate_excerpt_version=candidate_excerpt_version,
         candidate_planner_applied_questions=100,
         candidate_count=candidate_count,
     )
@@ -200,6 +246,7 @@ def _write_runs(
         selector_prompt_version=selector_prompt_version,
         boundary_prompt_version=boundary_prompt_version,
         candidate_planner_version=candidate_planner_version,
+        candidate_excerpt_version=candidate_excerpt_version,
         candidate_planner_identity_questions=100,
         candidate_count=candidate_count,
     )
@@ -216,6 +263,7 @@ def _write_summary(
     selector_prompt_version: str = "vmp_v52_evidence_set_v1",
     boundary_prompt_version: str = "vmp_v53_selective_boundary_v1",
     candidate_planner_version: str | None = None,
+    candidate_excerpt_version: str | None = None,
     candidate_planner_applied_questions: int = 0,
     candidate_planner_identity_questions: int = 0,
     candidate_count: int = 30,
@@ -238,6 +286,7 @@ def _write_summary(
                 "boundary_prompt_version": boundary_prompt_version,
                 "boundary_verification": True,
                 "candidate_planner_version": candidate_planner_version,
+                "candidate_excerpt_version": candidate_excerpt_version,
                 "candidate_planner_applied_questions": (
                     candidate_planner_applied_questions
                 ),
@@ -251,6 +300,7 @@ def _write_summary(
                 "boundary_protected_top_n": 3,
                 "parse_fallback_rate": 0.0,
                 "boundary_parse_fallback_rate": 0.0,
+                "selector_call_fallback_rate": 0.0,
                 "recovered_questions": recovered_questions,
                 "regressed_questions": regressed_questions,
             }
