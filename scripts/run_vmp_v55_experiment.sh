@@ -32,6 +32,12 @@ MAX_EXCERPT_TURNS="${MAX_EXCERPT_TURNS:-4}"
 CANDIDATE_EXCERPT_VERSION="${CANDIDATE_EXCERPT_VERSION:-lexical_turn_v1}"
 RERANK_MAX_TOKENS="${RERANK_MAX_TOKENS:-768}"
 BOUNDARY_MAX_TOKENS="${BOUNDARY_MAX_TOKENS:-512}"
+COVERAGE_MIN_GAIN="${COVERAGE_MIN_GAIN:-0.25}"
+COVERAGE_NEED_WEIGHT="${COVERAGE_NEED_WEIGHT:-3.0}"
+COVERAGE_RELEVANCE_WEIGHT="${COVERAGE_RELEVANCE_WEIGHT:-1.5}"
+COVERAGE_DIVERSITY_WEIGHT="${COVERAGE_DIVERSITY_WEIGHT:-1.25}"
+COVERAGE_TEMPORAL_WEIGHT="${COVERAGE_TEMPORAL_WEIGHT:-1.25}"
+COVERAGE_RANK_WEIGHT="${COVERAGE_RANK_WEIGHT:-0.08}"
 RERANK_RESUME="${RERANK_RESUME:-0}"
 
 # The Dev pool is frozen: V5.5 changes only label-free planning and the shared
@@ -162,6 +168,12 @@ run_rerank() {
     --boundary-max-promotions "${BOUNDARY_MAX_PROMOTIONS}" \
     --boundary-max-tokens "${BOUNDARY_MAX_TOKENS}" \
     --boundary-min-confidence high \
+    --coverage-min-gain "${COVERAGE_MIN_GAIN}" \
+    --coverage-need-weight "${COVERAGE_NEED_WEIGHT}" \
+    --coverage-relevance-weight "${COVERAGE_RELEVANCE_WEIGHT}" \
+    --coverage-diversity-weight "${COVERAGE_DIVERSITY_WEIGHT}" \
+    --coverage-temporal-weight "${COVERAGE_TEMPORAL_WEIGHT}" \
+    --coverage-rank-weight "${COVERAGE_RANK_WEIGHT}" \
     "${resume_args[@]}"
 }
 

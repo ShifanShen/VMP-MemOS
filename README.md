@@ -1,5 +1,98 @@
 # VMP-MemOS
 
+## VMP-v6 atomic evidence coverage
+
+VMP-v6 replaces the unsuccessful V5.5.x direct replacement policy with a
+decoupled evidence pipeline. The shared local LLM sees each of the ten
+candidates independently under the same anonymous label `X` and extracts only
+grounded atomic facts. It cannot rank candidates, name a replacement slot, see
+framework names, or see gold answers. A deterministic local optimizer then
+enumerates all pairs for the two open Top-5 slots and scores joint evidence-need
+coverage, entity diversity, temporal support, relevance, and a small rank prior.
+
+The Dev stage reuses the frozen V5.3.2 candidate pool and therefore does not
+load BGE-M3. It makes 2,000 vLLM calls: 100 questions x 2 methods x 10 anonymous
+candidates. Per-question records include the evidence plan, all validated fact
+profiles, coverage score components, promotions, extraction failures, and the
+original/final Top-5. The strict outcome thresholds have not been lowered.
+
+Start vLLM in terminal A. The client model name used below must match the `id`
+returned by `/v1/models`, even when vLLM loaded the weights from a local path:
+
+```bash
+cd /home/shenshifan/projects/VMP-MemOS
+
+export VMP_LLM_API_KEY=local-vllm-key
+export VMP_LLM_MODEL=/home/shenshifan/models/Qwen2.5-7B-Instruct
+export VMP_VLLM_ENABLE_TOOL_CALLING=0
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+uv run --no-sync bash scripts/serve_vllm.sh
+```
+
+Verify the served model ID, then run Dev in terminal B:
+
+```bash
+curl -s -H "Authorization: Bearer local-vllm-key" \
+  http://127.0.0.1:8000/v1/models
+
+cd /home/shenshifan/projects/VMP-MemOS
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=dev_rerank \
+uv run --no-sync bash scripts/run_vmp_v6_experiment.sh
+```
+
+Use `RERANK_RESUME=1` only to continue an interrupted run with the same
+configuration. Outputs are written to
+`outputs/longmemeval/runs/lme_dev_vmp_v6_rerank_seed42`, the append-only log is
+`outputs/longmemeval/logs/vmp_v6_dev_rerank.log`, and a passing gate creates
+`outputs/longmemeval/gates/vmp_v6_seed42_dev_pass.json`. Exit code 3 means the
+experiment completed but failed the unchanged outcome gate.
+
+Generate a Dev-only failure report after completion:
+
+```bash
+uv run --no-sync python scripts/analyze_vmp_rerank.py \
+  --run outputs/longmemeval/runs/lme_dev_vmp_v6_rerank_seed42 \
+  --output outputs/longmemeval/analysis/vmp_v6_dev.json
+```
+
+The analyzer refuses the sealed Test split. Only after the Dev receipt exists,
+stop vLLM and run `STAGE=test_candidates`; then restart vLLM and run
+`STAGE=test_rerank` with the same script and model ID.
+
+If the initial V6 outcome gate fails, tune only the deterministic coverage
+weights against the saved Dev fact profiles. This performs no LLM or embedding
+calls and writes the Dev-label usage into the model artifact:
+
+```bash
+uv run --no-sync python scripts/tune_v6_coverage.py \
+  --run outputs/longmemeval/runs/lme_dev_vmp_v6_rerank_seed42 \
+  --trials 512 \
+  --seed 2026 \
+  --output outputs/longmemeval/models/vmp_v6_coverage_seed42.json
+```
+
+Then freeze those weights and run the distinct V6.1 reproducibility artifact
+with the same local vLLM model. This rerun is still on the same Dev split and
+is not an independent validation set; the sealed Test run remains the final
+unbiased evaluation:
+
+```bash
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=dev_rerank \
+uv run --no-sync bash scripts/run_vmp_v61_experiment.sh
+```
+
+Do not use the V6.1 Test stages unless
+`outputs/longmemeval/gates/vmp_v61_seed42_dev_pass.json` exists. The tuner is
+for Dev model selection; it never opens Test records or labels.
+
 ## VMP-v5.5.2 anonymous pairwise challenger audit
 
 The completed V5.5.1 Dev run exposed a second protocol bias: the positive JSON

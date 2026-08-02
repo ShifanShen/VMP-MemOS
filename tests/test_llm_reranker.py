@@ -11,6 +11,8 @@ from vmp_memos.llm import (
     LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
+    LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
     LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION,
     LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
@@ -967,6 +969,83 @@ def test_v552_pairwise_selector_rejects_invalid_owned_spans_per_candidate() -> N
     assert decision.selector_grounded_promotion_labels == []
     assert len(decision.selector_span_binding_failures) == 5
     assert decision.parse_fallback is False
+
+
+def test_v6_atomic_fact_coverage_combines_two_challengers() -> None:
+    empty = '{"candidate_relevant":false,"facts":[]}'
+    national_geographic = """
+    {
+      "candidate_relevant": true,
+      "facts": [{
+        "entity": "National Geographic",
+        "relation": "has_subscription",
+        "value": "active",
+        "temporal_anchor": "current",
+        "supports_needs": ["N1", "N2"],
+        "evidence_spans": ["[X:S01] user stated the publication"],
+        "confidence": "high"
+      }]
+    }
+    """
+    architectural_digest = """
+    {
+      "candidate_relevant": true,
+      "facts": [{
+        "entity": "Architectural Digest",
+        "relation": "has_subscription",
+        "value": "active",
+        "temporal_anchor": "current",
+        "supports_needs": ["N1", "N2"],
+        "evidence_spans": ["X:S01"],
+        "confidence": "high"
+      }]
+    }
+    """
+    responses = [empty] * 6 + [national_geographic] + [empty] * 2 + [
+        architectural_digest
+    ]
+    client = FakeRerankClient(responses)
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(
+            candidate_planner_version=(
+                LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
+            ),
+            prompt_version=LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+            candidate_excerpt_version=LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
+            candidate_count=10,
+            protected_top_n=3,
+            ranked_output_count=10,
+            boundary_verification=True,
+            boundary_prompt_version=LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
+            coverage_min_gain=0.1,
+        ),
+    )
+
+    decision = reranker.rerank(
+        question="How many magazine subscriptions do I currently have?",
+        question_date="2024-02-01",
+        candidates=_memories(10),
+    )
+
+    assert client.calls == 10
+    assert decision.selector_call_count == 10
+    assert decision.selector_call_fallbacks == 0
+    assert decision.selected_session_ids == ["s1", "s2", "s3", "s7", "s10"]
+    assert decision.selector_grounded_promotion_labels == ["C07", "C10"]
+    assert decision.question_evidence_plan is not None
+    assert decision.question_evidence_plan.operator == "count"
+    assert decision.coverage_selection is not None
+    assert decision.coverage_selection.gain > 0.1
+    assert decision.boundary is not None
+    assert decision.boundary.replacement_accepted is True
+    assert decision.boundary.proposed_promotion_session_ids == ["s7", "s10"]
+    for messages in client.all_messages:
+        prompt = messages[1].content
+        assert "[X |" in prompt
+        assert "C01" not in prompt
+        assert "C07" not in prompt
+        assert "replace_B1" not in prompt
 
 
 def json_response(*, selected: list[str], ranked: list[str]) -> str:

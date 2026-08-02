@@ -5,6 +5,8 @@ from pathlib import Path
 SCRIPT_PATH = Path("scripts/run_vmp_v55_experiment.sh")
 V551_SCRIPT_PATH = Path("scripts/run_vmp_v551_experiment.sh")
 V552_SCRIPT_PATH = Path("scripts/run_vmp_v552_experiment.sh")
+V6_SCRIPT_PATH = Path("scripts/run_vmp_v6_experiment.sh")
+V61_SCRIPT_PATH = Path("scripts/run_vmp_v61_experiment.sh")
 
 
 def test_v55_reuses_frozen_dev_candidates_and_keeps_outcome_gates() -> None:
@@ -53,3 +55,24 @@ def test_v552_uses_anonymous_pairwise_protocol_and_role_aware_excerpt() -> None:
     assert "role_aware_fact_v2" in script
     assert "lme_dev_vmp_v552_rerank_seed42" in script
     assert "run_vmp_v55_experiment.sh" in script
+
+
+def test_v6_uses_atomic_fact_extraction_and_deterministic_coverage() -> None:
+    script = V6_SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert "vmp_v6_anonymous_atomic_fact_extractor_v1" in script
+    assert "vmp_v6_deterministic_set_coverage_v1" in script
+    assert "role_aware_fact_v2" in script
+    assert "lme_dev_vmp_v6_rerank_seed42" in script
+    assert "COVERAGE_DIVERSITY_WEIGHT" in script
+    assert "run_vmp_v55_experiment.sh" in script
+
+
+def test_v61_loads_frozen_dev_tuned_weights_into_a_new_run() -> None:
+    script = V61_SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert "vmp_v6_coverage_seed42.json" in script
+    assert "COVERAGE_MIN_GAIN" in script
+    assert "COVERAGE_TEMPORAL_WEIGHT" in script
+    assert "lme_dev_vmp_v61_rerank_seed42" in script
+    assert "run_vmp_v6_experiment.sh" in script

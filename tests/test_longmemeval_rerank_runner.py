@@ -11,6 +11,8 @@ from vmp_memos.evaluation import compute_retrieval_metrics
 from vmp_memos.frameworks import RetrievedMemory
 from vmp_memos.llm import (
     LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
+    LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
     LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
@@ -98,6 +100,20 @@ class RejectingPairwiseClient:
                 }
             ),
             usage={"prompt_tokens": 120, "completion_tokens": 20},
+        )
+
+
+class EmptyAtomicFactClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def chat(self, messages: list[Any], *, generation: Any = None) -> LLMResponse:
+        self.calls += 1
+        return LLMResponse(
+            provider="vllm",
+            model="Qwen/Qwen2.5-7B-Instruct",
+            text=json.dumps({"candidate_relevant": False, "facts": []}),
+            usage={"prompt_tokens": 90, "completion_tokens": 8},
         )
 
 
@@ -358,6 +374,69 @@ def test_v552_runner_counts_five_selector_calls_without_extra_boundary_call(
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     assert manifest["fairness"]["anonymous_pairwise_challenger_protocol"] is True
     assert manifest["fairness"]["integrated_pairwise_boundary_verification"] is True
+    assert manifest["fairness"]["two_stage_boundary_verification"] is False
+
+
+def test_v6_runner_audits_ten_fact_calls_and_deterministic_coverage(tmp_path) -> None:
+    source_run = tmp_path / "outputs" / "runs" / "source-v6"
+    method_dir = source_run / "vmp_hierarchical"
+    method_dir.mkdir(parents=True)
+    (source_run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "run_id": "source-v6",
+                "sample_count": 1,
+                "split": {"name": "dev", "split_id": "split"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (method_dir / "retrieval.jsonl").write_text(
+        _source_record(10).model_dump_json() + "\n",
+        encoding="utf-8",
+    )
+    client = EmptyAtomicFactClient()
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(
+            prompt_version=LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+            boundary_prompt_version=LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
+            candidate_excerpt_version=LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
+            candidate_planner_version=(
+                LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
+            ),
+            candidate_count=10,
+            protected_top_n=3,
+            ranked_output_count=10,
+            boundary_verification=True,
+        ),
+    )
+
+    result = run_longmemeval_rerank(
+        LongMemEvalRerankRunConfig(
+            source_run=source_run,
+            methods=["vmp_hierarchical"],
+            output_dir=tmp_path / "outputs",
+            require_full_candidate_count=True,
+        ),
+        reranker=reranker,
+        run_id="v6",
+    )
+
+    assert client.calls == 10
+    summary = result.summaries["vmp_hierarchical__vllm_boundary"]
+    assert summary.selector_calls == 10
+    assert summary.boundary_calls == 0
+    assert summary.evidence_operator_counts == {"list": 1}
+    record = _read_jsonl(
+        result.run_dir / "vmp_hierarchical__vllm_boundary" / "retrieval.jsonl"
+    )[0]
+    assert record["rerank_metadata"]["question_evidence_plan"]["operator"] == "list"
+    assert record["rerank_metadata"]["coverage_selection"] is not None
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["fairness"]["structured_atomic_fact_protocol"] is True
+    assert manifest["fairness"]["deterministic_set_coverage"] is True
     assert manifest["fairness"]["two_stage_boundary_verification"] is False
 
 

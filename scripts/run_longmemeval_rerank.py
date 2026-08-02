@@ -20,6 +20,8 @@ from vmp_memos.llm import (
     LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
     LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
@@ -47,6 +49,11 @@ def _paper_version(
     boundary_prompt_version: str,
     boundary_verification: bool,
 ) -> str:
+    if (
+        selector_prompt_version == LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION
+        and boundary_prompt_version == LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION
+    ):
+        return "VMP-v6"
     if (
         selector_prompt_version == LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION
         and boundary_prompt_version == LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION
@@ -143,6 +150,12 @@ def main() -> int:
     parser.add_argument("--boundary-max-promotions", type=int, default=2)
     parser.add_argument("--boundary-max-tokens", type=int, default=256)
     parser.add_argument("--boundary-min-confidence", default="high")
+    parser.add_argument("--coverage-min-gain", type=float, default=0.25)
+    parser.add_argument("--coverage-need-weight", type=float, default=3.0)
+    parser.add_argument("--coverage-relevance-weight", type=float, default=1.5)
+    parser.add_argument("--coverage-diversity-weight", type=float, default=1.25)
+    parser.add_argument("--coverage-temporal-weight", type=float, default=1.25)
+    parser.add_argument("--coverage-rank-weight", type=float, default=0.08)
     parser.add_argument(
         "--selector-replay-run",
         type=Path,
@@ -168,9 +181,13 @@ def main() -> int:
         parser.error("--selector-replay-run requires --boundary-verification")
     if (
         args.selector_replay_run is not None
-        and args.prompt_version == LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION
+        and args.prompt_version
+        in {
+            LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
+            LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+        }
     ):
-        parser.error("VMP-v5.5.2 does not support selector replay")
+        parser.error("integrated VMP-v5.5.2/VMP-v6 protocols do not support selector replay")
     generation = LLMGenerationConfig(
         max_tokens=args.max_tokens,
         temperature=0.0,
@@ -213,6 +230,12 @@ def main() -> int:
         boundary_max_promotions=args.boundary_max_promotions,
         boundary_min_confidence=args.boundary_min_confidence,
         boundary_generation=boundary_generation,
+        coverage_min_gain=args.coverage_min_gain,
+        coverage_need_weight=args.coverage_need_weight,
+        coverage_relevance_weight=args.coverage_relevance_weight,
+        coverage_diversity_weight=args.coverage_diversity_weight,
+        coverage_temporal_weight=args.coverage_temporal_weight,
+        coverage_rank_weight=args.coverage_rank_weight,
     )
     replay_client: SelectorReplayClient | None = None
     replay_metadata: dict[str, JsonValue] = {}
@@ -286,6 +309,8 @@ def main() -> int:
                     boundary_verification=args.boundary_verification,
                 ),
                 "shared_across_frameworks": True,
+                "coverage_model_path": os.getenv("VMP_COVERAGE_MODEL_PATH"),
+                "coverage_model_sha256": os.getenv("VMP_COVERAGE_MODEL_SHA256"),
                 "test_labels_used": False,
                 **replay_metadata,
             },

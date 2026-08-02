@@ -21,6 +21,8 @@ from vmp_memos.frameworks import RetrievedMemory
 from vmp_memos.llm import (
     LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
     LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
@@ -113,6 +115,16 @@ class RerankMethodSummary(RetrievalMethodSummary):
     selector_calls: NonNegativeInt = 0
     selector_call_fallbacks: NonNegativeInt = 0
     selector_call_fallback_rate: NonNegativeFloat = 0.0
+    coverage_selected_questions: NonNegativeInt = 0
+    coverage_promotions: NonNegativeInt = 0
+    mean_coverage_gain: NonNegativeFloat = 0.0
+    evidence_operator_counts: dict[str, NonNegativeInt] = Field(default_factory=dict)
+    coverage_min_gain: NonNegativeFloat = 0.0
+    coverage_need_weight: NonNegativeFloat = 0.0
+    coverage_relevance_weight: NonNegativeFloat = 0.0
+    coverage_diversity_weight: NonNegativeFloat = 0.0
+    coverage_temporal_weight: NonNegativeFloat = 0.0
+    coverage_rank_weight: NonNegativeFloat = 0.0
     selector_replay_records: NonNegativeInt = 0
     selector_prompt_mismatch_count: NonNegativeInt = 0
     recovered_questions: NonNegativeInt = 0
@@ -404,7 +416,10 @@ def summarize_rerank_method(
             "boundary_skips": (
                 0
                 if config.boundary_prompt_version
-                == LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION
+                in {
+                    LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
+                    LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
+                }
                 else sum(not _boundary_bool(record, "call_made") for record in records)
                 if config.boundary_verification
                 else 0
@@ -456,6 +471,24 @@ def summarize_rerank_method(
             "selector_call_fallback_rate": (
                 selector_call_fallbacks / selector_calls if selector_calls else 0.0
             ),
+            "coverage_selected_questions": sum(
+                bool(_metadata_list(record, "coverage_promoted_candidate_labels"))
+                for record in records
+            ),
+            "coverage_promotions": sum(
+                len(_metadata_list(record, "coverage_promoted_candidate_labels"))
+                for record in records
+            ),
+            "mean_coverage_gain": _mean(
+                [_metadata_number(record, "coverage_gain") for record in records]
+            ),
+            "evidence_operator_counts": _evidence_operator_counts(records),
+            "coverage_min_gain": config.coverage_min_gain,
+            "coverage_need_weight": config.coverage_need_weight,
+            "coverage_relevance_weight": config.coverage_relevance_weight,
+            "coverage_diversity_weight": config.coverage_diversity_weight,
+            "coverage_temporal_weight": config.coverage_temporal_weight,
+            "coverage_rank_weight": config.coverage_rank_weight,
             "selector_replay_records": sum(
                 record.rerank_metadata.get("selector_replay") is True for record in records
             ),
@@ -618,6 +651,29 @@ def _rerank_record(
         "selector_call_count": decision.selector_call_count,
         "selector_call_fallbacks": decision.selector_call_fallbacks,
         "boundary_call_count": decision.boundary_call_count,
+        "question_evidence_plan": cast(
+            JsonValue,
+            decision.question_evidence_plan.model_dump(mode="json")
+            if decision.question_evidence_plan is not None
+            else None,
+        ),
+        "coverage_selection": cast(
+            JsonValue,
+            decision.coverage_selection.model_dump(mode="json")
+            if decision.coverage_selection is not None
+            else None,
+        ),
+        "coverage_gain": (
+            decision.coverage_selection.gain
+            if decision.coverage_selection is not None
+            else 0.0
+        ),
+        "coverage_promoted_candidate_labels": cast(
+            JsonValue,
+            decision.coverage_selection.promoted_candidate_labels
+            if decision.coverage_selection is not None
+            else [],
+        ),
         "raw_selected_session_ids": cast(
             JsonValue,
             decision.raw_selected_session_ids,
@@ -745,7 +801,10 @@ def _prepare_manifest(
                 "two_stage_boundary_verification": bool(
                     reranker_signature.get("boundary_verification")
                     and reranker_signature.get("boundary_prompt_version")
-                    != LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION
+                    not in {
+                        LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
+                        LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
+                    }
                 ),
                 "integrated_pairwise_boundary_verification": (
                     reranker_signature.get("boundary_verification") is True
@@ -759,6 +818,7 @@ def _prepare_manifest(
                         LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
                         LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
                         LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
+                        LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
                     }
                 ),
                 "selector_evidence_span_binding": (
@@ -768,17 +828,31 @@ def _prepare_manifest(
                         LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
                         LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
                         LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
+                        LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
                     }
                 ),
                 "boundary_evidence_span_binding": (
                     reranker_signature.get("boundary_prompt_version")
-                    == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
+                    in {
+                        LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
+                        LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
+                    }
                 ),
                 "anonymous_pairwise_challenger_protocol": (
                     reranker_signature.get("prompt_version")
                     == LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION
                     and reranker_signature.get("boundary_prompt_version")
                     == LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION
+                ),
+                "structured_atomic_fact_protocol": (
+                    reranker_signature.get("prompt_version")
+                    == LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION
+                    and reranker_signature.get("boundary_prompt_version")
+                    == LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION
+                ),
+                "deterministic_set_coverage": (
+                    reranker_signature.get("boundary_prompt_version")
+                    == LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION
                 ),
                 "candidate_excerpt_version": reranker_signature.get(
                     "candidate_excerpt_version"
@@ -951,6 +1025,18 @@ def _metadata_number(record: RetrievalSampleRecord, name: str) -> float:
 def _metadata_list(record: RetrievalSampleRecord, name: str) -> list[object]:
     value = record.rerank_metadata.get(name, [])
     return list(value) if isinstance(value, list) else []
+
+
+def _evidence_operator_counts(
+    records: Sequence[RetrievalSampleRecord],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for record in records:
+        value = record.rerank_metadata.get("question_evidence_plan")
+        operator = value.get("operator") if isinstance(value, dict) else None
+        if isinstance(operator, str) and operator:
+            counts[operator] = counts.get(operator, 0) + 1
+    return counts
 
 
 def _candidate_plan_bool(record: RetrievalSampleRecord, name: str) -> bool:

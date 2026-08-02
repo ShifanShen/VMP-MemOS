@@ -151,6 +151,55 @@ def test_v552_gate_audits_anonymous_pairwise_calls_and_excerpt_version(tmp_path)
     assert report["checks"]["selector_call_fallback_rate"] is True
 
 
+def test_v6_gate_audits_fact_calls_and_deterministic_coverage(tmp_path) -> None:
+    selector_version = "vmp_v6_anonymous_atomic_fact_extractor_v1"
+    boundary_version = "vmp_v6_deterministic_set_coverage_v1"
+    planner_version = "vmp_v55_dual_view_rrf_v1"
+    candidate_run, rerank_run = _write_runs(
+        tmp_path,
+        selector_prompt_version=selector_version,
+        boundary_prompt_version=boundary_version,
+        candidate_planner_version=planner_version,
+        candidate_excerpt_version="role_aware_fact_v2",
+        candidate_count=10,
+    )
+    manifest_path = rerank_run / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["fairness"].update(
+        {
+            "two_stage_boundary_verification": False,
+            "symbolic_selector_labels": True,
+            "selector_evidence_span_binding": True,
+            "boundary_evidence_span_binding": True,
+            "structured_atomic_fact_protocol": True,
+            "deterministic_set_coverage": True,
+        }
+    )
+    _write_json(manifest_path, manifest)
+    for method in (
+        "vmp_hierarchical__vllm_boundary",
+        "vmp_tuned__vllm_boundary",
+    ):
+        summary_path = rerank_run / method / "summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary["selector_calls"] = 1000
+        _write_json(summary_path, summary)
+
+    report = evaluate_v53_gate(
+        candidate_run,
+        rerank_run,
+        expected_selector_prompt_version=selector_version,
+        expected_boundary_prompt_version=boundary_version,
+        expected_candidate_planner_version=planner_version,
+        expected_candidate_excerpt_version="role_aware_fact_v2",
+        min_candidate_count=10,
+    )
+
+    assert report["status"] == "passed"
+    assert report["checks"]["shared_atomic_fact_coverage_protocol"] is True
+    assert report["checks"]["atomic_fact_call_coverage"] is True
+
+
 def _write_runs(
     tmp_path,
     *,

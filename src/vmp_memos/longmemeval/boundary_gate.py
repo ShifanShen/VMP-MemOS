@@ -14,6 +14,8 @@ from vmp_memos.llm import (
     LONGMEMEVAL_RERANK_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
     LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION,
     LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
@@ -101,6 +103,8 @@ def evaluate_v53_gate(
     baseline_selector_call_fallback_rate = _number(
         reranked_v43.get("selector_call_fallback_rate")
     )
+    selector_calls = _integer(reranked_v5.get("selector_calls"))
+    baseline_selector_calls = _integer(reranked_v43.get("selector_calls"))
     recovered_questions = _integer(reranked_v5.get("recovered_questions"))
     regressed_questions = _integer(reranked_v5.get("regressed_questions"))
     candidate_count = _integer(reranked_v5.get("candidate_count"))
@@ -137,6 +141,12 @@ def evaluate_v53_gate(
         and candidate_config.get("allow_dev_model_selection") is True
     )
     rerank_fairness = rerank_manifest.get("fairness")
+    rerank_signature = rerank_manifest.get("signature")
+    rerank_metadata = (
+        rerank_signature.get("metadata")
+        if isinstance(rerank_signature, dict)
+        else None
+    )
     two_stage_marked = (
         isinstance(rerank_fairness, dict)
         and rerank_fairness.get("two_stage_boundary_verification") is True
@@ -147,6 +157,7 @@ def evaluate_v53_gate(
             LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION,
             LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
             LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
+            LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
         }
         or expected_boundary_prompt_version
         == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
@@ -171,8 +182,23 @@ def evaluate_v53_gate(
         isinstance(rerank_fairness, dict)
         and rerank_fairness.get("integrated_pairwise_boundary_verification") is True
     )
+    atomic_fact_coverage_expected = (
+        expected_selector_prompt_version
+        == LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION
+        or expected_boundary_prompt_version
+        == LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION
+    )
+    atomic_fact_coverage_marked = (
+        isinstance(rerank_fairness, dict)
+        and rerank_fairness.get("structured_atomic_fact_protocol") is True
+        and rerank_fairness.get("deterministic_set_coverage") is True
+    )
     boundary_protocol_marked = (
-        integrated_pairwise_marked if anonymous_pairwise_expected else two_stage_marked
+        atomic_fact_coverage_marked
+        if atomic_fact_coverage_expected
+        else integrated_pairwise_marked
+        if anonymous_pairwise_expected
+        else two_stage_marked
     )
     sample_count = _integer(candidate_manifest.get("sample_count"))
     summaries = (raw_v5, raw_v43, reranked_v5, reranked_v43)
@@ -233,6 +259,15 @@ def evaluate_v53_gate(
         ),
         "shared_anonymous_pairwise_protocol": (
             anonymous_pairwise_marked if anonymous_pairwise_expected else True
+        ),
+        "shared_atomic_fact_coverage_protocol": (
+            atomic_fact_coverage_marked if atomic_fact_coverage_expected else True
+        ),
+        "atomic_fact_call_coverage": (
+            selector_calls == sample_count * candidate_count
+            and baseline_selector_calls == sample_count * baseline_candidate_count
+            if atomic_fact_coverage_expected
+            else True
         ),
         "shared_candidate_excerpt": (
             candidate_excerpt_version == baseline_candidate_excerpt_version
@@ -340,8 +375,35 @@ def evaluate_v53_gate(
                     baseline_selector_call_fallback_rate
                 ),
                 "selector_calls": reranked_v5.get("selector_calls"),
+                "baseline_selector_calls": reranked_v43.get("selector_calls"),
                 "selector_call_fallbacks": reranked_v5.get(
                     "selector_call_fallbacks"
+                ),
+                "coverage_selected_questions": reranked_v5.get(
+                    "coverage_selected_questions"
+                ),
+                "coverage_promotions": reranked_v5.get("coverage_promotions"),
+                "mean_coverage_gain": reranked_v5.get("mean_coverage_gain"),
+                "evidence_operator_counts": reranked_v5.get(
+                    "evidence_operator_counts"
+                ),
+                "coverage_weights": {
+                    "min_gain": reranked_v5.get("coverage_min_gain"),
+                    "need": reranked_v5.get("coverage_need_weight"),
+                    "relevance": reranked_v5.get("coverage_relevance_weight"),
+                    "diversity": reranked_v5.get("coverage_diversity_weight"),
+                    "temporal": reranked_v5.get("coverage_temporal_weight"),
+                    "rank": reranked_v5.get("coverage_rank_weight"),
+                },
+                "coverage_model_path": (
+                    rerank_metadata.get("coverage_model_path")
+                    if isinstance(rerank_metadata, dict)
+                    else None
+                ),
+                "coverage_model_sha256": (
+                    rerank_metadata.get("coverage_model_sha256")
+                    if isinstance(rerank_metadata, dict)
+                    else None
                 ),
                 "recovered_questions": recovered_questions,
                 "regressed_questions": regressed_questions,

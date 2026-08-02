@@ -24,6 +24,14 @@ from vmp_memos.llm.candidate_planner import (
     LONGMEMEVAL_IDENTITY_CANDIDATE_PLANNER_VERSION,
     LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION,
 )
+from vmp_memos.llm.evidence_coverage import (
+    CandidateEvidenceProfile,
+    EvidenceCoverageSelection,
+    QuestionEvidencePlan,
+    build_candidate_evidence_profile,
+    build_question_evidence_plan,
+    select_evidence_coverage,
+)
 from vmp_memos.schemas.base import (
     NonEmptyStr,
     NonNegativeFloat,
@@ -44,6 +52,9 @@ LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION = (
 LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION = (
     "vmp_v552_anonymous_pairwise_selector_v1"
 )
+LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION = (
+    "vmp_v6_anonymous_atomic_fact_extractor_v1"
+)
 LONGMEMEVAL_RERANK_PROMPT_VERSIONS = frozenset(
     {
         LONGMEMEVAL_RERANK_PROMPT_VERSION,
@@ -51,6 +62,7 @@ LONGMEMEVAL_RERANK_PROMPT_VERSIONS = frozenset(
         LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
         LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
         LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
+        LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
     }
 )
 LONGMEMEVAL_BOUNDARY_PROMPT_VERSION = "vmp_v53_selective_boundary_v1"
@@ -62,6 +74,9 @@ LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION = (
 LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION = (
     "vmp_v552_integrated_pairwise_boundary_v1"
 )
+LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION = (
+    "vmp_v6_deterministic_set_coverage_v1"
+)
 LONGMEMEVAL_BOUNDARY_PROMPT_VERSIONS = frozenset(
     {
         LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
@@ -69,6 +84,7 @@ LONGMEMEVAL_BOUNDARY_PROMPT_VERSIONS = frozenset(
         LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
         LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
         LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
+        LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
     }
 )
 LONGMEMEVAL_LEXICAL_EXCERPT_VERSION = "lexical_turn_v1"
@@ -126,6 +142,48 @@ displaced_slot_redundant, and confidence.
 challenger_spans may contain only X span labels shown above. displaced_slot
 must be null for reject, otherwise it must match the selected B slot. Never
 output a session ID, a candidate-rank label, or an answer to the question.
+"""
+LONGMEMEVAL_V6_ATOMIC_FACT_SYSTEM_PROMPT = (
+    "You extract query-relevant atomic facts from one anonymous memory candidate. "
+    "Do not rank candidates and do not answer the question. Return only one JSON object."
+)
+LONGMEMEVAL_V6_ATOMIC_FACT_USER_PROMPT = """\
+Extract grounded atomic facts from anonymous candidate X that may help satisfy
+the question's evidence plan. This call evaluates only X and never decides
+whether X replaces another candidate.
+
+Question date:
+{question_date}
+
+Question:
+{question}
+
+Answer operator:
+{operator}
+
+Evidence needs:
+{evidence_needs}
+
+Anonymous candidate:
+{candidate_context}
+
+Rules:
+1. Return only facts directly supported by one or more shown X:Sxx spans.
+2. Preserve named entities, quantities, status, event dates, and relative-time
+   expressions exactly enough for later counting or temporal reasoning.
+3. For count/list questions, emit separate facts for distinct relevant items.
+4. For temporal/latest questions, include temporal_anchor when the excerpt
+   states a date, relative time, or ordering cue.
+5. supports_needs may contain only N1 through N4 from the plan above.
+6. candidate_relevant is false when X contains no query-relevant evidence.
+7. Never output a session ID, candidate-rank label, replacement decision, or
+   answer to the question.
+
+Return these keys: candidate_relevant and facts. Each facts entry must contain
+entity, relation, value, temporal_anchor (string or null), supports_needs,
+evidence_spans, and confidence (high, medium, or low). evidence_spans may use
+only the shown X:Sxx labels. If there is no grounded fact, return an empty facts
+array.
 """
 LONGMEMEVAL_RERANK_USER_PROMPT = """\
 Select a joint set of memory sessions that would be sufficient to answer the
@@ -462,6 +520,12 @@ class LongMemEvalRerankerConfig(SchemaModel):
     boundary_protected_top_n: NonNegativeInt = 3
     boundary_max_promotions: PositiveInt = 2
     boundary_min_confidence: NonEmptyStr = "high"
+    coverage_min_gain: NonNegativeFloat = 0.25
+    coverage_need_weight: NonNegativeFloat = 3.0
+    coverage_relevance_weight: NonNegativeFloat = 1.5
+    coverage_diversity_weight: NonNegativeFloat = 1.25
+    coverage_temporal_weight: NonNegativeFloat = 1.25
+    coverage_rank_weight: NonNegativeFloat = 0.08
     generation: LLMGenerationConfig = Field(
         default_factory=lambda: LLMGenerationConfig(
             max_tokens=512,
@@ -518,6 +582,7 @@ class LongMemEvalRerankerConfig(SchemaModel):
             LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
             LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
             LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
+            LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
         }:
             if (
                 self.candidate_planner_version
@@ -546,6 +611,17 @@ class LongMemEvalRerankerConfig(SchemaModel):
                 )
             if self.candidate_excerpt_version != LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION:
                 raise ValueError("V5.5.2 requires the role-aware candidate excerpt")
+        if self.prompt_version == LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION:
+            if not self.boundary_verification:
+                raise ValueError("VMP-v6 requires integrated coverage verification")
+            if self.boundary_prompt_version != LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION:
+                raise ValueError(
+                    "VMP-v6 fact extraction and set coverage versions must be enabled together"
+                )
+            if self.candidate_excerpt_version != LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION:
+                raise ValueError("VMP-v6 requires the role-aware candidate excerpt")
+            if self.boundary_protected_top_n != self.protected_top_n:
+                raise ValueError("VMP-v6 selector and coverage protection must match")
         if self.boundary_verification:
             if self.boundary_protected_top_n >= self.output_top_k:
                 raise ValueError("V5.3 boundary verification must leave open Top-k slots")
@@ -642,6 +718,8 @@ class LongMemEvalRerankDecision(SchemaModel):
     selector_prompt_sha256_match: bool | None = None
     selector_source_prompt_sha256: str | None = None
     selector_current_prompt_sha256: str | None = None
+    question_evidence_plan: QuestionEvidencePlan | None = None
+    coverage_selection: EvidenceCoverageSelection | None = None
     boundary: LongMemEvalBoundaryDecision | None = None
 
 
@@ -680,6 +758,16 @@ class LongMemEvalEvidenceReranker:
                     "V5.5.2 requires exactly 10 unique candidates before any LLM call"
                 )
             return self._rerank_anonymous_pairwise(
+                question=question,
+                question_date=question_date,
+                candidates=unique_candidates,
+            )
+        if self.config.prompt_version == LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION:
+            if len(unique_candidates) != self.config.candidate_count:
+                raise ValueError(
+                    "VMP-v6 requires exactly 10 unique candidates before any LLM call"
+                )
+            return self._rerank_atomic_fact_coverage(
                 question=question,
                 question_date=question_date,
                 candidates=unique_candidates,
@@ -1137,6 +1225,263 @@ class LongMemEvalEvidenceReranker:
             boundary=boundary,
         )
 
+    def _rerank_atomic_fact_coverage(
+        self,
+        *,
+        question: str,
+        question_date: str | None,
+        candidates: Sequence[RetrievedMemory],
+    ) -> LongMemEvalRerankDecision:
+        """Extract anonymous facts, then select Top-k with deterministic coverage."""
+
+        plan = build_question_evidence_plan(question)
+        candidate_label_session_ids = _candidate_label_session_map(candidates)
+        prompts: list[str] = []
+        responses: list[LLMResponse] = []
+        profiles: list[CandidateEvidenceProfile] = []
+        failures: list[str] = []
+        selector_call_fallbacks = 0
+        total_latency_ms = 0.0
+        for rank, candidate in enumerate(candidates, start=1):
+            label = _candidate_label(rank)
+            prompt = _build_v6_atomic_fact_prompt(
+                question=question,
+                question_date=question_date,
+                candidate=candidate,
+                plan=plan,
+                config=self.config,
+            )
+            started_at = perf_counter()
+            response = self.client.chat(
+                [
+                    ChatMessage(
+                        role="system",
+                        content=LONGMEMEVAL_V6_ATOMIC_FACT_SYSTEM_PROMPT,
+                    ),
+                    ChatMessage(role="user", content=prompt),
+                ],
+                generation=self.config.generation,
+            )
+            total_latency_ms += (perf_counter() - started_at) * 1000.0
+            if responses and (
+                response.provider != responses[0].provider
+                or response.model != responses[0].model
+            ):
+                raise ValueError("all atomic fact calls must use one provider/model")
+            prompts.append(prompt)
+            responses.append(response)
+            parsed, parse_error = _parse_rerank_response(response.text)
+            extraction_fallback = parse_error is not None
+            if extraction_fallback:
+                selector_call_fallbacks += 1
+                failures.append(f"{label}:parse_fallback")
+                parsed = {}
+            excerpt = candidate_excerpt(
+                question,
+                candidate.content,
+                max_chars=self.config.max_candidate_chars,
+                max_turns=self.config.max_excerpt_turns,
+                excerpt_version=self.config.candidate_excerpt_version,
+            )
+            profile = build_candidate_evidence_profile(
+                parsed,
+                candidate_label=label,
+                session_id=_session_id(candidate),
+                rank=rank,
+                plan=plan,
+                allowed_span_ids=set(
+                    _evidence_span_ids(
+                        "X",
+                        candidate,
+                        question=question,
+                        config=self.config,
+                    )
+                ),
+                excerpt=excerpt,
+                extraction_fallback=extraction_fallback,
+            )
+            failures.extend(
+                f"{label}:{failure}" for failure in profile.extraction_failures
+            )
+            profiles.append(profile)
+
+        selection = select_evidence_coverage(
+            plan,
+            profiles,
+            output_top_k=self.config.output_top_k,
+            protected_top_n=self.config.protected_top_n,
+            min_gain=float(self.config.coverage_min_gain),
+            need_weight=float(self.config.coverage_need_weight),
+            relevance_weight=float(self.config.coverage_relevance_weight),
+            diversity_weight=float(self.config.coverage_diversity_weight),
+            temporal_weight=float(self.config.coverage_temporal_weight),
+            rank_weight=float(self.config.coverage_rank_weight),
+        )
+        selected_ids = [
+            candidate_label_session_ids[label]
+            for label in selection.selected_candidate_labels
+        ]
+        ranked_ids = [
+            candidate_label_session_ids[label]
+            for label in selection.ranked_candidate_labels
+        ]
+        original_boundary_labels = [
+            _candidate_label(index)
+            for index in range(
+                self.config.protected_top_n + 1,
+                self.config.output_top_k + 1,
+            )
+        ]
+        original_boundary_ids = [
+            candidate_label_session_ids[label] for label in original_boundary_labels
+        ]
+        selected_open_labels = selection.selected_candidate_labels[
+            self.config.protected_top_n :
+        ]
+        selected_boundary_ids = [
+            candidate_label_session_ids[label] for label in selected_open_labels
+        ]
+        promotion_slot_by_label = {
+            label: f"P{index}"
+            for index, label in enumerate(
+                selection.promoted_candidate_labels,
+                start=1,
+            )
+        }
+        slot_session_ids = {
+            **{
+                f"B{index}": candidate_label_session_ids[label]
+                for index, label in enumerate(original_boundary_labels, start=1)
+            },
+            **{
+                slot: candidate_label_session_ids[label]
+                for label, slot in promotion_slot_by_label.items()
+            },
+        }
+        selected_slot_labels = [
+            (
+                f"B{original_boundary_labels.index(label) + 1}"
+                if label in original_boundary_labels
+                else promotion_slot_by_label[label]
+            )
+            for label in selected_open_labels
+        ]
+        profile_by_label = {
+            profile.candidate_label: profile for profile in profiles
+        }
+        accepted_assessments: list[dict[str, JsonValue]] = []
+        for label in selection.promoted_candidate_labels:
+            profile = profile_by_label[label]
+            accepted_assessments.append(
+                {
+                    "slot": promotion_slot_by_label[label],
+                    "candidate": label,
+                    "span_valid": bool(profile.facts),
+                    "facts": cast(
+                        JsonValue,
+                        [fact.model_dump(mode="json") for fact in profile.facts],
+                    ),
+                    "coverage_gain": selection.gain,
+                }
+            )
+        input_tokens = sum(
+            _usage_tokens(
+                response.usage,
+                "prompt_tokens",
+                fallback=estimate_tokens(
+                    LONGMEMEVAL_V6_ATOMIC_FACT_SYSTEM_PROMPT + "\n" + prompt
+                ),
+            )
+            for prompt, response in zip(prompts, responses, strict=True)
+        )
+        output_tokens = sum(
+            _usage_tokens(
+                response.usage,
+                "completion_tokens",
+                fallback=estimate_tokens(response.text) if response.text else 0,
+            )
+            for response in responses
+        )
+        response_text = json.dumps(
+            [
+                {
+                    "candidate": _candidate_label(index),
+                    "response": response.text.strip(),
+                }
+                for index, response in enumerate(responses, start=1)
+            ],
+            ensure_ascii=False,
+        )
+        prompt_sha256 = hashlib.sha256(
+            "\n\n--- atomic fact call ---\n\n".join(prompts).encode("utf-8")
+        ).hexdigest()
+        promotion_ids = [
+            candidate_label_session_ids[label]
+            for label in selection.promoted_candidate_labels
+        ]
+        boundary = LongMemEvalBoundaryDecision(
+            call_made=True,
+            prompt_version=self.config.boundary_prompt_version,
+            prompt_sha256=prompt_sha256,
+            provider=responses[0].provider,
+            model=responses[0].model,
+            finish_reason=responses[-1].finish_reason,
+            evidence_needs=plan.evidence_needs,
+            original_boundary_session_ids=original_boundary_ids,
+            proposed_promotion_session_ids=promotion_ids,
+            slot_session_ids=slot_session_ids,
+            raw_selected_slot_labels=selected_slot_labels,
+            selected_slot_labels=selected_slot_labels,
+            raw_selected_boundary_session_ids=selected_boundary_ids,
+            selected_boundary_session_ids=selected_boundary_ids,
+            slot_assessments=accepted_assessments,
+            decision=_boundary_decision_name(selected_slot_labels),
+            confidence="high" if promotion_ids else None,
+            replacement_accepted=bool(promotion_ids),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            usage=_aggregate_llm_usage(responses),
+            response_text=response_text,
+            latency_ms=total_latency_ms,
+        )
+        return LongMemEvalRerankDecision(
+            prompt_version=self.config.prompt_version,
+            prompt_sha256=prompt_sha256,
+            provider=responses[0].provider,
+            model=responses[0].model,
+            finish_reason=responses[-1].finish_reason,
+            evidence_needs=plan.evidence_needs,
+            candidate_label_session_ids=candidate_label_session_ids,
+            raw_selected_candidate_labels=selection.selected_candidate_labels,
+            raw_ranked_candidate_labels=selection.ranked_candidate_labels,
+            selector_evidence_selections=[
+                cast(
+                    dict[str, JsonValue],
+                    profile.model_dump(mode="json"),
+                )
+                for profile in profiles
+            ],
+            selector_span_binding_failures=failures,
+            selector_grounded_promotion_labels=(
+                selection.promoted_candidate_labels
+            ),
+            selector_call_count=len(responses),
+            selector_call_fallbacks=selector_call_fallbacks,
+            boundary_call_count=0,
+            raw_selected_session_ids=selected_ids,
+            raw_ranked_session_ids=ranked_ids,
+            selector_selected_session_ids=selected_ids,
+            ranked_session_ids=ranked_ids,
+            selected_session_ids=selected_ids,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            usage=_aggregate_llm_usage(responses),
+            response_text=response_text,
+            question_evidence_plan=plan,
+            coverage_selection=selection,
+            boundary=boundary,
+        )
+
     def _verify_boundary(
         self,
         *,
@@ -1498,6 +1843,34 @@ def _build_v552_pairwise_prompt(
         protected_context=protected_context or "(none)",
         boundary_context=boundary_context or "(none)",
         challenger_context=challenger_context,
+    ).strip()
+
+
+def _build_v6_atomic_fact_prompt(
+    *,
+    question: str,
+    question_date: str | None,
+    candidate: RetrievedMemory,
+    plan: QuestionEvidencePlan,
+    config: LongMemEvalRerankerConfig,
+) -> str:
+    """Render one anonymous, label-free atomic-fact extraction call."""
+
+    candidate_context = _format_labeled_span_memory(
+        "X",
+        candidate,
+        question=question,
+        description="anonymous evidence candidate",
+        max_chars=config.max_candidate_chars,
+        max_turns=config.max_excerpt_turns,
+        excerpt_version=config.candidate_excerpt_version,
+    )
+    return LONGMEMEVAL_V6_ATOMIC_FACT_USER_PROMPT.format(
+        question_date=question_date or "unknown",
+        question=question,
+        operator=plan.operator,
+        evidence_needs="\n".join(plan.evidence_needs),
+        candidate_context=candidate_context,
     ).strip()
 
 
