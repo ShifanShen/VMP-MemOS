@@ -9,11 +9,14 @@ import pytest
 from vmp_memos.frameworks import RetrievedMemory
 from vmp_memos.llm import (
     LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
+    LONGMEMEVAL_ROLE_AWARE_EXCERPT_V3_VERSION,
     LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
     LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION,
+    LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
     LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
@@ -845,6 +848,27 @@ def test_role_aware_excerpt_keeps_concise_user_fact_over_verbose_assistant() -> 
     assert excerpt.count("magazine subscription advice") < 20
 
 
+def test_role_aware_v3_excerpt_recovers_publication_subscription_facts() -> None:
+    content = (
+        "assistant: Do you have suggestions for eco-friendly gifts and styling?\n"
+        "user: I finished buying my last National Geographic issue on March 15th.\n"
+        "assistant: Do you have ideas for a garden trellis or wall color?\n"
+        "user: By the way, I'm also getting Architectural Digest.\n"
+        "assistant: Here are several unrelated decorating suggestions."
+    )
+
+    excerpt = candidate_excerpt(
+        "How many magazine subscriptions do I currently have?",
+        content,
+        max_chars=500,
+        max_turns=4,
+        excerpt_version="role_aware_fact_v3",
+    )
+
+    assert "National Geographic issue" in excerpt
+    assert "Architectural Digest" in excerpt
+
+
 def test_v552_pairwise_selector_combines_two_grounded_challengers() -> None:
     reject = """
     {
@@ -1046,6 +1070,56 @@ def test_v6_atomic_fact_coverage_combines_two_challengers() -> None:
         assert "C01" not in prompt
         assert "C07" not in prompt
         assert "replace_B1" not in prompt
+
+
+def test_v62_extracts_partial_fact_with_scalar_compatibility() -> None:
+    empty = '{"candidate_relevant":false,"facts":[]}'
+    partial_museum = """
+    {
+      "candidate_relevant": true,
+      "facts": [{
+        "entity": "History Museum lecture",
+        "relation": "visited",
+        "value": "attended a lecture at the History Museum",
+        "temporal_anchor": null,
+        "supports_needs": "N1",
+        "evidence_spans": "X:S01",
+        "confidence": "high"
+      }]
+    }
+    """
+    client = FakeRerankClient([empty] * 7 + [partial_museum] + [empty] * 2)
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(
+            candidate_planner_version=(
+                LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
+            ),
+            prompt_version=LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+            candidate_excerpt_version=LONGMEMEVAL_ROLE_AWARE_EXCERPT_V3_VERSION,
+            candidate_count=10,
+            protected_top_n=3,
+            ranked_output_count=10,
+            boundary_verification=True,
+            boundary_prompt_version=LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
+            coverage_min_gain=0.1,
+        ),
+    )
+
+    decision = reranker.rerank(
+        question="Which museum did I visit with a friend?",
+        question_date="2024-02-01",
+        candidates=_memories(10),
+    )
+
+    assert client.calls == 10
+    assert "s8" in decision.selected_session_ids
+    assert decision.selector_grounded_promotion_labels == ["C08"]
+    assert all("partial" in messages[0].content for messages in client.all_messages)
+    assert all(
+        "does not need to satisfy every qualifier" in messages[1].content
+        for messages in client.all_messages
+    )
 
 
 def json_response(*, selected: list[str], ranked: list[str]) -> str:

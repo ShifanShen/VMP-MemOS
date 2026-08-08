@@ -21,6 +21,11 @@ from pathlib import Path
 
 payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 best = payload.get("best", {})
+if best.get("gate_feasible") is not True:
+    raise SystemExit(
+        "Refusing an expensive V6.1 validation run: the saved Dev search "
+        "contains no gate-feasible best trial. Improve evidence perception first."
+    )
 weights = best.get("weights", {})
 required = (
     "min_gain",

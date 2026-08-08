@@ -1207,14 +1207,31 @@ P15.5.1. [done: experiment failed strict gate] distinct complete
          gates unchanged; protocol completeness was fixed, but the positive
          C07 example caused severe position bias: the planner reached 86/94,
          selector/final fell to 83/94, with zero recoveries and two regressions
-P15.5.2. [done: implementation, server Dev experiment pending] five identical
+P15.5.2. [done: experiment failed strict gate] five identical
          anonymous-X pairwise challenger calls, role-aware deterministic
          evidence excerpts, locally owned X:Sxx validation, integrated B1/B2
          replacement decisions, deterministic two-slot combination, explicit
          selector-call/fallback audit, frozen V5.3.2 candidates and V5.5 planner,
          unchanged local Qwen model and unchanged strict Dev outcome gates
+P15.6. [done: experiment failed strict gate] anonymous per-candidate atomic-fact
+       extraction followed by deterministic joint set coverage; Dev reached
+       86/94, two-model protocol/fallback audits passed, and direct Dev weight
+       search found no gate-feasible setting
+P15.6.1. [done: experiment failed strict gate] frozen Dev-tuned V6.1 validation;
+         it reproduced 86/94 and confirmed that rank-only retuning cannot repair
+         missing evidence perception
+P15.6.2. [done: implementation, server smoke/full Dev pending] V6.2 scalar/list
+         schema compatibility, conservative explicit-date anchor inference,
+         label-free role-aware excerpt V3, partial-evidence extraction prompt,
+         saved-response offline reparsing, exact-question smoke runs, distinct
+         provenance, and refusal to rerun a known gate-infeasible tuned model;
+         offline reconstruction reaches 87/94 with two recoveries and zero
+         regressions, so the fresh excerpt/prompt must recover at least one more
+         evaluated question before the unchanged 88/94 Dev gate can pass
 P16. Local-vLLM atomic-memory writer + hierarchical-memory ablation
-P17. Fresh external/final benchmark after architecture freeze
+P17. Fresh external/final benchmark after architecture freeze; for a 2026
+     submission add at least one recent reproducible academic baseline (LightMem
+     or Chain-of-Memory) and one second benchmark before claiming SOTA
 P18. Fallback style baselines only if needed
 ```
 

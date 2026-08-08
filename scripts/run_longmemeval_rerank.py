@@ -23,6 +23,8 @@ from vmp_memos.llm import (
     LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
     LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
     LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
@@ -49,6 +51,13 @@ def _paper_version(
     boundary_prompt_version: str,
     boundary_verification: bool,
 ) -> str:
+    if (
+        selector_prompt_version
+        == LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION
+        and boundary_prompt_version
+        == LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION
+    ):
+        return "VMP-v6.2"
     if (
         selector_prompt_version == LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION
         and boundary_prompt_version == LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION
@@ -164,6 +173,11 @@ def main() -> int:
     )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument(
+        "--question-ids",
+        default="",
+        help="Optional comma-separated question IDs for a label-free smoke run.",
+    )
+    parser.add_argument(
         "--require-full-candidate-count",
         action="store_true",
         help=(
@@ -175,8 +189,15 @@ def main() -> int:
     args = parser.parse_args()
 
     methods = [method.strip() for method in args.methods.split(",") if method.strip()]
+    question_ids = [
+        question_id.strip()
+        for question_id in args.question_ids.split(",")
+        if question_id.strip()
+    ]
     if not methods:
         parser.error("--methods must contain at least one method")
+    if question_ids and args.selector_replay_run is not None:
+        parser.error("--question-ids does not support selector replay")
     if args.selector_replay_run is not None and not args.boundary_verification:
         parser.error("--selector-replay-run requires --boundary-verification")
     if (
@@ -185,6 +206,7 @@ def main() -> int:
         in {
             LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
             LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+            LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
         }
     ):
         parser.error("integrated VMP-v5.5.2/VMP-v6 protocols do not support selector replay")
@@ -301,6 +323,7 @@ def main() -> int:
             output_dir=args.output_dir,
             resume=args.resume,
             limit=args.limit,
+            question_ids=question_ids,
             require_full_candidate_count=args.require_full_candidate_count,
             metadata={
                 "paper_version": _paper_version(

@@ -7,13 +7,18 @@ import argparse
 import hashlib
 import json
 import random
+import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from vmp_memos.frameworks import RetrievedMemory
 from vmp_memos.llm import (
     CandidateEvidenceProfile,
     QuestionEvidencePlan,
+    build_candidate_evidence_profile,
+    candidate_evidence_spans,
+    candidate_excerpt,
     select_evidence_coverage,
 )
 
@@ -49,6 +54,7 @@ def tune_v6_coverage(
     max_type_regression_vs_raw: float = 0.03,
     max_regressions: int = 0,
     min_recoveries: int = 3,
+    reparse_raw_responses: bool = False,
 ) -> dict[str, Any]:
     """Search shared weights without making new embedding or LLM calls."""
 
@@ -77,6 +83,17 @@ def tune_v6_coverage(
         ),
     }
     _validate_records(records_by_method)
+    reparse_settings = (
+        _raw_response_reparse_settings(manifest) if reparse_raw_responses else None
+    )
+    if reparse_settings is not None:
+        records_by_method = {
+            method: [
+                _record_with_reparsed_profiles(record, reparse_settings)
+                for record in records
+            ]
+            for method, records in records_by_method.items()
+        }
     weight_candidates = _sample_weights(trials=trials, seed=seed)
     reports: list[dict[str, Any]] = []
     for trial_index, weights in enumerate(weight_candidates, start=1):
@@ -141,6 +158,7 @@ def tune_v6_coverage(
         "dev_labels_used_for_weight_selection": True,
         "test_labels_used": False,
         "requires_fresh_frozen_weight_validation_run": True,
+        "raw_responses_reparsed": reparse_raw_responses,
     }
 
 
@@ -158,6 +176,14 @@ def main() -> int:
     parser.add_argument("--trials", type=int, default=512)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--reparse-raw-responses",
+        action="store_true",
+        help=(
+            "Rebuild profiles from the saved per-candidate response text using "
+            "the recorded excerpt protocol; makes parser fixes replayable without vLLM."
+        ),
+    )
     args = parser.parse_args()
     report = tune_v6_coverage(
         args.run,
@@ -165,6 +191,7 @@ def main() -> int:
         baseline_method=args.baseline_method,
         trials=args.trials,
         seed=args.seed,
+        reparse_raw_responses=args.reparse_raw_responses,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
@@ -319,6 +346,123 @@ def _validate_records(records_by_method: dict[str, list[dict[str, Any]]]) -> Non
         raise ValueError("no rerank records found")
     if any(observed != question_sets[0] for observed in question_sets[1:]):
         raise ValueError("VMP and baseline rerank records cover different questions")
+
+
+def _raw_response_reparse_settings(manifest: dict[str, Any]) -> dict[str, Any]:
+    signature = _mapping(manifest.get("signature"))
+    reranker = _mapping(signature.get("reranker"))
+    return {
+        "max_candidate_chars": _integer(
+            reranker.get("max_candidate_chars"), default=1200
+        ),
+        "max_excerpt_turns": _integer(
+            reranker.get("max_excerpt_turns"), default=4
+        ),
+        "candidate_excerpt_version": str(
+            reranker.get("candidate_excerpt_version") or "role_aware_fact_v2"
+        ),
+    }
+
+
+def _record_with_reparsed_profiles(
+    record: dict[str, Any],
+    settings: dict[str, Any],
+) -> dict[str, Any]:
+    """Rebuild grounded profiles while preserving the frozen model responses."""
+
+    metadata = dict(_mapping(record.get("rerank_metadata")))
+    plan = QuestionEvidencePlan.model_validate(
+        _mapping(metadata.get("question_evidence_plan"))
+    )
+    question = str(record.get("question") or "")
+    if not question:
+        raise ValueError("raw response replay requires the saved question")
+    label_map = _mapping(metadata.get("candidate_label_session_ids"))
+    memories = [
+        RetrievedMemory.model_validate(value)
+        for value in _list(record.get("retrieved_memories"))
+        if isinstance(value, dict)
+    ]
+    memory_by_session = {
+        str(memory.source_session_id or memory.memory_id): memory
+        for memory in memories
+    }
+    response_entries = _atomic_response_entries(metadata.get("response_text"))
+    profiles: list[dict[str, Any]] = []
+    for entry in response_entries:
+        label = str(entry.get("candidate") or "")
+        if not label.startswith("C") or not label[1:].isdigit():
+            raise ValueError("saved atomic response has an invalid candidate label")
+        session_id = label_map.get(label)
+        if not isinstance(session_id, str) or session_id not in memory_by_session:
+            raise ValueError(f"saved atomic response cannot resolve {label}")
+        memory = memory_by_session[session_id]
+        payload = _parse_saved_response_object(entry.get("response"))
+        max_chars = _integer(settings.get("max_candidate_chars"), default=1200)
+        max_turns = _integer(settings.get("max_excerpt_turns"), default=4)
+        excerpt_version = str(settings.get("candidate_excerpt_version"))
+        excerpt = candidate_excerpt(
+            question,
+            memory.content,
+            max_chars=max_chars,
+            max_turns=max_turns,
+            excerpt_version=excerpt_version,
+        )
+        spans = candidate_evidence_spans(
+            question,
+            memory.content,
+            max_chars=max_chars,
+            max_turns=max_turns,
+            excerpt_version=excerpt_version,
+        )
+        profile = build_candidate_evidence_profile(
+            payload,
+            candidate_label=label,
+            session_id=session_id,
+            rank=int(label[1:]),
+            plan=plan,
+            allowed_span_ids={
+                f"X:S{index:02d}" for index in range(1, len(spans) + 1)
+            },
+            excerpt=excerpt,
+        )
+        profiles.append(profile.model_dump(mode="json"))
+    expected_count = _integer(metadata.get("candidate_count_observed"), default=10)
+    if len(profiles) != expected_count:
+        raise ValueError(
+            "saved atomic response count differs from the recorded candidate count"
+        )
+    metadata["selector_evidence_selections"] = profiles
+    return {**record, "rerank_metadata": metadata}
+
+
+def _atomic_response_entries(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("raw response replay requires rerank_metadata.response_text")
+    parsed = json.loads(value)
+    entries = [item for item in _list(parsed) if isinstance(item, dict)]
+    if not entries:
+        raise ValueError("saved atomic response text contains no candidate responses")
+    return entries
+
+
+def _parse_saved_response_object(value: object) -> dict[str, Any]:
+    if not isinstance(value, str):
+        return {}
+    text = value.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I)
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            return {}
+        try:
+            parsed = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _read_object(path: Path) -> dict[str, Any]:

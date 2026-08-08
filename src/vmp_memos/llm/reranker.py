@@ -55,6 +55,9 @@ LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION = (
 LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION = (
     "vmp_v6_anonymous_atomic_fact_extractor_v1"
 )
+LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION = (
+    "vmp_v62_partial_atomic_fact_extractor_v2"
+)
 LONGMEMEVAL_RERANK_PROMPT_VERSIONS = frozenset(
     {
         LONGMEMEVAL_RERANK_PROMPT_VERSION,
@@ -63,6 +66,7 @@ LONGMEMEVAL_RERANK_PROMPT_VERSIONS = frozenset(
         LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
         LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
         LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+        LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
     }
 )
 LONGMEMEVAL_BOUNDARY_PROMPT_VERSION = "vmp_v53_selective_boundary_v1"
@@ -77,6 +81,9 @@ LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION = (
 LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION = (
     "vmp_v6_deterministic_set_coverage_v1"
 )
+LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION = (
+    "vmp_v62_deterministic_set_coverage_v2"
+)
 LONGMEMEVAL_BOUNDARY_PROMPT_VERSIONS = frozenset(
     {
         LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
@@ -85,14 +92,17 @@ LONGMEMEVAL_BOUNDARY_PROMPT_VERSIONS = frozenset(
         LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
         LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
         LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
+        LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
     }
 )
 LONGMEMEVAL_LEXICAL_EXCERPT_VERSION = "lexical_turn_v1"
 LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION = "role_aware_fact_v2"
+LONGMEMEVAL_ROLE_AWARE_EXCERPT_V3_VERSION = "role_aware_fact_v3"
 LONGMEMEVAL_EXCERPT_VERSIONS = frozenset(
     {
         LONGMEMEVAL_LEXICAL_EXCERPT_VERSION,
         LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
+        LONGMEMEVAL_ROLE_AWARE_EXCERPT_V3_VERSION,
     }
 )
 LONGMEMEVAL_RERANK_SYSTEM_PROMPT = (
@@ -184,6 +194,55 @@ entity, relation, value, temporal_anchor (string or null), supports_needs,
 evidence_spans, and confidence (high, medium, or low). evidence_spans may use
 only the shown X:Sxx labels. If there is no grounded fact, return an empty facts
 array.
+"""
+LONGMEMEVAL_V62_ATOMIC_FACT_SYSTEM_PROMPT = (
+    "You extract every query-relevant partial atomic fact from one anonymous "
+    "memory candidate. A candidate need not answer the whole question. Do not "
+    "rank candidates and do not answer the question. Return only one JSON object."
+)
+LONGMEMEVAL_V62_ATOMIC_FACT_USER_PROMPT = """\
+Extract every grounded atomic fact from anonymous candidate X that supports
+any part of the question's evidence plan. This call evaluates only X and never
+decides whether X replaces another candidate.
+
+Question date:
+{question_date}
+
+Question:
+{question}
+
+Answer operator:
+{operator}
+
+Evidence needs:
+{evidence_needs}
+
+Anonymous candidate:
+{candidate_context}
+
+Rules:
+1. Return every partial query-relevant fact directly supported by one or more
+   shown X:Sxx spans. X does not need to satisfy every qualifier or answer the
+   whole question by itself. For example, a museum visit is useful partial
+   evidence even when X does not establish who accompanied the user.
+2. Preserve named entities, quantities, status, event dates, and relative-time
+   expressions exactly enough for deterministic set-level reasoning.
+3. For count/list questions, emit one fact for each potential item, membership,
+   start, stop, or current-status statement. Do not collapse distinct items.
+4. For temporal/latest questions, retain each relevant event or dated state and
+   copy its date, relative time, or ordering cue into temporal_anchor.
+5. supports_needs must be a JSON array containing only N1 through N4 from the
+   plan above, even when it contains one item.
+6. candidate_relevant is false only when X contains no grounded evidence for
+   any part of any named need.
+7. Never output a session ID, candidate-rank label, replacement decision, or
+   answer to the question.
+
+Return these keys: candidate_relevant and facts. Each facts entry must contain
+entity, relation, value, temporal_anchor (string or null), supports_needs
+(array), evidence_spans (array), and confidence (high, medium, or low).
+evidence_spans may use only the shown X:Sxx labels. If there is no grounded
+partial fact, return an empty facts array.
 """
 LONGMEMEVAL_RERANK_USER_PROMPT = """\
 Select a joint set of memory sessions that would be sufficient to answer the
@@ -583,6 +642,7 @@ class LongMemEvalRerankerConfig(SchemaModel):
             LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
             LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
             LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+            LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
         }:
             if (
                 self.candidate_planner_version
@@ -611,14 +671,29 @@ class LongMemEvalRerankerConfig(SchemaModel):
                 )
             if self.candidate_excerpt_version != LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION:
                 raise ValueError("V5.5.2 requires the role-aware candidate excerpt")
-        if self.prompt_version == LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION:
+        if self.prompt_version in {
+            LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+            LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+        }:
             if not self.boundary_verification:
                 raise ValueError("VMP-v6 requires integrated coverage verification")
-            if self.boundary_prompt_version != LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION:
+            expected_boundary = (
+                LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION
+                if self.prompt_version
+                == LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION
+                else LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION
+            )
+            expected_excerpt = (
+                LONGMEMEVAL_ROLE_AWARE_EXCERPT_V3_VERSION
+                if self.prompt_version
+                == LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION
+                else LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION
+            )
+            if self.boundary_prompt_version != expected_boundary:
                 raise ValueError(
                     "VMP-v6 fact extraction and set coverage versions must be enabled together"
                 )
-            if self.candidate_excerpt_version != LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION:
+            if self.candidate_excerpt_version != expected_excerpt:
                 raise ValueError("VMP-v6 requires the role-aware candidate excerpt")
             if self.boundary_protected_top_n != self.protected_top_n:
                 raise ValueError("VMP-v6 selector and coverage protection must match")
@@ -762,7 +837,10 @@ class LongMemEvalEvidenceReranker:
                 question_date=question_date,
                 candidates=unique_candidates,
             )
-        if self.config.prompt_version == LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION:
+        if self.config.prompt_version in {
+            LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+            LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+        }:
             if len(unique_candidates) != self.config.candidate_count:
                 raise ValueError(
                     "VMP-v6 requires exactly 10 unique candidates before any LLM call"
@@ -1252,11 +1330,17 @@ class LongMemEvalEvidenceReranker:
                 config=self.config,
             )
             started_at = perf_counter()
+            atomic_system_prompt = (
+                LONGMEMEVAL_V62_ATOMIC_FACT_SYSTEM_PROMPT
+                if self.config.prompt_version
+                == LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION
+                else LONGMEMEVAL_V6_ATOMIC_FACT_SYSTEM_PROMPT
+            )
             response = self.client.chat(
                 [
                     ChatMessage(
                         role="system",
-                        content=LONGMEMEVAL_V6_ATOMIC_FACT_SYSTEM_PROMPT,
+                        content=atomic_system_prompt,
                     ),
                     ChatMessage(role="user", content=prompt),
                 ],
@@ -1389,7 +1473,14 @@ class LongMemEvalEvidenceReranker:
                 response.usage,
                 "prompt_tokens",
                 fallback=estimate_tokens(
-                    LONGMEMEVAL_V6_ATOMIC_FACT_SYSTEM_PROMPT + "\n" + prompt
+                    (
+                        LONGMEMEVAL_V62_ATOMIC_FACT_SYSTEM_PROMPT
+                        if self.config.prompt_version
+                        == LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION
+                        else LONGMEMEVAL_V6_ATOMIC_FACT_SYSTEM_PROMPT
+                    )
+                    + "\n"
+                    + prompt
                 ),
             )
             for prompt, response in zip(prompts, responses, strict=True)
@@ -1865,7 +1956,12 @@ def _build_v6_atomic_fact_prompt(
         max_turns=config.max_excerpt_turns,
         excerpt_version=config.candidate_excerpt_version,
     )
-    return LONGMEMEVAL_V6_ATOMIC_FACT_USER_PROMPT.format(
+    template = (
+        LONGMEMEVAL_V62_ATOMIC_FACT_USER_PROMPT
+        if config.prompt_version == LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION
+        else LONGMEMEVAL_V6_ATOMIC_FACT_USER_PROMPT
+    )
+    return template.format(
         question_date=question_date or "unknown",
         question=question,
         operator=plan.operator,
@@ -2677,6 +2773,13 @@ def candidate_excerpt(
             max_chars=max_chars,
             max_turns=max_turns,
         )
+    if excerpt_version == LONGMEMEVAL_ROLE_AWARE_EXCERPT_V3_VERSION:
+        return _role_aware_candidate_excerpt_v3(
+            question,
+            content,
+            max_chars=max_chars,
+            max_turns=max_turns,
+        )
     lines = [line.strip() for line in content.splitlines() if line.strip()]
     if not lines:
         return _balanced_excerpt(content, max_chars=max_chars)
@@ -2786,6 +2889,146 @@ def _fact_terms(value: str) -> set[str]:
                 break
         normalized.add(stem)
     return normalized
+
+
+_EXCERPT_QUERY_STOP_TERMS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "at",
+        "be",
+        "did",
+        "do",
+        "doe",
+        "for",
+        "from",
+        "have",
+        "how",
+        "i",
+        "in",
+        "is",
+        "it",
+        "many",
+        "me",
+        "my",
+        "of",
+        "on",
+        "that",
+        "the",
+        "to",
+        "was",
+        "what",
+        "when",
+        "which",
+        "with",
+        "current",
+        "currently",
+    }
+)
+_EXCERPT_SEMANTIC_TERM_GROUPS = (
+    frozenset(
+        {
+            "subscription",
+            "subscrib",
+            "magazine",
+            "issue",
+            "journal",
+            "periodical",
+            "digest",
+            "gett",
+        }
+    ),
+)
+
+
+def _role_aware_candidate_excerpt_v3(
+    question: str,
+    content: str,
+    *,
+    max_chars: int,
+    max_turns: int,
+) -> str:
+    """Select personal facts using meaningful terms and fixed label-free aliases."""
+
+    query_terms = _expanded_excerpt_terms(question)
+    pieces: list[tuple[int, str, str]] = []
+    for line_index, raw_line in enumerate(content.splitlines()):
+        line = raw_line.strip()
+        if not line:
+            continue
+        role_match = re.match(r"^(user|assistant|system)\s*:\s*(.*)$", line, re.I)
+        role = role_match.group(1).casefold() if role_match else "unknown"
+        body = role_match.group(2).strip() if role_match else line
+        sentences = [
+            value.strip()
+            for value in re.split(r"(?<=[.!?])\s+", body)
+            if value.strip()
+        ] or [body]
+        for sentence_index, sentence in enumerate(sentences):
+            rendered = f"{role}: {sentence}" if role != "unknown" else sentence
+            pieces.append((line_index * 1000 + sentence_index, role, rendered))
+    if not pieces:
+        return _balanced_excerpt(content, max_chars=max_chars)
+
+    scored: list[tuple[int, int, int, int, int, str]] = []
+    for _order, role, rendered in pieces:
+        piece_terms = _expanded_excerpt_terms(rendered)
+        overlap = len(query_terms.intersection(piece_terms))
+        user_fact_bonus = int(role == "user" and overlap > 0)
+        incidental_bonus = int(
+            role == "user"
+            and bool(re.search(r"\b(?:by the way|also|finished|bought|getting)\b", rendered, re.I))
+        )
+        temporal_bonus = int(
+            bool(
+                re.search(
+                    r"\b(?:yesterday|today|tomorrow|last|next|ago|"
+                    r"january|february|march|april|may|june|july|august|"
+                    r"september|october|november|december|\d+)\b",
+                    rendered,
+                    re.I,
+                )
+            )
+        )
+        scored.append(
+            (
+                overlap,
+                user_fact_bonus,
+                incidental_bonus,
+                temporal_bonus,
+                -len(piece_terms),
+                rendered,
+            )
+        )
+    matched_indices = [index for index, score in enumerate(scored) if score[0] > 0]
+    ranked_indices = sorted(
+        matched_indices or range(len(pieces)),
+        key=lambda index: (
+            -scored[index][0],
+            -scored[index][1],
+            -scored[index][2],
+            -scored[index][3],
+            -scored[index][4],
+            pieces[index][0],
+        ),
+    )
+    selected = ranked_indices[:max_turns]
+    excerpt = "\n".join(pieces[index][2] for index in sorted(selected))
+    return _balanced_excerpt(excerpt, max_chars=max_chars)
+
+
+def _expanded_excerpt_terms(value: str) -> set[str]:
+    observed = {
+        token
+        for token in _fact_terms(value)
+        if len(token) > 1 and token not in _EXCERPT_QUERY_STOP_TERMS
+    }
+    for group in _EXCERPT_SEMANTIC_TERM_GROUPS:
+        if observed.intersection(group):
+            observed.update(group)
+    return observed
 
 
 def candidate_evidence_spans(

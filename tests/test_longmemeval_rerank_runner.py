@@ -22,6 +22,7 @@ from vmp_memos.llm import (
 )
 from vmp_memos.longmemeval.rerank_runner import (
     LongMemEvalRerankRunConfig,
+    _load_records,
     run_longmemeval_rerank,
 )
 from vmp_memos.longmemeval.retrieval_runner import (
@@ -115,6 +116,22 @@ class EmptyAtomicFactClient:
             text=json.dumps({"candidate_relevant": False, "facts": []}),
             usage={"prompt_tokens": 90, "completion_tokens": 8},
         )
+
+
+def test_question_id_filter_selects_exact_smoke_cases(tmp_path) -> None:
+    path = tmp_path / "retrieval.jsonl"
+    first = _source_record().model_copy(update={"question_id": "q-first"})
+    target = _source_record().model_copy(update={"question_id": "q-target"})
+    path.write_text(
+        first.model_dump_json() + "\n" + target.model_dump_json() + "\n",
+        encoding="utf-8",
+    )
+
+    records = _load_records(path, question_ids=["q-target"])
+
+    assert [record.question_id for record in records] == ["q-target"]
+    with pytest.raises(ValueError, match="absent"):
+        _load_records(path, question_ids=["missing"])
 
 
 def test_rerank_runner_writes_replayable_records_and_resumes(tmp_path) -> None:

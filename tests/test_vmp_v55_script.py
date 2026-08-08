@@ -7,6 +7,7 @@ V551_SCRIPT_PATH = Path("scripts/run_vmp_v551_experiment.sh")
 V552_SCRIPT_PATH = Path("scripts/run_vmp_v552_experiment.sh")
 V6_SCRIPT_PATH = Path("scripts/run_vmp_v6_experiment.sh")
 V61_SCRIPT_PATH = Path("scripts/run_vmp_v61_experiment.sh")
+V62_SCRIPT_PATH = Path("scripts/run_vmp_v62_experiment.sh")
 
 
 def test_v55_reuses_frozen_dev_candidates_and_keeps_outcome_gates() -> None:
@@ -76,3 +77,17 @@ def test_v61_loads_frozen_dev_tuned_weights_into_a_new_run() -> None:
     assert "COVERAGE_TEMPORAL_WEIGHT" in script
     assert "lme_dev_vmp_v61_rerank_seed42" in script
     assert "run_vmp_v6_experiment.sh" in script
+    assert 'best.get("gate_feasible") is not True' in script
+
+
+def test_v62_uses_partial_fact_prompt_v3_excerpt_and_distinct_artifacts() -> None:
+    script = V62_SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert "vmp_v62_partial_atomic_fact_extractor_v2" in script
+    assert "vmp_v62_deterministic_set_coverage_v2" in script
+    assert "role_aware_fact_v3" in script
+    assert "lme_dev_vmp_v62_rerank_seed42" in script
+    assert "vmp_v62_seed42_dev_pass.json" in script
+    assert "run_vmp_v6_experiment.sh" in script
+    assert "af082822,1a8a66a6,0bc8ad92" in script
+    assert 'STAGE:-}" == "dev_smoke"' in script

@@ -57,6 +57,43 @@ def test_ungrounded_relevance_claim_cannot_influence_coverage() -> None:
     assert profile.extraction_failures == ["relevance_without_grounded_fact"]
 
 
+def test_profile_accepts_scalar_need_and_span_and_infers_date_anchor() -> None:
+    """Qwen may serialize one-item arrays as scalars; grounding must survive it."""
+
+    plan = build_question_evidence_plan(
+        "How many weeks ago did I attend the friends and family sale at Nordstrom?"
+    )
+    profile = build_candidate_evidence_profile(
+        {
+            "candidate_relevant": True,
+            "facts": [
+                {
+                    "entity": "Nordstrom friends and family sale",
+                    "relation": "event_date",
+                    "value": "2022/11/18",
+                    "temporal_anchor": None,
+                    "supports_needs": "N2",
+                    "evidence_spans": "X:S01",
+                    "confidence": "high",
+                }
+            ],
+        },
+        candidate_label="C09",
+        session_id="sale-session",
+        rank=9,
+        plan=plan,
+        allowed_span_ids={"X:S01"},
+        excerpt="user: Yesterday, I attended a friends and family sale at Nordstrom.",
+    )
+
+    assert profile.candidate_relevant is True
+    assert profile.extraction_failures == []
+    assert len(profile.facts) == 1
+    assert profile.facts[0].supports_needs == ["N2"]
+    assert profile.facts[0].evidence_spans == ["X:S01"]
+    assert profile.facts[0].temporal_anchor == "2022/11/18"
+
+
 def test_count_coverage_combines_two_distinct_challengers() -> None:
     plan = build_question_evidence_plan(
         "How many magazine subscriptions do I currently have?"

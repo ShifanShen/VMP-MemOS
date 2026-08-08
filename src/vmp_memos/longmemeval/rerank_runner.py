@@ -24,6 +24,8 @@ from vmp_memos.llm import (
     LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
     LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
     LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
@@ -73,6 +75,7 @@ class LongMemEvalRerankRunConfig(SchemaModel):
     output_dir: Path = Path("outputs/longmemeval")
     resume: bool = False
     limit: NonNegativeInt | None = None
+    question_ids: list[NonEmptyStr] = Field(default_factory=list)
     require_full_candidate_count: bool = False
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
@@ -180,6 +183,7 @@ def run_longmemeval_rerank(
             methods=methods,
             candidate_count=reranker.config.candidate_count,
             limit=config.limit,
+            question_ids=config.question_ids,
         )
     resolved_run_id = _safe_run_id(run_id)
     run_dir = config.output_dir.expanduser().resolve() / "runs" / resolved_run_id
@@ -213,6 +217,7 @@ def run_longmemeval_rerank(
             source_records = _load_records(
                 source_run / source_method / "retrieval.jsonl",
                 limit=config.limit,
+                question_ids=config.question_ids,
             )
             method_dir = run_dir / output_method
             output_path = method_dir / "retrieval.jsonl"
@@ -419,6 +424,7 @@ def summarize_rerank_method(
                 in {
                     LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
                     LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
+                    LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
                 }
                 else sum(not _boundary_bool(record, "call_made") for record in records)
                 if config.boundary_verification
@@ -792,6 +798,7 @@ def _prepare_manifest(
                 "retrieval_depth": reranker_signature["candidate_count"],
                 "reranker": reranker_signature,
                 "limit": signature["limit"],
+                "question_ids": signature["question_ids"],
             },
             "fairness": {
                 "shared_across_methods": True,
@@ -804,6 +811,7 @@ def _prepare_manifest(
                     not in {
                         LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
                         LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
+                        LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
                     }
                 ),
                 "integrated_pairwise_boundary_verification": (
@@ -819,6 +827,7 @@ def _prepare_manifest(
                         LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
                         LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
                         LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+                        LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
                     }
                 ),
                 "selector_evidence_span_binding": (
@@ -829,6 +838,7 @@ def _prepare_manifest(
                         LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
                         LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
                         LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+                        LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
                     }
                 ),
                 "boundary_evidence_span_binding": (
@@ -836,6 +846,7 @@ def _prepare_manifest(
                     in {
                         LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
                         LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
+                        LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
                     }
                 ),
                 "anonymous_pairwise_challenger_protocol": (
@@ -845,14 +856,27 @@ def _prepare_manifest(
                     == LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION
                 ),
                 "structured_atomic_fact_protocol": (
-                    reranker_signature.get("prompt_version")
-                    == LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION
-                    and reranker_signature.get("boundary_prompt_version")
-                    == LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION
+                    (
+                        reranker_signature.get("prompt_version"),
+                        reranker_signature.get("boundary_prompt_version"),
+                    )
+                    in {
+                        (
+                            LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+                            LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
+                        ),
+                        (
+                            LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+                            LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
+                        ),
+                    }
                 ),
                 "deterministic_set_coverage": (
                     reranker_signature.get("boundary_prompt_version")
-                    == LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION
+                    in {
+                        LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
+                        LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
+                    }
                 ),
                 "candidate_excerpt_version": reranker_signature.get(
                     "candidate_excerpt_version"
@@ -895,6 +919,7 @@ def _run_signature(
             ],
         ),
         "limit": config.limit,
+        "question_ids": cast(JsonValue, config.question_ids),
         "require_full_candidate_count": config.require_full_candidate_count,
         "reranker": cast(JsonValue, reranker_config.model_dump(mode="json")),
         "metadata": cast(JsonValue, config.metadata),
@@ -919,17 +944,33 @@ def _resolve_methods(source_run: Path, requested: list[str]) -> list[str]:
     return methods
 
 
-def _load_records(path: Path, *, limit: int | None = None) -> list[RetrievalSampleRecord]:
+def _load_records(
+    path: Path,
+    *,
+    limit: int | None = None,
+    question_ids: Sequence[str] = (),
+) -> list[RetrievalSampleRecord]:
     if not path.exists():
         raise FileNotFoundError(path)
+    requested = set(question_ids)
     records: list[RetrievalSampleRecord] = []
     with path.open("r", encoding="utf-8") as stream:
         for line in stream:
             if not line.strip():
                 continue
+            record = RetrievalSampleRecord.model_validate_json(line)
+            if requested and record.question_id not in requested:
+                continue
+            records.append(record)
             if limit is not None and len(records) >= limit:
                 break
-            records.append(RetrievalSampleRecord.model_validate_json(line))
+    if requested:
+        observed = {record.question_id for record in records}
+        missing = requested.difference(observed)
+        if missing:
+            raise ValueError(
+                f"Requested question IDs are absent from {path}: {sorted(missing)}"
+            )
     return records
 
 
@@ -939,12 +980,14 @@ def _validate_full_candidate_depth(
     methods: Sequence[str],
     candidate_count: int,
     limit: int | None,
+    question_ids: Sequence[str] = (),
 ) -> None:
     insufficient: list[str] = []
     for method in methods:
         records = _load_records(
             source_run / method / "retrieval.jsonl",
             limit=limit,
+            question_ids=question_ids,
         )
         for record in records:
             observed = len(

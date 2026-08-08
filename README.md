@@ -1,5 +1,72 @@
 # VMP-MemOS
 
+## VMP-v6.2 evidence-perception repair
+
+V6.2 fixes the failure mechanism observed in the completed V6/V6.1 Dev runs
+without changing the frozen candidate pool, local Qwen model, Top-5 policy, or
+quality thresholds. Qwen returned a scalar such as `"supports_needs":"N1"`
+for most one-item arrays, while V6 accepted arrays only. Offline reconstruction
+of the saved responses raises VMP from 86/94 to 87/94 with two recoveries and
+zero regressions, without any new model calls. This is still one success below
+the strict 88/94 gate, so V6.2 also adds a label-free role-aware V3 excerpt and
+requires extraction of useful partial evidence even when one candidate cannot
+satisfy every qualifier in the question.
+
+First run the three-question smoke stage with the existing local vLLM. It calls
+only `vmp_hierarchical` and makes 30 requests (3 questions x 10 candidates).
+It is diagnostic only and never creates a paper gate receipt:
+
+```bash
+cd /home/shenshifan/projects/VMP-MemOS
+git pull
+
+curl -s -H "Authorization: Bearer local-vllm-key" \
+  http://127.0.0.1:8000/v1/models
+
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=dev_smoke \
+uv run --no-sync bash scripts/run_vmp_v62_experiment.sh
+```
+
+The smoke artifacts are written to
+`outputs/longmemeval/runs/lme_dev_vmp_v62_smoke_seed42`. If the responses retain
+the Nordstrom date, the two publication facts, and the partial museum evidence,
+run the complete shared Dev comparison (2,000 requests):
+
+```bash
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=dev_rerank \
+uv run --no-sync bash scripts/run_vmp_v62_experiment.sh
+```
+
+Use `RERANK_RESUME=1` only for an interrupted run with the identical settings.
+The full run, append-only log, and possible gate receipt are respectively:
+
+- `outputs/longmemeval/runs/lme_dev_vmp_v62_rerank_seed42`
+- `outputs/longmemeval/logs/vmp_v62_dev_rerank.log`
+- `outputs/longmemeval/gates/vmp_v62_seed42_dev_pass.json`
+
+Parser changes can be evaluated on a completed V6-family run without vLLM or
+GPU by rebuilding profiles from the frozen raw responses:
+
+```bash
+uv run --no-sync python scripts/tune_v6_coverage.py \
+  --run outputs/longmemeval/runs/lme_dev_vmp_v6_rerank_seed42 \
+  --trials 512 \
+  --seed 2026 \
+  --reparse-raw-responses \
+  --output outputs/longmemeval/models/vmp_v6_reparsed_seed42.json
+```
+
+The V6.1 launcher now refuses to start another expensive validation run when
+the selected tuning artifact says `gate_feasible=false`.
+
 ## VMP-v6 atomic evidence coverage
 
 VMP-v6 replaces the unsuccessful V5.5.x direct replacement policy with a

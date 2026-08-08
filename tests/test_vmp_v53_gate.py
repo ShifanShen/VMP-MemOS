@@ -151,16 +151,34 @@ def test_v552_gate_audits_anonymous_pairwise_calls_and_excerpt_version(tmp_path)
     assert report["checks"]["selector_call_fallback_rate"] is True
 
 
-def test_v6_gate_audits_fact_calls_and_deterministic_coverage(tmp_path) -> None:
-    selector_version = "vmp_v6_anonymous_atomic_fact_extractor_v1"
-    boundary_version = "vmp_v6_deterministic_set_coverage_v1"
+@pytest.mark.parametrize(
+    ("selector_version", "boundary_version", "excerpt_version"),
+    [
+        (
+            "vmp_v6_anonymous_atomic_fact_extractor_v1",
+            "vmp_v6_deterministic_set_coverage_v1",
+            "role_aware_fact_v2",
+        ),
+        (
+            "vmp_v62_partial_atomic_fact_extractor_v2",
+            "vmp_v62_deterministic_set_coverage_v2",
+            "role_aware_fact_v3",
+        ),
+    ],
+)
+def test_v6_gate_audits_fact_calls_and_deterministic_coverage(
+    tmp_path,
+    selector_version: str,
+    boundary_version: str,
+    excerpt_version: str,
+) -> None:
     planner_version = "vmp_v55_dual_view_rrf_v1"
     candidate_run, rerank_run = _write_runs(
         tmp_path,
         selector_prompt_version=selector_version,
         boundary_prompt_version=boundary_version,
         candidate_planner_version=planner_version,
-        candidate_excerpt_version="role_aware_fact_v2",
+        candidate_excerpt_version=excerpt_version,
         candidate_count=10,
     )
     manifest_path = rerank_run / "manifest.json"
@@ -191,7 +209,7 @@ def test_v6_gate_audits_fact_calls_and_deterministic_coverage(tmp_path) -> None:
         expected_selector_prompt_version=selector_version,
         expected_boundary_prompt_version=boundary_version,
         expected_candidate_planner_version=planner_version,
-        expected_candidate_excerpt_version="role_aware_fact_v2",
+        expected_candidate_excerpt_version=excerpt_version,
         min_candidate_count=10,
     )
 

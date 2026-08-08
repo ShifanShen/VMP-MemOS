@@ -39,6 +39,7 @@ COVERAGE_DIVERSITY_WEIGHT="${COVERAGE_DIVERSITY_WEIGHT:-1.25}"
 COVERAGE_TEMPORAL_WEIGHT="${COVERAGE_TEMPORAL_WEIGHT:-1.25}"
 COVERAGE_RANK_WEIGHT="${COVERAGE_RANK_WEIGHT:-0.08}"
 RERANK_RESUME="${RERANK_RESUME:-0}"
+RERANK_QUESTION_IDS="${RERANK_QUESTION_IDS:-}"
 
 # The Dev pool is frozen: V5.5 changes only label-free planning and the shared
 # selector protocol, so it reuses the completed V5.3.2 candidate artifacts.
@@ -140,8 +141,12 @@ run_rerank() {
   local source_run="$1"
   local run_id="$2"
   local resume_args=()
+  local question_id_args=()
   if [[ "${RERANK_RESUME}" == "1" ]]; then
     resume_args=(--resume)
+  fi
+  if [[ -n "${RERANK_QUESTION_IDS}" ]]; then
+    question_id_args=(--question-ids "${RERANK_QUESTION_IDS}")
   fi
   python scripts/run_longmemeval_rerank.py \
     --source-run "${source_run}" \
@@ -174,6 +179,7 @@ run_rerank() {
     --coverage-diversity-weight "${COVERAGE_DIVERSITY_WEIGHT}" \
     --coverage-temporal-weight "${COVERAGE_TEMPORAL_WEIGHT}" \
     --coverage-rank-weight "${COVERAGE_RANK_WEIGHT}" \
+    "${question_id_args[@]}" \
     "${resume_args[@]}"
 }
 
@@ -202,6 +208,16 @@ check_dev_gate() {
 }
 
 case "${STAGE}" in
+  dev_smoke)
+    require_completed_run "${DEV_CANDIDATE_RUN}"
+    if [[ -z "${RERANK_QUESTION_IDS}" ]]; then
+      echo "STAGE=dev_smoke requires RERANK_QUESTION_IDS." >&2
+      exit 2
+    fi
+    log_stage "Smoke-checking ${PAPER_VERSION_NAME} on selected Dev questions only."
+    log_stage "This stage never writes a gate receipt and must not be used as a paper result."
+    run_rerank "${DEV_CANDIDATE_RUN}" "${DEV_RERANK_RUN_ID}"
+    ;;
   dev_rerank)
     require_completed_run "${DEV_CANDIDATE_RUN}"
     log_stage "Stage 1/3: running ${PAPER_VERSION_NAME} on the frozen V5.3.2 Dev candidate pool."
@@ -255,7 +271,7 @@ PY
       --output-dir "${TABLE_DIR}"
     ;;
   *)
-    echo "Unknown STAGE=${STAGE}. Expected dev_rerank, test_candidates, or test_rerank." >&2
+    echo "Unknown STAGE=${STAGE}. Expected dev_smoke, dev_rerank, test_candidates, or test_rerank." >&2
     exit 2
     ;;
 esac

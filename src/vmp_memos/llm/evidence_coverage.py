@@ -202,7 +202,7 @@ def build_candidate_evidence_profile(
         entity = _nonempty(value.get("entity"))
         relation = _nonempty(value.get("relation"))
         fact_value = _nonempty(value.get("value"))
-        raw_spans = _string_list(value.get("evidence_spans"))
+        raw_spans = _string_or_list(value.get("evidence_spans"))
         spans = extract_owned_span_ids(
             raw_spans,
             owner="X",
@@ -215,7 +215,7 @@ def build_candidate_evidence_profile(
             failures.append(f"F{index}:span_not_grounded")
             continue
         supports = _normalized_need_ids(
-            _string_list(value.get("supports_needs")),
+            _string_or_list(value.get("supports_needs")),
             known=known_needs,
         )
         if not supports:
@@ -228,6 +228,8 @@ def build_candidate_evidence_profile(
             else "medium"
         )
         temporal_anchor = _nonempty(value.get("temporal_anchor"))
+        if temporal_anchor is None:
+            temporal_anchor = _inferred_temporal_anchor(relation, fact_value)
         facts.append(
             AtomicEvidenceFact(
                 fact_id=f"{candidate_label}:F{index:02d}",
@@ -482,6 +484,38 @@ def _string_list(value: object) -> list[str]:
         for item in value
         if isinstance(item, str) and item.strip()
     ]
+
+
+def _string_or_list(value: object) -> list[str]:
+    """Tolerate the common one-item-array-as-string model serialization."""
+
+    single = _nonempty(value)
+    if single is not None:
+        return [single]
+    return _string_list(value)
+
+
+def _inferred_temporal_anchor(relation: str, value: str) -> str | None:
+    """Recover an explicit date value when the model omitted its duplicate field."""
+
+    relation_is_temporal = bool(
+        re.search(
+            r"(?:^|[_\s-])(?:date|time|when|temporal|occurred|happened)(?:$|[_\s-])",
+            relation,
+            flags=re.IGNORECASE,
+        )
+    )
+    value_is_temporal = bool(
+        re.search(
+            r"\b(?:yesterday|today|tomorrow|last|next|ago|"
+            r"january|february|march|april|may|june|july|august|"
+            r"september|october|november|december)\b|"
+            r"\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b",
+            value,
+            flags=re.IGNORECASE,
+        )
+    )
+    return value if relation_is_temporal and value_is_temporal else None
 
 
 def _ordered_unique(values: Iterable[str]) -> list[str]:
