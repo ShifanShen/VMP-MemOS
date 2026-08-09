@@ -7,7 +7,6 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
 
 from pydantic import JsonValue
 
@@ -81,6 +80,7 @@ _ACTIONABLE_KEYWORDS = (
     "workflow",
     "process",
     "fix",
+    "focus",
     "debug",
     "reuse",
 )
@@ -291,9 +291,11 @@ class PolicyFeatureBuilder:
         return _clamp01(0.5 ** (age_days / half_life))
 
     def _staleness(self, subject: MemoryCandidate | MemoryItem, *, recency: float) -> float:
-        if isinstance(subject, MemoryItem):
-            if subject.metadata.status in {MemoryStatus.ARCHIVED, MemoryStatus.EXPIRED}:
-                return 1.0
+        if isinstance(subject, MemoryItem) and subject.metadata.status in {
+            MemoryStatus.ARCHIVED,
+            MemoryStatus.EXPIRED,
+        }:
+            return 1.0
         keyword_staleness = (
             0.75 if _contains_any(_subject_content(subject), _STALE_KEYWORDS) else 0.0
         )

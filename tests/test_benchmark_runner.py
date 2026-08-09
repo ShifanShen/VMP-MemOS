@@ -8,9 +8,9 @@ from vmp_memos.benchmark import (
     BenchmarkRunner,
     FullContextBaseline,
     SummaryMemoryBaseline,
-    VMPRuleBaseline,
     VectorRAGImportanceBaseline,
     VectorRAGRecencyBaseline,
+    VMPRuleBaseline,
     aggregate_results,
     baseline_for_name,
     load_benchmark_samples,
@@ -80,6 +80,32 @@ def test_per_sample_metrics_cover_answer_evidence_and_operations() -> None:
     assert metrics["update_accuracy"] == 1.0
     assert metrics["conflict_resolution_accuracy"] == 1.0
     assert metrics["conflict_retrieval_rate"] == 0.0
+
+
+def test_conflict_metrics_still_reject_a_distinct_stale_memory() -> None:
+    sample = load_benchmark_samples(DATASET_PATH)[0]
+    sample = sample.model_copy(
+        update={
+            "metadata": {
+                **sample.metadata,
+                "stale_memory_ids": ["mem_old_career_direction"],
+            }
+        }
+    )
+    result = BenchmarkResult(
+        sample_id=sample.sample_id,
+        system_name="test",
+        answer="Current career direction: Agent and LLM application development.",
+        retrieved_memory_ids=["mem_career_direction", "mem_old_career_direction"],
+        operations=[OperationType.UPDATE, OperationType.RETRIEVE],
+        token_count=12,
+        latency_ms=3.0,
+    )
+
+    metrics = per_sample_metrics(sample, result)
+
+    assert metrics["conflict_resolution_accuracy"] == 0.0
+    assert metrics["conflict_retrieval_rate"] == 1.0
 
 
 def test_benchmark_runner_writes_jsonl_and_markdown_report(tmp_path) -> None:

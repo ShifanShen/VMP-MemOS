@@ -25,7 +25,7 @@ def per_sample_metrics(sample: BenchmarkSample, result: BenchmarkResult) -> dict
         op.value if isinstance(op, OperationType) else str(op)
         for op in result.operations
     ]
-    stale_ids = set(_string_list(sample.metadata.get("stale_memory_ids", [])))
+    stale_ids = _effective_stale_ids(sample)
 
     evidence_precision = (
         len(gold_ids & retrieved_ids) / len(retrieved_ids)
@@ -47,8 +47,16 @@ def per_sample_metrics(sample: BenchmarkSample, result: BenchmarkResult) -> dict
         if retrieved_ids
         else 0.0
     )
-    memory_count_before = float(sample.metadata.get("memory_count_before", 0.0) or 0.0)
-    memory_count_after = float(result.metadata.get("memory_count_after", memory_count_before))
+    raw_count_before = sample.metadata.get("memory_count_before", 0.0)
+    memory_count_before = (
+        float(raw_count_before) if isinstance(raw_count_before, int | float) else 0.0
+    )
+    raw_count_after = result.metadata.get("memory_count_after", memory_count_before)
+    memory_count_after = (
+        float(raw_count_after)
+        if isinstance(raw_count_after, int | float)
+        else memory_count_before
+    )
 
     return {
         "accuracy": _answer_accuracy(result.answer, sample.gold_answer),
@@ -141,7 +149,7 @@ def _conflict_resolution_score(
 ) -> float:
     if sample.metadata.get("task_type") not in {"conflict_resolution", "preference_update"}:
         return 1.0
-    stale_ids = set(_string_list(sample.metadata.get("stale_memory_ids", [])))
+    stale_ids = _effective_stale_ids(sample)
     updated_or_merged = "UPDATE" in actual_ops or "MERGE" in actual_ops
     stale_suppressed = not (stale_ids & retrieved_ids)
     return float(updated_or_merged and stale_suppressed)
@@ -150,8 +158,15 @@ def _conflict_resolution_score(
 def _conflict_retrieval_rate(sample: BenchmarkSample, retrieved_ids: set[str]) -> float:
     if sample.metadata.get("task_type") not in {"conflict_resolution", "preference_update"}:
         return 0.0
-    stale_ids = set(_string_list(sample.metadata.get("stale_memory_ids", [])))
+    stale_ids = _effective_stale_ids(sample)
     return float(bool(stale_ids & retrieved_ids))
+
+
+def _effective_stale_ids(sample: BenchmarkSample) -> set[str]:
+    """Exclude logical IDs whose updated version is also the gold evidence."""
+
+    stale_ids = set(_string_list(sample.metadata.get("stale_memory_ids", [])))
+    return stale_ids.difference(sample.gold_memory_ids)
 
 
 def _memory_growth(before: float, after: float) -> float:

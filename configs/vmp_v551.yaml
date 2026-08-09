@@ -1,0 +1,46 @@
+version: VMP-v5.5.1
+base_config: configs/vmp_v55.yaml
+pipeline: complete_five_challenger_scan
+
+frozen_components:
+  dev_source_run: outputs/longmemeval/runs/lme_dev_vmp_v532_candidates_seed42
+  candidate_planner_version: vmp_v55_dual_view_rrf_v1
+  candidate_count: 10
+  candidate_planner_rrf_k: 60
+  candidate_planner_hierarchical_weight: 0.8
+  boundary_prompt_version: vmp_v54_symbolic_span_boundary_v1
+  model: Qwen/Qwen2.5-7B-Instruct
+  output_top_k: 5
+
+selector_fix:
+  prompt_version: vmp_v551_complete_challenger_selector_v1
+  root_cause: V5.5 JSON example contained only C06 and C07
+  required_assessments:
+    - C06
+    - C07
+    - C08
+    - C09
+    - C10
+  incomplete_scan_policy: preserve_original_top5
+  max_tokens: 768
+  temperature: 0.0
+  top_p: 1.0
+
+dev_gate:
+  min_recall_all_at_5: 0.93
+  min_delta_vs_raw_v5: 0.025
+  min_delta_vs_shared_reranked_v43: 0.03
+  min_macro_delta_vs_raw_v5: 0.0
+  max_type_regression_vs_raw_v5: 0.03
+  max_parse_fallback_rate: 0.02
+  max_boundary_fallback_rate: 0.02
+  max_regressed_questions: 0
+  min_recovered_questions: 3
+  min_unique_candidate_count: 10
+  test_labels_used: false
+
+provenance:
+  invalidated_run: lme_dev_vmp_v55_rerank_seed42_fix1
+  invalidation_reason: selector_prompt_example_omitted_C08_C09_C10
+  observed_selector_parse_fallback_rate: 0.98
+  test_labels_used_for_fix: false

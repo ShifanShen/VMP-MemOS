@@ -1,0 +1,65 @@
+version: VMP-v5.5.2
+base_config: configs/vmp_v55.yaml
+pipeline: anonymous_pairwise_challenger_audit
+
+frozen_components:
+  dev_source_run: outputs/longmemeval/runs/lme_dev_vmp_v532_candidates_seed42
+  candidate_planner_version: vmp_v55_dual_view_rrf_v1
+  candidate_count: 10
+  candidate_planner_rrf_k: 60
+  candidate_planner_hierarchical_weight: 0.8
+  model: Qwen/Qwen2.5-7B-Instruct
+  output_top_k: 5
+  protected_top_n: 3
+  temperature: 0.0
+  top_p: 1.0
+
+evidence_excerpt:
+  version: role_aware_fact_v2
+  max_candidate_chars: 1200
+  max_excerpt_turns: 4
+  policy:
+    - prefer_concise_query_matching_user_facts
+    - preserve_dates_numbers_and_first_person_statements
+    - deterministic_and_shared_across_methods
+
+pairwise_selector:
+  prompt_version: vmp_v552_anonymous_pairwise_selector_v1
+  integrated_boundary_version: vmp_v552_integrated_pairwise_boundary_v1
+  calls_per_sample: 5
+  anonymous_challenger_label: X
+  evaluated_source_ranks:
+    - C06
+    - C07
+    - C08
+    - C09
+    - C10
+  selectable_boundary_slots:
+    - B1
+    - B2
+  deterministic_merge: earliest_candidate_rank_per_boundary_slot
+  malformed_call_policy: reject_only_that_challenger
+  max_tokens_per_call: 384
+
+dev_gate:
+  min_recall_all_at_5: 0.93
+  min_delta_vs_raw_v5: 0.025
+  min_delta_vs_shared_reranked_v43: 0.03
+  min_macro_delta_vs_raw_v5: 0.0
+  max_type_regression_vs_raw_v5: 0.03
+  max_parse_fallback_rate: 0.02
+  max_boundary_fallback_rate: 0.02
+  max_selector_call_fallback_rate: 0.02
+  max_regressed_questions: 0
+  min_recovered_questions: 3
+  min_unique_candidate_count: 10
+  test_labels_used: false
+
+provenance:
+  invalidated_run: lme_dev_vmp_v551_rerank_seed42
+  invalidation_reason: fixed_positive_C07_example_caused_position_bias
+  observed_v551_vmp_recovered_questions: 0
+  observed_v551_vmp_regressed_questions: 2
+  observed_v551_planner_recall_all_at_5: 0.9148936170212766
+  observed_v551_final_recall_all_at_5: 0.8829787234042553
+  test_labels_used_for_fix: false

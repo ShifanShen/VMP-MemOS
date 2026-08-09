@@ -1,0 +1,69 @@
+version: VMP-v6
+base_config: configs/vmp_v55.yaml
+pipeline: anonymous_atomic_fact_extraction_and_deterministic_set_coverage
+
+frozen_components:
+  dev_source_run: outputs/longmemeval/runs/lme_dev_vmp_v532_candidates_seed42
+  candidate_planner_version: vmp_v55_dual_view_rrf_v1
+  candidate_count: 10
+  model: Qwen/Qwen2.5-7B-Instruct
+  output_top_k: 5
+  protected_top_n: 3
+  temperature: 0.0
+  top_p: 1.0
+  gold_labels_visible: false
+  benchmark_answers_visible: false
+
+fact_extractor:
+  prompt_version: vmp_v6_anonymous_atomic_fact_extractor_v1
+  calls_per_sample: 10
+  anonymous_candidate_label: X
+  evidence_span_labels: X:Sxx
+  max_tokens_per_call: 384
+  malformed_call_policy: empty_profile_for_that_candidate
+  fields:
+    - entity
+    - relation
+    - value
+    - temporal_anchor
+    - supports_needs
+    - evidence_spans
+    - confidence
+
+set_coverage:
+  version: vmp_v6_deterministic_set_coverage_v1
+  enumerate_open_slot_combinations: true
+  open_slots: 2
+  min_gain: 0.25
+  need_weight: 3.0
+  relevance_weight: 1.5
+  entity_diversity_weight: 1.25
+  temporal_coverage_weight: 1.25
+  rank_prior_weight: 0.08
+  tie_break: earliest_candidate_rank
+
+dev_gate:
+  min_recall_all_at_5: 0.93
+  min_delta_vs_raw_v5: 0.025
+  min_delta_vs_shared_reranked_v43: 0.03
+  min_macro_delta_vs_raw_v5: 0.0
+  max_type_regression_vs_raw_v5: 0.03
+  max_parse_fallback_rate: 0.02
+  max_selector_call_fallback_rate: 0.02
+  max_regressed_questions: 0
+  min_recovered_questions: 3
+  min_unique_candidate_count: 10
+  test_labels_used: false
+
+ablations:
+  rank_only:
+    need_weight: 0.0
+    relevance_weight: 0.0
+    entity_diversity_weight: 0.0
+    temporal_coverage_weight: 0.0
+  without_diversity:
+    entity_diversity_weight: 0.0
+  without_temporal:
+    temporal_coverage_weight: 0.0
+  full:
+    use_values_above: true

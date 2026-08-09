@@ -1,0 +1,81 @@
+version: VMP-v5.5
+pipeline: dual_view_planning_and_challenger_scan
+
+candidate_generation:
+  dev_source_run: outputs/longmemeval/runs/lme_dev_vmp_v532_candidates_seed42
+  source_model: outputs/longmemeval/models/vmp_v5_seed42.json
+  comparison_model: outputs/longmemeval/models/vmp_v43_seed42.json
+  methods:
+    - vmp_tuned
+    - vmp_hierarchical
+  retrieval_pool_count: 40
+  llm_candidate_count: 10
+  output_top_k: 5
+  deduplicate_by: source_session_id
+  strict_unique_candidate_preflight: true
+
+candidate_planner:
+  version: vmp_v55_dual_view_rrf_v1
+  algorithm: weighted_reciprocal_rank_fusion
+  rrf_k: 60
+  hierarchical_weight: 0.8
+  secondary_view: session_semantic_score
+  vmp_behavior: fuse_hierarchical_and_session_semantic_ranks
+  baseline_behavior: identity_when_secondary_view_is_absent
+  question_type_visible: false
+  gold_labels_visible: false
+  test_labels_used: false
+
+selector:
+  provider: vllm
+  model: Qwen/Qwen2.5-7B-Instruct
+  prompt_version: vmp_v55_challenger_span_selector_v1
+  original_labels: C01..C05
+  challenger_labels: C06..C10
+  require_assessment_for_every_challenger: true
+  incomplete_scan_policy: preserve_original_top5
+  evidence_span_labels: Cxx:Sxx
+  expose_session_ids_to_llm: false
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 768
+  protected_top_n: 3
+  ranked_output_count: 10
+  max_candidate_chars: 1200
+  max_excerpt_turns: 4
+
+boundary_verifier:
+  prompt_version: vmp_v54_symbolic_span_boundary_v1
+  protected_top_n: 3
+  max_promotions: 2
+  verify_span_owner_locally: true
+  expose_session_ids_to_llm: false
+  min_confidence: high
+  max_tokens: 512
+  failure_policy: preserve_original_top5
+
+dev_gate:
+  min_recall_all_at_5: 0.93
+  min_delta_vs_raw_v5: 0.025
+  min_delta_vs_shared_reranked_v43: 0.03
+  min_macro_delta_vs_raw_v5: 0.0
+  max_type_regression_vs_raw_v5: 0.03
+  max_parse_fallback_rate: 0.02
+  max_boundary_fallback_rate: 0.02
+  max_regressed_questions: 0
+  min_recovered_questions: 3
+  min_unique_candidate_count: 10
+  require_vmp_planner_applied_to_every_question: true
+  require_baseline_identity_fallback_on_every_question: true
+  test_labels_used: false
+
+fairness:
+  same_candidate_planner_code: true
+  same_llm_candidate_count: true
+  same_selector_prompt: true
+  same_boundary_prompt: true
+  same_generation: true
+  same_reader: true
+  framework_name_visible_to_llm: false
+  gold_labels_visible_to_llm: false
+  test_labels_used_for_selection: false
