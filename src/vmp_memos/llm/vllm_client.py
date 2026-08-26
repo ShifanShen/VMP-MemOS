@@ -34,7 +34,7 @@ class VLLMClientConfig(SchemaModel):
     generation: LLMGenerationConfig = Field(default_factory=LLMGenerationConfig)
 
     @classmethod
-    def from_env(cls) -> "VLLMClientConfig":
+    def from_env(cls) -> VLLMClientConfig:
         """Build config from environment variables used by the server scripts."""
 
         default_base_url = str(cls.model_fields["base_url"].default)
@@ -100,7 +100,7 @@ class VLLMClient:
             generation=generation,
         )
 
-    def list_models(self) -> dict[str, Any]:
+    def list_models(self, *, timeout_seconds: float | None = None) -> dict[str, Any]:
         """Call ``/v1/models`` to verify server connectivity."""
 
         request = urllib.request.Request(
@@ -110,9 +110,45 @@ class VLLMClient:
         )
         with urllib.request.urlopen(
             request,
-            timeout=float(self.config.timeout_seconds),
+            timeout=(
+                float(self.config.timeout_seconds)
+                if timeout_seconds is None
+                else timeout_seconds
+            ),
         ) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    def ensure_ready(self, *, timeout_seconds: float = 10.0) -> list[str]:
+        """Fail fast unless the endpoint serves the configured model ID."""
+
+        models_url = self._models_url()
+        try:
+            payload = self.list_models(timeout_seconds=timeout_seconds)
+        except urllib.error.HTTPError as exc:
+            detail = _http_error_message(exc)
+            raise RuntimeError(
+                f"vLLM preflight failed at {models_url}: {detail}"
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError(
+                "vLLM preflight could not reach "
+                f"{models_url}: {exc}. Start scripts/serve_vllm.sh in a separate "
+                "terminal and wait until /v1/models responds."
+            ) from exc
+
+        model_ids = _served_model_ids(payload)
+        if not model_ids:
+            raise RuntimeError(
+                f"vLLM preflight received no model IDs from {models_url}."
+            )
+        if self.config.model not in model_ids:
+            served = ", ".join(model_ids)
+            raise RuntimeError(
+                "vLLM is reachable but does not expose the configured model "
+                f"{self.config.model!r}. Served model IDs: {served}. Set "
+                "VMP_LLM_MODEL to one of those exact IDs."
+            )
+        return model_ids
 
     def _post_json(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
@@ -212,6 +248,17 @@ def _normalize_base_url(base_url: str) -> str:
     return normalized if normalized.endswith("/v1") else f"{normalized}/v1"
 
 
+def _served_model_ids(payload: dict[str, Any]) -> list[str]:
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return []
+    return [
+        str(item["id"])
+        for item in data
+        if isinstance(item, dict) and item.get("id")
+    ]
+
+
 def _http_error_message(exc: urllib.error.HTTPError) -> str:
     try:
         body = exc.read().decode("utf-8")
@@ -223,7 +270,7 @@ def _http_error_message(exc: urllib.error.HTTPError) -> str:
 def _load_yaml_mapping(path: Path) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8")
     try:
-        import yaml
+        import yaml  # type: ignore[import-untyped]
     except ImportError:
         return _parse_simple_yaml_mapping(text)
     loaded = yaml.safe_load(text) or {}

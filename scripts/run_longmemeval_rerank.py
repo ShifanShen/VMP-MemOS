@@ -231,6 +231,17 @@ def main() -> int:
             generation=generation,
         )
     )
+    try:
+        served_model_ids = live_client.ensure_ready()
+    except RuntimeError as exc:
+        LOGGER.error("%s", exc)
+        return 2
+    LOGGER.info(
+        "vLLM preflight passed: base_url=%s configured_model=%s served_models=%s",
+        args.base_url,
+        args.model,
+        ",".join(served_model_ids),
+    )
     reranker_config = LongMemEvalRerankerConfig(
         prompt_version=args.prompt_version,
         candidate_planner_version=args.candidate_planner_version,

@@ -2,9 +2,12 @@
 
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError
+
+import pytest
 
 from vmp_memos.extraction import LLMMemoryExtractor, LLMMemoryExtractorConfig
-from vmp_memos.llm import LLMResponse, VLLMClientConfig, load_vllm_config
+from vmp_memos.llm import LLMResponse, VLLMClient, VLLMClientConfig, load_vllm_config
 from vmp_memos.schemas import Event, MemoryType
 
 
@@ -15,6 +18,59 @@ def test_load_vllm_config_ignores_provider_field() -> None:
     assert config.base_url.endswith("/v1")
     assert config.model
     assert config.generation.max_tokens == 512
+
+
+def test_vllm_readiness_reports_connection_failure_without_chat_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = VLLMClient(
+        VLLMClientConfig(
+            base_url="http://127.0.0.1:8000/v1",
+            model="Qwen/Qwen2.5-7B-Instruct",
+        )
+    )
+    monkeypatch.setattr(
+        client,
+        "list_models",
+        lambda **_: (_ for _ in ()).throw(URLError("connection refused")),
+    )
+
+    with pytest.raises(RuntimeError, match="vLLM preflight could not reach"):
+        client.ensure_ready()
+
+
+def test_vllm_readiness_rejects_a_model_name_the_server_does_not_expose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = VLLMClient(
+        VLLMClientConfig(
+            model="/models/Qwen2.5-7B-Instruct",
+        )
+    )
+    monkeypatch.setattr(
+        client,
+        "list_models",
+        lambda **_: {"data": [{"id": "Qwen/Qwen2.5-7B-Instruct"}]},
+    )
+
+    with pytest.raises(RuntimeError, match="does not expose the configured model"):
+        client.ensure_ready()
+
+
+def test_vllm_readiness_returns_the_served_model_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = VLLMClient(VLLMClientConfig(model="Qwen/Qwen2.5-7B-Instruct"))
+    monkeypatch.setattr(
+        client,
+        "list_models",
+        lambda **_: {
+            "object": "list",
+            "data": [{"id": "Qwen/Qwen2.5-7B-Instruct", "object": "model"}],
+        },
+    )
+
+    assert client.ensure_ready() == ["Qwen/Qwen2.5-7B-Instruct"]
 
 
 def test_llm_memory_extractor_parses_json_without_network() -> None:
