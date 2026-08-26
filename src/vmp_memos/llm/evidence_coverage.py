@@ -13,7 +13,6 @@ from pydantic import Field, PositiveInt
 from vmp_memos.frameworks.text import terms
 from vmp_memos.schemas.base import (
     NonEmptyStr,
-    NonNegativeFloat,
     NonNegativeInt,
     SchemaModel,
     Score,
@@ -106,8 +105,8 @@ class EvidenceCoverageSelection(SchemaModel):
     ranked_candidate_labels: list[NonEmptyStr]
     promoted_candidate_labels: list[NonEmptyStr] = Field(default_factory=list)
     displaced_candidate_labels: list[NonEmptyStr] = Field(default_factory=list)
-    original_score: NonNegativeFloat
-    selected_score: NonNegativeFloat
+    original_score: float
+    selected_score: float
     gain: float
     original_components: dict[str, float] = Field(default_factory=dict)
     selected_components: dict[str, float] = Field(default_factory=dict)
@@ -123,9 +122,7 @@ def build_question_evidence_plan(question: str) -> QuestionEvidencePlan:
         or re.search(r"\b(?:when|before|after|ago|since|last visited)\b", normalized)
     )
     count = bool(re.search(r"\b(?:how many|number of|count of)\b", normalized))
-    current = bool(
-        re.search(r"\b(?:current|currently|latest|most recent|now|still)\b", normalized)
-    )
+    current = bool(re.search(r"\b(?:current|currently|latest|most recent|now|still)\b", normalized))
     if temporal:
         operator: EvidenceOperator = "temporal"
         needs = ["N1: query-relevant event or state", "N2: event date or time anchor"]
@@ -201,7 +198,7 @@ def build_candidate_evidence_profile(
             continue
         entity = _nonempty(value.get("entity"))
         relation = _nonempty(value.get("relation"))
-        fact_value = _nonempty(value.get("value"))
+        fact_value = _normalized_fact_value(value.get("value"))
         raw_spans = _string_or_list(value.get("evidence_spans"))
         spans = extract_owned_span_ids(
             raw_spans,
@@ -211,8 +208,14 @@ def build_candidate_evidence_profile(
         if entity is None or relation is None or fact_value is None:
             failures.append(f"F{index}:missing_fact_field")
             continue
+        if _is_evidence_span_label(entity):
+            failures.append(f"F{index}:entity_is_span_label")
+            continue
         if not spans:
             failures.append(f"F{index}:span_not_grounded")
+            continue
+        if not _has_substantive_evidence(excerpt):
+            failures.append(f"F{index}:non_substantive_evidence")
             continue
         supports = _normalized_need_ids(
             _string_or_list(value.get("supports_needs")),
@@ -368,12 +371,7 @@ def _coverage_score(
 ) -> tuple[float, dict[str, float]]:
     facts = [fact for profile in profiles for fact in profile.facts]
     known_needs = {f"N{index}" for index in range(1, len(plan.evidence_needs) + 1)}
-    covered_needs = {
-        need
-        for fact in facts
-        for need in fact.supports_needs
-        if need in known_needs
-    }
+    covered_needs = {need for fact in facts for need in fact.supports_needs if need in known_needs}
     need_coverage = len(covered_needs) / len(known_needs) if known_needs else 0.0
     confidence_values = {"high": 1.0, "medium": 0.65, "low": 0.2}
     per_candidate_relevance: list[float] = []
@@ -421,10 +419,7 @@ def _coverage_score(
     ]
     duplicate_count = len(signatures) - len(set(signatures))
     redundancy_penalty = 0.25 * duplicate_count
-    rank_prior = sum(
-        (candidate_count - profile.rank + 1) / candidate_count
-        for profile in profiles
-    )
+    rank_prior = sum((candidate_count - profile.rank + 1) / candidate_count for profile in profiles)
     components = {
         "need_coverage": need_weight * need_coverage,
         "relevance": relevance_weight * relevance,
@@ -476,14 +471,53 @@ def _nonempty(value: object) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+def _normalized_fact_value(value: object) -> str | None:
+    """Canonicalize scalar and list-valued facts emitted by local models."""
+
+    single = _nonempty(value)
+    if single is not None:
+        return single
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        return str(value)
+    if not isinstance(value, list):
+        return None
+    items: list[str] = []
+    for item in value:
+        normalized = _normalized_fact_value(item)
+        if normalized is not None and normalized not in items:
+            items.append(normalized)
+    return "; ".join(items) if items else None
+
+
+def _has_substantive_evidence(excerpt: str) -> bool:
+    """Reject bare enumeration markers while retaining text, dates, and amounts."""
+
+    if re.search(r"[A-Za-z]{2,}|[^\W\d_]{2,}", excerpt, flags=re.UNICODE):
+        return True
+    return bool(
+        re.search(
+            r"\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b|[$€£¥]\s*\d+(?:\.\d+)?",
+            excerpt,
+        )
+    )
+
+
+def _is_evidence_span_label(value: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"\[?(?:X|C\d+|B\d+|P\d+):S0*\d+\]?",
+            value.strip(),
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 def _string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
-    return [
-        item.strip()
-        for item in value
-        if isinstance(item, str) and item.strip()
-    ]
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
 
 def _string_or_list(value: object) -> list[str]:

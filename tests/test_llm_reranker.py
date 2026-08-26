@@ -10,6 +10,7 @@ from vmp_memos.frameworks import RetrievedMemory
 from vmp_memos.llm import (
     LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_ROLE_AWARE_EXCERPT_V3_VERSION,
+    LONGMEMEVAL_ROLE_AWARE_EXCERPT_V4_VERSION,
     LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
     LONGMEMEVAL_SYMBOLIC_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
@@ -17,6 +18,8 @@ from vmp_memos.llm import (
     LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION,
     LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
+    LONGMEMEVAL_V63_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V63_SET_COVERAGE_BOUNDARY_VERSION,
     LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
@@ -748,12 +751,8 @@ def test_v55_challenger_scan_promotes_grounded_late_candidate() -> None:
     reranker = LongMemEvalEvidenceReranker(
         client,
         LongMemEvalRerankerConfig(
-            candidate_planner_version=(
-                LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
-            ),
-            prompt_version=(
-                LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION
-            ),
+            candidate_planner_version=(LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION),
+            prompt_version=(LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION),
             candidate_count=10,
             protected_top_n=3,
             ranked_output_count=10,
@@ -799,12 +798,8 @@ def test_v55_challenger_scan_fails_closed_when_assessment_is_missing() -> None:
     reranker = LongMemEvalEvidenceReranker(
         client,
         LongMemEvalRerankerConfig(
-            candidate_planner_version=(
-                LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
-            ),
-            prompt_version=(
-                LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION
-            ),
+            candidate_planner_version=(LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION),
+            prompt_version=(LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION),
             candidate_count=10,
             protected_top_n=3,
             ranked_output_count=10,
@@ -869,6 +864,29 @@ def test_role_aware_v3_excerpt_recovers_publication_subscription_facts() -> None
     assert "Architectural Digest" in excerpt
 
 
+def test_role_aware_v4_excerpt_keeps_kinship_fact_and_drops_list_markers() -> None:
+    content = (
+        "1.\n"
+        "2.\n"
+        "3.\n"
+        "user: I come from a family with 3 sisters.\n"
+        "assistant: Here are unrelated professional networking suggestions."
+    )
+
+    excerpt = candidate_excerpt(
+        "What is the total number of siblings I have?",
+        content,
+        max_chars=500,
+        max_turns=4,
+        excerpt_version=LONGMEMEVAL_ROLE_AWARE_EXCERPT_V4_VERSION,
+    )
+
+    assert "family with 3 sisters" in excerpt
+    assert "1." not in excerpt
+    assert "2." not in excerpt
+    assert "3." not in excerpt
+
+
 def test_v552_pairwise_selector_combines_two_grounded_challengers() -> None:
     reject = """
     {
@@ -910,9 +928,7 @@ def test_v552_pairwise_selector_combines_two_grounded_challengers() -> None:
     reranker = LongMemEvalEvidenceReranker(
         client,
         LongMemEvalRerankerConfig(
-            candidate_planner_version=(
-                LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
-            ),
+            candidate_planner_version=(LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION),
             prompt_version=LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
             candidate_excerpt_version=LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
             candidate_count=10,
@@ -941,9 +957,7 @@ def test_v552_pairwise_selector_combines_two_grounded_challengers() -> None:
         "P1",
         "P2",
     ]
-    assert all(
-        item["span_valid"] is True for item in decision.boundary.slot_assessments
-    )
+    assert all(item["span_valid"] is True for item in decision.boundary.slot_assessments)
     for messages in client.all_messages:
         prompt = messages[1].content
         assert "[X |" in prompt
@@ -969,9 +983,7 @@ def test_v552_pairwise_selector_rejects_invalid_owned_spans_per_candidate() -> N
     reranker = LongMemEvalEvidenceReranker(
         client,
         LongMemEvalRerankerConfig(
-            candidate_planner_version=(
-                LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
-            ),
+            candidate_planner_version=(LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION),
             prompt_version=LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
             candidate_excerpt_version=LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
             candidate_count=10,
@@ -1025,16 +1037,12 @@ def test_v6_atomic_fact_coverage_combines_two_challengers() -> None:
       }]
     }
     """
-    responses = [empty] * 6 + [national_geographic] + [empty] * 2 + [
-        architectural_digest
-    ]
+    responses = [empty] * 6 + [national_geographic] + [empty] * 2 + [architectural_digest]
     client = FakeRerankClient(responses)
     reranker = LongMemEvalEvidenceReranker(
         client,
         LongMemEvalRerankerConfig(
-            candidate_planner_version=(
-                LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
-            ),
+            candidate_planner_version=(LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION),
             prompt_version=LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
             candidate_excerpt_version=LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
             candidate_count=10,
@@ -1092,9 +1100,7 @@ def test_v62_extracts_partial_fact_with_scalar_compatibility() -> None:
     reranker = LongMemEvalEvidenceReranker(
         client,
         LongMemEvalRerankerConfig(
-            candidate_planner_version=(
-                LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
-            ),
+            candidate_planner_version=(LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION),
             prompt_version=LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
             candidate_excerpt_version=LONGMEMEVAL_ROLE_AWARE_EXCERPT_V3_VERSION,
             candidate_count=10,
@@ -1120,6 +1126,54 @@ def test_v62_extracts_partial_fact_with_scalar_compatibility() -> None:
         "does not need to satisfy every qualifier" in messages[1].content
         for messages in client.all_messages
     )
+
+
+def test_v63_uses_grounded_protocol_and_normalizes_list_values() -> None:
+    empty = '{"candidate_relevant":false,"facts":[]}'
+    grounded_siblings = """
+    {
+      "candidate_relevant": true,
+      "facts": [{
+        "entity": "the user's siblings",
+        "relation": "includes",
+        "value": ["sister 1", "sister 2", "sister 3"],
+        "temporal_anchor": null,
+        "supports_needs": ["N1"],
+        "evidence_spans": ["X:S01"],
+        "confidence": "high"
+      }]
+    }
+    """
+    client = FakeRerankClient([empty] * 7 + [grounded_siblings] + [empty] * 2)
+    reranker = LongMemEvalEvidenceReranker(
+        client,
+        LongMemEvalRerankerConfig(
+            candidate_planner_version=(LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION),
+            prompt_version=LONGMEMEVAL_V63_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+            candidate_excerpt_version=LONGMEMEVAL_ROLE_AWARE_EXCERPT_V4_VERSION,
+            candidate_count=10,
+            protected_top_n=3,
+            ranked_output_count=10,
+            boundary_verification=True,
+            boundary_prompt_version=LONGMEMEVAL_V63_SET_COVERAGE_BOUNDARY_VERSION,
+            coverage_min_gain=0.1,
+        ),
+    )
+
+    decision = reranker.rerank(
+        question="What is the total number of siblings I have?",
+        question_date="2024-02-01",
+        candidates=_memories(10),
+    )
+
+    assert client.calls == 10
+    assert "s8" in decision.selected_session_ids
+    profile = decision.selector_evidence_selections[7]
+    facts = profile["facts"]
+    assert isinstance(facts, list)
+    assert facts[0]["value"] == "sister 1; sister 2; sister 3"
+    assert all("coordinates, never" in messages[0].content for messages in client.all_messages)
+    assert all("bare list numbers" in messages[1].content for messages in client.all_messages)
 
 
 def json_response(*, selected: list[str], ranked: list[str]) -> str:

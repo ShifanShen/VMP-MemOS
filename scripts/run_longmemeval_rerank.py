@@ -25,6 +25,8 @@ from vmp_memos.llm import (
     LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
+    LONGMEMEVAL_V63_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V63_SET_COVERAGE_BOUNDARY_VERSION,
     LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
@@ -52,10 +54,13 @@ def _paper_version(
     boundary_verification: bool,
 ) -> str:
     if (
-        selector_prompt_version
-        == LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION
-        and boundary_prompt_version
-        == LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION
+        selector_prompt_version == LONGMEMEVAL_V63_ATOMIC_FACT_SELECTOR_PROMPT_VERSION
+        and boundary_prompt_version == LONGMEMEVAL_V63_SET_COVERAGE_BOUNDARY_VERSION
+    ):
+        return "VMP-v6.3"
+    if (
+        selector_prompt_version == LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION
+        and boundary_prompt_version == LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION
     ):
         return "VMP-v6.2"
     if (
@@ -69,22 +74,18 @@ def _paper_version(
     ):
         return "VMP-v5.5.2"
     if (
-        selector_prompt_version
-        == LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION
-        and boundary_prompt_version
-        == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
+        selector_prompt_version == LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION
+        and boundary_prompt_version == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
     ):
         return "VMP-v5.5.1"
     if (
         selector_prompt_version == LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION
-        and boundary_prompt_version
-        == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
+        and boundary_prompt_version == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
     ):
         return "VMP-v5.5"
     if (
         selector_prompt_version == LONGMEMEVAL_SYMBOLIC_SPAN_SELECTOR_PROMPT_VERSION
-        and boundary_prompt_version
-        == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
+        and boundary_prompt_version == LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION
     ):
         return "VMP-v5.4"
     if boundary_prompt_version == LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION:
@@ -190,9 +191,7 @@ def main() -> int:
 
     methods = [method.strip() for method in args.methods.split(",") if method.strip()]
     question_ids = [
-        question_id.strip()
-        for question_id in args.question_ids.split(",")
-        if question_id.strip()
+        question_id.strip() for question_id in args.question_ids.split(",") if question_id.strip()
     ]
     if not methods:
         parser.error("--methods must contain at least one method")
@@ -200,15 +199,12 @@ def main() -> int:
         parser.error("--question-ids does not support selector replay")
     if args.selector_replay_run is not None and not args.boundary_verification:
         parser.error("--selector-replay-run requires --boundary-verification")
-    if (
-        args.selector_replay_run is not None
-        and args.prompt_version
-        in {
-            LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
-            LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
-            LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
-        }
-    ):
+    if args.selector_replay_run is not None and args.prompt_version in {
+        LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
+        LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+        LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+        LONGMEMEVAL_V63_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+    }:
         parser.error("integrated VMP-v5.5.2/VMP-v6 protocols do not support selector replay")
     generation = LLMGenerationConfig(
         max_tokens=args.max_tokens,
@@ -246,9 +242,7 @@ def main() -> int:
         prompt_version=args.prompt_version,
         candidate_planner_version=args.candidate_planner_version,
         candidate_planner_rrf_k=args.candidate_planner_rrf_k,
-        candidate_planner_hierarchical_weight=(
-            args.candidate_planner_hierarchical_weight
-        ),
+        candidate_planner_hierarchical_weight=(args.candidate_planner_hierarchical_weight),
         candidate_count=args.candidate_count,
         output_top_k=args.output_top_k,
         protected_top_n=args.protected_top_n,

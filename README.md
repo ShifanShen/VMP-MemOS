@@ -126,7 +126,7 @@ uv run --no-sync python scripts/download_longmemeval.py \
   --files longmemeval_s_cleaned.json
 ```
 
-当前研究入口是 VMP-v6.2。建议先执行只处理三个诊断样本的 smoke：
+当前研究入口是 VMP-v6.3。它在不改变 V6.2 候选池、Top-k 策略和覆盖权重的前提下，增加数组事实规范化、证据坐标防污染和纯列表标记过滤。建议先执行只处理三个诊断样本的 smoke：
 
 ```bash
 HF_HUB_OFFLINE=1 \
@@ -134,7 +134,7 @@ TRANSFORMERS_OFFLINE=1 \
 VMP_LLM_API_KEY=local-vllm-key \
 VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
 STAGE=dev_smoke \
-uv run --no-sync bash scripts/run_vmp_v62_experiment.sh
+uv run --no-sync bash scripts/run_vmp_v63_experiment.sh
 ```
 
 再执行完整 Dev 实验：
@@ -145,7 +145,7 @@ TRANSFORMERS_OFFLINE=1 \
 VMP_LLM_API_KEY=local-vllm-key \
 VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
 STAGE=dev_rerank \
-uv run --no-sync bash scripts/run_vmp_v62_experiment.sh
+uv run --no-sync bash scripts/run_vmp_v63_experiment.sh
 ```
 
 只有 Dev gate 通过后，才应执行冻结的 Test candidate、rerank 和 QA 流程。中断后可设置 `RERANK_RESUME=1` 继续同一配置的 run。
@@ -165,14 +165,14 @@ uv run --no-sync bash scripts/run_vmp_v62_experiment.sh
 
 - 基础配置：[`configs/default.yaml`](configs/default.yaml)
 - LongMemEval：[`configs/longmemeval.yaml`](configs/longmemeval.yaml)
-- VMP-v6.2：[`configs/vmp_v62.yaml`](configs/vmp_v62.yaml)
+- VMP-v6.3：[`configs/vmp_v63.yaml`](configs/vmp_v63.yaml)
 - 环境变量模板：[`.env.example`](.env.example)
 
 默认情况下，数据缓存、模型、运行日志和 `outputs/longmemeval/` 不会提交到 Git。
 
 ## 研究状态
 
-当前仓库已经具备完整实验基础设施和 VMP-v6.2 Dev 验证入口。公开主结果、近期学术框架对比以及第二 benchmark 仍需在冻结配置上完成，因此本仓库暂不宣称 SOTA。
+当前仓库已经具备完整实验基础设施和 VMP-v6.3 Dev 验证入口。V6.2 已在 Dev 上达到 `Recall-All@5 = 0.9362`，但因出现一个回退问题未通过零回退 gate；V6.3 的修复已通过离线重放，正式结果仍以新的本地 vLLM 运行及严格 gate 为准。公开主结果、近期学术框架对比以及第二 benchmark 仍需在冻结配置上完成，因此本仓库暂不宣称 SOTA。
 
 ## License
 

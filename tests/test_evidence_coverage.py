@@ -11,12 +11,8 @@ from vmp_memos.llm.evidence_coverage import (
 
 
 def test_question_plan_distinguishes_count_from_temporal_duration() -> None:
-    count = build_question_evidence_plan(
-        "How many magazine subscriptions do I currently have?"
-    )
-    duration = build_question_evidence_plan(
-        "How many weeks ago did I attend the Nordstrom sale?"
-    )
+    count = build_question_evidence_plan("How many magazine subscriptions do I currently have?")
+    duration = build_question_evidence_plan("How many weeks ago did I attend the Nordstrom sale?")
 
     assert count.operator == "count"
     assert count.entity_diversity_required is True
@@ -94,10 +90,127 @@ def test_profile_accepts_scalar_need_and_span_and_infers_date_anchor() -> None:
     assert profile.facts[0].temporal_anchor == "2022/11/18"
 
 
-def test_count_coverage_combines_two_distinct_challengers() -> None:
-    plan = build_question_evidence_plan(
-        "How many magazine subscriptions do I currently have?"
+def test_profile_accepts_a_list_valued_count_fact() -> None:
+    """Qwen may serialize a multi-item fact value as a JSON array."""
+
+    plan = build_question_evidence_plan("What is the total number of siblings I have?")
+    profile = build_candidate_evidence_profile(
+        {
+            "candidate_relevant": True,
+            "facts": [
+                {
+                    "entity": "I",
+                    "relation": "has_siblings",
+                    "value": ["1", "2", "3"],
+                    "supports_needs": ["N1"],
+                    "evidence_spans": ["X:S01", "X:S02", "X:S03"],
+                    "confidence": "high",
+                }
+            ],
+        },
+        candidate_label="C05",
+        session_id="siblings-session",
+        rank=5,
+        plan=plan,
+        allowed_span_ids={"X:S01", "X:S02", "X:S03"},
+        excerpt="user: I come from a family with 3 sisters.",
     )
+
+    assert profile.candidate_relevant is True
+    assert profile.extraction_failures == []
+    assert profile.facts[0].value == "1; 2; 3"
+
+
+def test_profile_rejects_facts_grounded_only_in_list_markers() -> None:
+    plan = build_question_evidence_plan("What is the total number of siblings I have?")
+    profile = build_candidate_evidence_profile(
+        {
+            "candidate_relevant": True,
+            "facts": [
+                {
+                    "entity": "siblings",
+                    "relation": "is_sibling",
+                    "value": "1",
+                    "supports_needs": ["N1"],
+                    "evidence_spans": ["X:S01"],
+                    "confidence": "high",
+                }
+            ],
+        },
+        candidate_label="C08",
+        session_id="numbered-list-session",
+        rank=8,
+        plan=plan,
+        allowed_span_ids={"X:S01", "X:S02", "X:S03"},
+        excerpt="1.\n2.\n3.",
+    )
+
+    assert profile.candidate_relevant is False
+    assert profile.facts == []
+    assert "F1:non_substantive_evidence" in profile.extraction_failures
+
+
+def test_profile_rejects_an_evidence_span_label_used_as_the_entity() -> None:
+    plan = build_question_evidence_plan("What is the total number of siblings I have?")
+    profile = build_candidate_evidence_profile(
+        {
+            "candidate_relevant": True,
+            "facts": [
+                {
+                    "entity": "X:S01",
+                    "relation": "is_sibling",
+                    "value": "1",
+                    "supports_needs": ["N1"],
+                    "evidence_spans": ["X:S01"],
+                    "confidence": "high",
+                }
+            ],
+        },
+        candidate_label="C08",
+        session_id="unrelated-session",
+        rank=8,
+        plan=plan,
+        allowed_span_ids={"X:S01"},
+        excerpt="assistant: Fiction reading takeaways.",
+    )
+
+    assert profile.candidate_relevant is False
+    assert profile.facts == []
+    assert "F1:entity_is_span_label" in profile.extraction_failures
+
+
+def test_coverage_selection_allows_negative_scores_from_redundancy_penalty() -> None:
+    plan = build_question_evidence_plan("Which repeated fact is relevant?")
+    profiles = [
+        _profile(
+            rank,
+            f"duplicate-{rank}",
+            "mentions",
+            "same fact",
+            entity="same entity",
+            needs=["N1"],
+        )
+        for rank in range(1, 7)
+    ]
+
+    selection = select_evidence_coverage(
+        plan,
+        profiles,
+        output_top_k=5,
+        protected_top_n=3,
+        min_gain=0.0,
+        need_weight=0.0,
+        relevance_weight=0.0,
+        diversity_weight=0.0,
+        temporal_weight=0.0,
+        rank_weight=0.02,
+    )
+
+    assert selection.original_score < 0.0
+
+
+def test_count_coverage_combines_two_distinct_challengers() -> None:
+    plan = build_question_evidence_plan("How many magazine subscriptions do I currently have?")
     profiles = [
         _profile(1, "locked-a", "owns", "baseline preference", entity="profile"),
         _profile(2, "locked-b", "owns", "baseline preference", entity="account"),
@@ -166,9 +279,7 @@ def test_temporal_coverage_promotes_grounded_event_anchor() -> None:
             lexical_overlap=1.0,
         )
     )
-    profiles.append(
-        _profile(10, "noise-10", "mentions", "unrelated event", entity="event")
-    )
+    profiles.append(_profile(10, "noise-10", "mentions", "unrelated event", entity="event"))
 
     selection = select_evidence_coverage(
         plan,

@@ -8,20 +8,17 @@ V552_SCRIPT_PATH = Path("scripts/run_vmp_v552_experiment.sh")
 V6_SCRIPT_PATH = Path("scripts/run_vmp_v6_experiment.sh")
 V61_SCRIPT_PATH = Path("scripts/run_vmp_v61_experiment.sh")
 V62_SCRIPT_PATH = Path("scripts/run_vmp_v62_experiment.sh")
+V63_SCRIPT_PATH = Path("scripts/run_vmp_v63_experiment.sh")
 
 
 def test_v55_reuses_frozen_dev_candidates_and_keeps_outcome_gates() -> None:
     script = SCRIPT_PATH.read_text(encoding="utf-8")
 
     assert (
-        'DEV_CANDIDATE_RUN_ID="${DEV_CANDIDATE_RUN_ID:-'
-        'lme_dev_vmp_v532_candidates_seed42}"'
+        'DEV_CANDIDATE_RUN_ID="${DEV_CANDIDATE_RUN_ID:-lme_dev_vmp_v532_candidates_seed42}"'
     ) in script
     assert 'MIN_DEV_RECALL_ALL_5="${MIN_DEV_RECALL_ALL_5:-0.93}"' in script
-    assert (
-        'MIN_DEV_DELTA_VS_SHARED_V43="${MIN_DEV_DELTA_VS_SHARED_V43:-0.03}"'
-        in script
-    )
+    assert 'MIN_DEV_DELTA_VS_SHARED_V43="${MIN_DEV_DELTA_VS_SHARED_V43:-0.03}"' in script
     assert 'MAX_REGRESSED_QUESTIONS="${MAX_REGRESSED_QUESTIONS:-0}"' in script
 
 
@@ -30,8 +27,7 @@ def test_v55_uses_audited_dual_view_planner_and_fixed_ten_candidate_prompt() -> 
 
     assert 'CANDIDATE_COUNT="${CANDIDATE_COUNT:-10}"' in script
     assert (
-        'CANDIDATE_PLANNER_VERSION="${CANDIDATE_PLANNER_VERSION:-'
-        'vmp_v55_dual_view_rrf_v1}"'
+        'CANDIDATE_PLANNER_VERSION="${CANDIDATE_PLANNER_VERSION:-vmp_v55_dual_view_rrf_v1}"'
     ) in script
     assert "--candidate-planner-version" in script
     assert "--expected-candidate-planner-version" in script
@@ -91,3 +87,17 @@ def test_v62_uses_partial_fact_prompt_v3_excerpt_and_distinct_artifacts() -> Non
     assert "run_vmp_v6_experiment.sh" in script
     assert "af082822,1a8a66a6,0bc8ad92" in script
     assert 'STAGE:-}" == "dev_smoke"' in script
+
+
+def test_v63_versions_grounding_guards_without_changing_coverage_weights() -> None:
+    script = V63_SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert "vmp_v63_grounded_atomic_fact_extractor_v3" in script
+    assert "vmp_v63_deterministic_set_coverage_v3" in script
+    assert "role_aware_fact_v4" in script
+    assert "lme_dev_vmp_v63_rerank_seed42" in script
+    assert "vmp_v63_seed42_dev_pass.json" in script
+    assert 'COVERAGE_MIN_GAIN="${COVERAGE_MIN_GAIN:-0.25}"' in script
+    assert 'COVERAGE_DIVERSITY_WEIGHT="${COVERAGE_DIVERSITY_WEIGHT:-1.25}"' in script
+    assert "run_vmp_v6_experiment.sh" in script
+    assert "af082822,1a8a66a6,0bc8ad92" in script

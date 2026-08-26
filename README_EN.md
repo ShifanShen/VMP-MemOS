@@ -126,7 +126,7 @@ uv run --no-sync python scripts/download_longmemeval.py \
   --files longmemeval_s_cleaned.json
 ```
 
-The current research entry point is VMP-v6.2. Start with the three-question diagnostic smoke run:
+The current research entry point is VMP-v6.3. It keeps the V6.2 candidate pool, Top-k policy, and coverage weights fixed while adding list-valued fact normalization, evidence-coordinate contamination guards, and bare-list-marker filtering. Start with the three-question diagnostic smoke run:
 
 ```bash
 HF_HUB_OFFLINE=1 \
@@ -134,7 +134,7 @@ TRANSFORMERS_OFFLINE=1 \
 VMP_LLM_API_KEY=local-vllm-key \
 VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
 STAGE=dev_smoke \
-uv run --no-sync bash scripts/run_vmp_v62_experiment.sh
+uv run --no-sync bash scripts/run_vmp_v63_experiment.sh
 ```
 
 Then run the complete Dev experiment:
@@ -145,7 +145,7 @@ TRANSFORMERS_OFFLINE=1 \
 VMP_LLM_API_KEY=local-vllm-key \
 VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
 STAGE=dev_rerank \
-uv run --no-sync bash scripts/run_vmp_v62_experiment.sh
+uv run --no-sync bash scripts/run_vmp_v63_experiment.sh
 ```
 
 The frozen Test candidate, rerank, and QA stages should only be opened after the Dev quality gate passes. Set `RERANK_RESUME=1` only when continuing an interrupted run with identical settings.
@@ -165,14 +165,14 @@ Main paper comparisons follow these constraints:
 
 - Base configuration: [`configs/default.yaml`](configs/default.yaml)
 - LongMemEval: [`configs/longmemeval.yaml`](configs/longmemeval.yaml)
-- VMP-v6.2: [`configs/vmp_v62.yaml`](configs/vmp_v62.yaml)
+- VMP-v6.3: [`configs/vmp_v63.yaml`](configs/vmp_v63.yaml)
 - Environment template: [`.env.example`](.env.example)
 
 Dataset caches, models, runtime logs, and `outputs/longmemeval/` are ignored by Git by default.
 
 ## Research status
 
-The repository contains the complete experiment infrastructure and the VMP-v6.2 Dev validation workflow. Public main results, comparisons with recent academic systems, and a second benchmark still require frozen-configuration experiments, so this repository does not currently claim state of the art.
+The repository contains the complete experiment infrastructure and the VMP-v6.3 Dev validation workflow. V6.2 reached `Recall-All@5 = 0.9362` on Dev but failed the zero-regression gate because of one regressed question. The V6.3 corrections pass offline replay; formal results still require a fresh local-vLLM run and the unchanged strict gate. Public main results, comparisons with recent academic systems, and a second benchmark still require frozen-configuration experiments, so this repository does not currently claim state of the art.
 
 ## License
 
