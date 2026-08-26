@@ -49,6 +49,7 @@ LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION = "vmp_v552_anonymous_pairwise
 LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION = "vmp_v6_anonymous_atomic_fact_extractor_v1"
 LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION = "vmp_v62_partial_atomic_fact_extractor_v2"
 LONGMEMEVAL_V63_ATOMIC_FACT_SELECTOR_PROMPT_VERSION = "vmp_v63_grounded_atomic_fact_extractor_v3"
+LONGMEMEVAL_V64_ATOMIC_FACT_SELECTOR_PROMPT_VERSION = "vmp_v64_high_recall_atomic_fact_extractor_v4"
 LONGMEMEVAL_RERANK_PROMPT_VERSIONS = frozenset(
     {
         LONGMEMEVAL_RERANK_PROMPT_VERSION,
@@ -59,6 +60,7 @@ LONGMEMEVAL_RERANK_PROMPT_VERSIONS = frozenset(
         LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
         LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
         LONGMEMEVAL_V63_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+        LONGMEMEVAL_V64_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
     }
 )
 LONGMEMEVAL_BOUNDARY_PROMPT_VERSION = "vmp_v53_selective_boundary_v1"
@@ -69,6 +71,7 @@ LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION = "vmp_v552_integrated_pairwis
 LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION = "vmp_v6_deterministic_set_coverage_v1"
 LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION = "vmp_v62_deterministic_set_coverage_v2"
 LONGMEMEVAL_V63_SET_COVERAGE_BOUNDARY_VERSION = "vmp_v63_deterministic_set_coverage_v3"
+LONGMEMEVAL_V64_SET_COVERAGE_BOUNDARY_VERSION = "vmp_v64_deterministic_set_coverage_v4"
 LONGMEMEVAL_BOUNDARY_PROMPT_VERSIONS = frozenset(
     {
         LONGMEMEVAL_BOUNDARY_PROMPT_VERSION,
@@ -79,6 +82,7 @@ LONGMEMEVAL_BOUNDARY_PROMPT_VERSIONS = frozenset(
         LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
         LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
         LONGMEMEVAL_V63_SET_COVERAGE_BOUNDARY_VERSION,
+        LONGMEMEVAL_V64_SET_COVERAGE_BOUNDARY_VERSION,
     }
 )
 LONGMEMEVAL_LEXICAL_EXCERPT_VERSION = "lexical_turn_v1"
@@ -684,6 +688,7 @@ class LongMemEvalRerankerConfig(SchemaModel):
             LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
             LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
             LONGMEMEVAL_V63_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+            LONGMEMEVAL_V64_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
         }:
             if (
                 self.candidate_planner_version
@@ -712,6 +717,7 @@ class LongMemEvalRerankerConfig(SchemaModel):
             LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
             LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
             LONGMEMEVAL_V63_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+            LONGMEMEVAL_V64_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
         }:
             if not self.boundary_verification:
                 raise ValueError("VMP-v6 requires integrated coverage verification")
@@ -726,6 +732,10 @@ class LongMemEvalRerankerConfig(SchemaModel):
                 ),
                 LONGMEMEVAL_V63_ATOMIC_FACT_SELECTOR_PROMPT_VERSION: (
                     LONGMEMEVAL_V63_SET_COVERAGE_BOUNDARY_VERSION,
+                    LONGMEMEVAL_ROLE_AWARE_EXCERPT_V4_VERSION,
+                ),
+                LONGMEMEVAL_V64_ATOMIC_FACT_SELECTOR_PROMPT_VERSION: (
+                    LONGMEMEVAL_V64_SET_COVERAGE_BOUNDARY_VERSION,
                     LONGMEMEVAL_ROLE_AWARE_EXCERPT_V4_VERSION,
                 ),
             }
@@ -874,6 +884,7 @@ class LongMemEvalEvidenceReranker:
             LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
             LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
             LONGMEMEVAL_V63_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+            LONGMEMEVAL_V64_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
         }:
             if len(unique_candidates) != self.config.candidate_count:
                 raise ValueError("VMP-v6 requires exactly 10 unique candidates before any LLM call")
@@ -1963,6 +1974,9 @@ def _atomic_fact_system_prompt(prompt_version: str) -> str:
         LONGMEMEVAL_V63_ATOMIC_FACT_SELECTOR_PROMPT_VERSION: (
             LONGMEMEVAL_V63_ATOMIC_FACT_SYSTEM_PROMPT
         ),
+        LONGMEMEVAL_V64_ATOMIC_FACT_SELECTOR_PROMPT_VERSION: (
+            LONGMEMEVAL_V62_ATOMIC_FACT_SYSTEM_PROMPT
+        ),
     }
     try:
         return prompts[prompt_version]
@@ -1982,6 +1996,9 @@ def _atomic_fact_user_prompt(prompt_version: str) -> str:
         ),
         LONGMEMEVAL_V63_ATOMIC_FACT_SELECTOR_PROMPT_VERSION: (
             LONGMEMEVAL_V63_ATOMIC_FACT_USER_PROMPT
+        ),
+        LONGMEMEVAL_V64_ATOMIC_FACT_SELECTOR_PROMPT_VERSION: (
+            LONGMEMEVAL_V62_ATOMIC_FACT_USER_PROMPT
         ),
     }
     try:

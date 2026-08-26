@@ -9,6 +9,7 @@ V6_SCRIPT_PATH = Path("scripts/run_vmp_v6_experiment.sh")
 V61_SCRIPT_PATH = Path("scripts/run_vmp_v61_experiment.sh")
 V62_SCRIPT_PATH = Path("scripts/run_vmp_v62_experiment.sh")
 V63_SCRIPT_PATH = Path("scripts/run_vmp_v63_experiment.sh")
+V64_SCRIPT_PATH = Path("scripts/run_vmp_v64_experiment.sh")
 
 
 def test_v55_reuses_frozen_dev_candidates_and_keeps_outcome_gates() -> None:
@@ -97,6 +98,20 @@ def test_v63_versions_grounding_guards_without_changing_coverage_weights() -> No
     assert "role_aware_fact_v4" in script
     assert "lme_dev_vmp_v63_rerank_seed42" in script
     assert "vmp_v63_seed42_dev_pass.json" in script
+    assert 'COVERAGE_MIN_GAIN="${COVERAGE_MIN_GAIN:-0.25}"' in script
+    assert 'COVERAGE_DIVERSITY_WEIGHT="${COVERAGE_DIVERSITY_WEIGHT:-1.25}"' in script
+    assert "run_vmp_v6_experiment.sh" in script
+    assert "8e91e7d9,af082822,1a8a66a6,0bc8ad92" in script
+
+
+def test_v64_restores_high_recall_prompt_with_v63_grounding_guards() -> None:
+    script = V64_SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert "vmp_v64_high_recall_atomic_fact_extractor_v4" in script
+    assert "vmp_v64_deterministic_set_coverage_v4" in script
+    assert "role_aware_fact_v4" in script
+    assert "lme_dev_vmp_v64_rerank_seed42" in script
+    assert "vmp_v64_seed42_dev_pass.json" in script
     assert 'COVERAGE_MIN_GAIN="${COVERAGE_MIN_GAIN:-0.25}"' in script
     assert 'COVERAGE_DIVERSITY_WEIGHT="${COVERAGE_DIVERSITY_WEIGHT:-1.25}"' in script
     assert "run_vmp_v6_experiment.sh" in script

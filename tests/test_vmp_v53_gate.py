@@ -86,12 +86,8 @@ def test_v54_gate_accepts_symbolic_span_selector_and_boundary(tmp_path) -> None:
     )
 
     assert report["status"] == "passed"
-    assert report["reranker"]["expected_selector_prompt_version"] == (
-        selector_prompt_version
-    )
-    assert report["reranker"]["expected_boundary_prompt_version"] == (
-        boundary_prompt_version
-    )
+    assert report["reranker"]["expected_selector_prompt_version"] == (selector_prompt_version)
+    assert report["reranker"]["expected_boundary_prompt_version"] == (boundary_prompt_version)
 
 
 def test_v551_gate_requires_label_free_dual_view_planner_audit(tmp_path) -> None:
@@ -163,6 +159,16 @@ def test_v552_gate_audits_anonymous_pairwise_calls_and_excerpt_version(tmp_path)
             "vmp_v62_partial_atomic_fact_extractor_v2",
             "vmp_v62_deterministic_set_coverage_v2",
             "role_aware_fact_v3",
+        ),
+        (
+            "vmp_v64_high_recall_atomic_fact_extractor_v4",
+            "vmp_v64_deterministic_set_coverage_v4",
+            "role_aware_fact_v4",
+        ),
+        (
+            "vmp_v63_grounded_atomic_fact_extractor_v3",
+            "vmp_v63_deterministic_set_coverage_v3",
+            "role_aware_fact_v4",
         ),
     ],
 )
@@ -250,8 +256,7 @@ def _write_runs(
             "source_retrieval_manifest_sha256": _sha256(candidate_manifest),
             "fairness": {
                 "two_stage_boundary_verification": (
-                    boundary_prompt_version
-                    != "vmp_v552_integrated_pairwise_boundary_v1"
+                    boundary_prompt_version != "vmp_v552_integrated_pairwise_boundary_v1"
                 ),
                 "symbolic_selector_labels": (
                     selector_prompt_version
@@ -276,14 +281,11 @@ def _write_runs(
                 "candidate_planner_version": candidate_planner_version,
                 "candidate_planner_uses_gold_labels": False,
                 "anonymous_pairwise_challenger_protocol": (
-                    selector_prompt_version
-                    == "vmp_v552_anonymous_pairwise_selector_v1"
-                    and boundary_prompt_version
-                    == "vmp_v552_integrated_pairwise_boundary_v1"
+                    selector_prompt_version == "vmp_v552_anonymous_pairwise_selector_v1"
+                    and boundary_prompt_version == "vmp_v552_integrated_pairwise_boundary_v1"
                 ),
                 "integrated_pairwise_boundary_verification": (
-                    boundary_prompt_version
-                    == "vmp_v552_integrated_pairwise_boundary_v1"
+                    boundary_prompt_version == "vmp_v552_integrated_pairwise_boundary_v1"
                 ),
                 "candidate_excerpt_version": candidate_excerpt_version,
             },
@@ -354,12 +356,8 @@ def _write_summary(
                 "boundary_verification": True,
                 "candidate_planner_version": candidate_planner_version,
                 "candidate_excerpt_version": candidate_excerpt_version,
-                "candidate_planner_applied_questions": (
-                    candidate_planner_applied_questions
-                ),
-                "candidate_planner_identity_questions": (
-                    candidate_planner_identity_questions
-                ),
+                "candidate_planner_applied_questions": (candidate_planner_applied_questions),
+                "candidate_planner_identity_questions": (candidate_planner_identity_questions),
                 "candidate_count": candidate_count,
                 "min_observed_candidate_count": candidate_count,
                 "output_top_k": 5,

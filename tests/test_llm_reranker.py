@@ -20,6 +20,8 @@ from vmp_memos.llm import (
     LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
     LONGMEMEVAL_V63_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V63_SET_COVERAGE_BOUNDARY_VERSION,
+    LONGMEMEVAL_V64_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V64_SET_COVERAGE_BOUNDARY_VERSION,
     LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
@@ -1174,6 +1176,47 @@ def test_v63_uses_grounded_protocol_and_normalizes_list_values() -> None:
     assert facts[0]["value"] == "sister 1; sister 2; sister 3"
     assert all("coordinates, never" in messages[0].content for messages in client.all_messages)
     assert all("bare list numbers" in messages[1].content for messages in client.all_messages)
+
+
+def test_v64_reuses_v62_high_recall_messages_when_excerpt_is_unchanged() -> None:
+    empty = '{"candidate_relevant":false,"facts":[]}'
+    shared = {
+        "candidate_planner_version": (LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION),
+        "candidate_count": 10,
+        "protected_top_n": 3,
+        "ranked_output_count": 10,
+        "boundary_verification": True,
+    }
+    v62_client = FakeRerankClient(empty)
+    v64_client = FakeRerankClient(empty)
+    v62 = LongMemEvalEvidenceReranker(
+        v62_client,
+        LongMemEvalRerankerConfig(
+            **shared,
+            prompt_version="vmp_v62_partial_atomic_fact_extractor_v2",
+            boundary_prompt_version="vmp_v62_deterministic_set_coverage_v2",
+            candidate_excerpt_version="role_aware_fact_v3",
+        ),
+    )
+    v64 = LongMemEvalEvidenceReranker(
+        v64_client,
+        LongMemEvalRerankerConfig(
+            **shared,
+            prompt_version=LONGMEMEVAL_V64_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+            boundary_prompt_version=LONGMEMEVAL_V64_SET_COVERAGE_BOUNDARY_VERSION,
+            candidate_excerpt_version="role_aware_fact_v4",
+        ),
+    )
+
+    call = {
+        "question": "How many magazine subscriptions do I currently have?",
+        "question_date": "2024-02-01",
+        "candidates": _memories(10),
+    }
+    v62.rerank(**call)
+    v64.rerank(**call)
+
+    assert v64_client.all_messages == v62_client.all_messages
 
 
 def json_response(*, selected: list[str], ranked: list[str]) -> str:

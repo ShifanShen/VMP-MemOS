@@ -1,0 +1,64 @@
+version: VMP-v6.4
+base_config: configs/vmp_v63.yaml
+pipeline: high_recall_atomic_fact_extraction_with_grounded_parser_guards
+
+frozen_components:
+  dev_source_run: outputs/longmemeval/runs/lme_dev_vmp_v532_candidates_seed42
+  candidate_planner_version: vmp_v55_dual_view_rrf_v1
+  candidate_count: 10
+  model: Qwen/Qwen2.5-7B-Instruct
+  output_top_k: 5
+  protected_top_n: 3
+  temperature: 0.0
+  top_p: 1.0
+  coverage_weights_changed_from_v62: false
+  gold_labels_visible: false
+  benchmark_answers_visible: false
+
+evidence_perception:
+  selector_prompt_version: vmp_v64_high_recall_atomic_fact_extractor_v4
+  prompt_templates_byte_identical_to: vmp_v62_partial_atomic_fact_extractor_v2
+  excerpt_version: role_aware_fact_v4
+  boundary_version: vmp_v64_deterministic_set_coverage_v4
+  calls_per_sample: 10
+  list_values_canonicalized: true
+  evidence_coordinate_entities_rejected: true
+  bare_enumeration_evidence_rejected: true
+  kinship_aliases_enabled: true
+  benchmark_labels_visible: false
+
+set_coverage:
+  enumerate_open_slot_combinations: true
+  open_slots: 2
+  min_gain: 0.25
+  need_weight: 3.0
+  relevance_weight: 1.5
+  entity_diversity_weight: 1.25
+  temporal_coverage_weight: 1.25
+  rank_prior_weight: 0.08
+  tie_break: earliest_candidate_rank
+
+dev_gate:
+  min_recall_all_at_5: 0.93
+  min_delta_vs_raw_v5: 0.025
+  min_delta_vs_shared_reranked_v43: 0.03
+  min_macro_delta_vs_raw_v5: 0.0
+  max_type_regression_vs_raw_v5: 0.03
+  max_parse_fallback_rate: 0.02
+  max_selector_call_fallback_rate: 0.02
+  max_regressed_questions: 0
+  min_recovered_questions: 3
+  min_unique_candidate_count: 10
+  test_labels_used: false
+
+diagnostic_history:
+  v62_recall_all_at_5: 0.9361702127659575
+  v62_recovered_questions: 4
+  v62_regressed_questions: 1
+  v63_recall_all_at_5: 0.9148936170212766
+  v63_recovered_questions: 1
+  v63_regressed_questions: 0
+  v63_failure: over_conservative_extraction_prompt
+  v62_response_reparse_recall_all_at_5: 0.9468085106382979
+  weights_selected_from_replay: false
+  fresh_vllm_validation_required: true

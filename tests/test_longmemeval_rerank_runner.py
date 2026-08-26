@@ -11,8 +11,6 @@ from vmp_memos.evaluation import compute_retrieval_metrics
 from vmp_memos.frameworks import RetrievedMemory
 from vmp_memos.llm import (
     LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
-    LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
-    LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
     LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
@@ -355,9 +353,7 @@ def test_v552_runner_counts_five_selector_calls_without_extra_boundary_call(
             prompt_version=LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
             boundary_prompt_version=LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
             candidate_excerpt_version=LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
-            candidate_planner_version=(
-                LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
-            ),
+            candidate_planner_version=(LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION),
             candidate_count=10,
             protected_top_n=3,
             ranked_output_count=10,
@@ -381,11 +377,7 @@ def test_v552_runner_counts_five_selector_calls_without_extra_boundary_call(
     assert summary.selector_calls == 5
     assert summary.selector_call_fallbacks == 0
     assert summary.boundary_calls == 0
-    record = _read_jsonl(
-        result.run_dir
-        / "vmp_hierarchical__vllm_boundary"
-        / "retrieval.jsonl"
-    )[0]
+    record = _read_jsonl(result.run_dir / "vmp_hierarchical__vllm_boundary" / "retrieval.jsonl")[0]
     assert record["adapter_stats"]["rerank_calls"] == 5
     assert record["rerank_metadata"]["selector_call_count"] == 5
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
@@ -394,7 +386,32 @@ def test_v552_runner_counts_five_selector_calls_without_extra_boundary_call(
     assert manifest["fairness"]["two_stage_boundary_verification"] is False
 
 
-def test_v6_runner_audits_ten_fact_calls_and_deterministic_coverage(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("selector_version", "boundary_version", "excerpt_version"),
+    [
+        (
+            "vmp_v6_anonymous_atomic_fact_extractor_v1",
+            "vmp_v6_deterministic_set_coverage_v1",
+            "role_aware_fact_v2",
+        ),
+        (
+            "vmp_v64_high_recall_atomic_fact_extractor_v4",
+            "vmp_v64_deterministic_set_coverage_v4",
+            "role_aware_fact_v4",
+        ),
+        (
+            "vmp_v63_grounded_atomic_fact_extractor_v3",
+            "vmp_v63_deterministic_set_coverage_v3",
+            "role_aware_fact_v4",
+        ),
+    ],
+)
+def test_v6_runner_audits_ten_fact_calls_and_deterministic_coverage(
+    tmp_path,
+    selector_version: str,
+    boundary_version: str,
+    excerpt_version: str,
+) -> None:
     source_run = tmp_path / "outputs" / "runs" / "source-v6"
     method_dir = source_run / "vmp_hierarchical"
     method_dir.mkdir(parents=True)
@@ -417,12 +434,10 @@ def test_v6_runner_audits_ten_fact_calls_and_deterministic_coverage(tmp_path) ->
     reranker = LongMemEvalEvidenceReranker(
         client,
         LongMemEvalRerankerConfig(
-            prompt_version=LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
-            boundary_prompt_version=LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
-            candidate_excerpt_version=LONGMEMEVAL_ROLE_AWARE_EXCERPT_VERSION,
-            candidate_planner_version=(
-                LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION
-            ),
+            prompt_version=selector_version,
+            boundary_prompt_version=boundary_version,
+            candidate_excerpt_version=excerpt_version,
+            candidate_planner_version=(LONGMEMEVAL_V55_DUAL_VIEW_CANDIDATE_PLANNER_VERSION),
             candidate_count=10,
             protected_top_n=3,
             ranked_output_count=10,
@@ -446,9 +461,7 @@ def test_v6_runner_audits_ten_fact_calls_and_deterministic_coverage(tmp_path) ->
     assert summary.selector_calls == 10
     assert summary.boundary_calls == 0
     assert summary.evidence_operator_counts == {"list": 1}
-    record = _read_jsonl(
-        result.run_dir / "vmp_hierarchical__vllm_boundary" / "retrieval.jsonl"
-    )[0]
+    record = _read_jsonl(result.run_dir / "vmp_hierarchical__vllm_boundary" / "retrieval.jsonl")[0]
     assert record["rerank_metadata"]["question_evidence_plan"]["operator"] == "list"
     assert record["rerank_metadata"]["coverage_selection"] is not None
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))

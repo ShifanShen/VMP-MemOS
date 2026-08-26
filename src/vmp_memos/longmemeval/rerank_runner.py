@@ -26,6 +26,10 @@ from vmp_memos.llm import (
     LONGMEMEVAL_V55_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
+    LONGMEMEVAL_V63_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V63_SET_COVERAGE_BOUNDARY_VERSION,
+    LONGMEMEVAL_V64_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+    LONGMEMEVAL_V64_SET_COVERAGE_BOUNDARY_VERSION,
     LONGMEMEVAL_V551_COMPLETE_CHALLENGER_SELECTOR_PROMPT_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
     LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
@@ -381,12 +385,10 @@ def summarize_rerank_method(
     )
     boundary_fallbacks = sum(_boundary_bool(record, "parse_fallback") for record in records)
     selector_calls = sum(
-        max(1, int(_metadata_number(record, "selector_call_count")))
-        for record in records
+        max(1, int(_metadata_number(record, "selector_call_count"))) for record in records
     )
     selector_call_fallbacks = sum(
-        int(_metadata_number(record, "selector_call_fallbacks"))
-        for record in records
+        int(_metadata_number(record, "selector_call_fallbacks")) for record in records
     )
     payload = base.model_dump(mode="python")
     payload.update(
@@ -425,6 +427,8 @@ def summarize_rerank_method(
                     LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
                     LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
                     LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
+                    LONGMEMEVAL_V63_SET_COVERAGE_BOUNDARY_VERSION,
+                    LONGMEMEVAL_V64_SET_COVERAGE_BOUNDARY_VERSION,
                 }
                 else sum(not _boundary_bool(record, "call_made") for record in records)
                 if config.boundary_verification
@@ -461,12 +465,10 @@ def summarize_rerank_method(
                 len(_metadata_list(record, "invalid_session_ids")) for record in records
             ),
             "invalid_candidate_label_count": sum(
-                len(_metadata_list(record, "invalid_candidate_labels"))
-                for record in records
+                len(_metadata_list(record, "invalid_candidate_labels")) for record in records
             ),
             "selector_span_binding_failure_count": sum(
-                len(_metadata_list(record, "selector_span_binding_failures"))
-                for record in records
+                len(_metadata_list(record, "selector_span_binding_failures")) for record in records
             ),
             "selector_grounded_promotion_count": sum(
                 len(_metadata_list(record, "selector_grounded_promotion_labels"))
@@ -670,9 +672,7 @@ def _rerank_record(
             else None,
         ),
         "coverage_gain": (
-            decision.coverage_selection.gain
-            if decision.coverage_selection is not None
-            else 0.0
+            decision.coverage_selection.gain if decision.coverage_selection is not None else 0.0
         ),
         "coverage_promoted_candidate_labels": cast(
             JsonValue,
@@ -751,9 +751,7 @@ def _prepare_manifest(
                     {
                         "status": manifest.get("status"),
                         "finished_at": manifest.get("finished_at"),
-                        "wall_duration_seconds": manifest.get(
-                            "wall_duration_seconds"
-                        ),
+                        "wall_duration_seconds": manifest.get("wall_duration_seconds"),
                         "error_type": manifest.get("error_type"),
                         "error": manifest.get("error"),
                     },
@@ -812,6 +810,8 @@ def _prepare_manifest(
                         LONGMEMEVAL_V552_PAIRWISE_BOUNDARY_PROMPT_VERSION,
                         LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
                         LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
+                        LONGMEMEVAL_V63_SET_COVERAGE_BOUNDARY_VERSION,
+                        LONGMEMEVAL_V64_SET_COVERAGE_BOUNDARY_VERSION,
                     }
                 ),
                 "integrated_pairwise_boundary_verification": (
@@ -828,6 +828,8 @@ def _prepare_manifest(
                         LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
                         LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
                         LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+                        LONGMEMEVAL_V63_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+                        LONGMEMEVAL_V64_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
                     }
                 ),
                 "selector_evidence_span_binding": (
@@ -839,6 +841,8 @@ def _prepare_manifest(
                         LONGMEMEVAL_V552_PAIRWISE_SELECTOR_PROMPT_VERSION,
                         LONGMEMEVAL_V6_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
                         LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+                        LONGMEMEVAL_V63_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+                        LONGMEMEVAL_V64_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
                     }
                 ),
                 "boundary_evidence_span_binding": (
@@ -847,6 +851,8 @@ def _prepare_manifest(
                         LONGMEMEVAL_SYMBOLIC_SPAN_BOUNDARY_PROMPT_VERSION,
                         LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
                         LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
+                        LONGMEMEVAL_V63_SET_COVERAGE_BOUNDARY_VERSION,
+                        LONGMEMEVAL_V64_SET_COVERAGE_BOUNDARY_VERSION,
                     }
                 ),
                 "anonymous_pairwise_challenger_protocol": (
@@ -869,6 +875,14 @@ def _prepare_manifest(
                             LONGMEMEVAL_V62_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
                             LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
                         ),
+                        (
+                            LONGMEMEVAL_V63_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+                            LONGMEMEVAL_V63_SET_COVERAGE_BOUNDARY_VERSION,
+                        ),
+                        (
+                            LONGMEMEVAL_V64_ATOMIC_FACT_SELECTOR_PROMPT_VERSION,
+                            LONGMEMEVAL_V64_SET_COVERAGE_BOUNDARY_VERSION,
+                        ),
                     }
                 ),
                 "deterministic_set_coverage": (
@@ -876,18 +890,16 @@ def _prepare_manifest(
                     in {
                         LONGMEMEVAL_V6_SET_COVERAGE_BOUNDARY_VERSION,
                         LONGMEMEVAL_V62_SET_COVERAGE_BOUNDARY_VERSION,
+                        LONGMEMEVAL_V63_SET_COVERAGE_BOUNDARY_VERSION,
+                        LONGMEMEVAL_V64_SET_COVERAGE_BOUNDARY_VERSION,
                     }
                 ),
-                "candidate_excerpt_version": reranker_signature.get(
-                    "candidate_excerpt_version"
-                ),
+                "candidate_excerpt_version": reranker_signature.get("candidate_excerpt_version"),
                 "selector_replayed": metadata.get("selector_replay") is True,
                 "selector_replay_run": metadata.get("selector_replay_run"),
                 "selector_replay_manifest_sha256": metadata.get("selector_replay_manifest_sha256"),
                 "shared_candidate_planner": True,
-                "candidate_planner_version": reranker_signature.get(
-                    "candidate_planner_version"
-                ),
+                "candidate_planner_version": reranker_signature.get("candidate_planner_version"),
                 "candidate_planner_uses_gold_labels": False,
                 "gold_labels_visible_to_reranker": False,
             },
@@ -968,9 +980,7 @@ def _load_records(
         observed = {record.question_id for record in records}
         missing = requested.difference(observed)
         if missing:
-            raise ValueError(
-                f"Requested question IDs are absent from {path}: {sorted(missing)}"
-            )
+            raise ValueError(f"Requested question IDs are absent from {path}: {sorted(missing)}")
     return records
 
 
@@ -1115,10 +1125,7 @@ def _grounded_selected_promotions(record: RetrievalSampleRecord) -> int:
     return sum(
         isinstance(value, dict)
         and value.get("slot") in selected
-        and (
-            value.get("quote_valid") is True
-            or value.get("span_valid") is True
-        )
+        and (value.get("quote_valid") is True or value.get("span_valid") is True)
         for value in _boundary_list(record, "slot_assessments")
     )
 
