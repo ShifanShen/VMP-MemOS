@@ -100,4 +100,4 @@ def test_v63_versions_grounding_guards_without_changing_coverage_weights() -> No
     assert 'COVERAGE_MIN_GAIN="${COVERAGE_MIN_GAIN:-0.25}"' in script
     assert 'COVERAGE_DIVERSITY_WEIGHT="${COVERAGE_DIVERSITY_WEIGHT:-1.25}"' in script
     assert "run_vmp_v6_experiment.sh" in script
-    assert "af082822,1a8a66a6,0bc8ad92" in script
+    assert "8e91e7d9,af082822,1a8a66a6,0bc8ad92" in script

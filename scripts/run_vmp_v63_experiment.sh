@@ -5,7 +5,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [[ "${STAGE:-}" == "dev_smoke" ]]; then
   export CANDIDATE_METHODS="${CANDIDATE_METHODS:-vmp_hierarchical}"
-  export RERANK_QUESTION_IDS="${RERANK_QUESTION_IDS:-af082822,1a8a66a6,0bc8ad92}"
+  export RERANK_QUESTION_IDS="${RERANK_QUESTION_IDS:-8e91e7d9,af082822,1a8a66a6,0bc8ad92}"
   export DEV_RERANK_RUN_ID="${DEV_RERANK_RUN_ID:-lme_dev_vmp_v63_smoke_seed42}"
 fi
 
