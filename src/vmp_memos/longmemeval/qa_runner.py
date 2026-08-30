@@ -10,10 +10,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
 
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, ValidationError, field_validator
 
-from vmp_memos.evaluation import aggregate_qa_metrics, compute_qa_metrics
-from vmp_memos.llm import LongMemEvalReader
+from vmp_memos.evaluation import (
+    aggregate_qa_metrics,
+    compute_qa_metrics,
+    is_abstention_answer,
+)
+from vmp_memos.frameworks import RetrievedMemory
+from vmp_memos.llm import CandidateEvidenceProfile, LongMemEvalReader
 from vmp_memos.longmemeval.retrieval_runner import RetrievalSampleRecord
 from vmp_memos.schemas.base import (
     NonEmptyStr,
@@ -33,7 +38,15 @@ class LongMemEvalQARunConfig(SchemaModel):
     top_k: NonNegativeInt = 5
     limit: NonNegativeInt | None = None
     resume: bool = False
+    qa_subdir: NonEmptyStr = "qa"
     reader_metadata: dict[str, JsonValue] = Field(default_factory=dict)
+
+    @field_validator("qa_subdir")
+    @classmethod
+    def validate_qa_subdir(cls, value: str) -> str:
+        if value in {".", ".."} or "/" in value or "\\" in value:
+            raise ValueError("qa_subdir must be one safe directory name")
+        return value
 
 
 class QASampleRecord(SchemaModel):
@@ -52,7 +65,11 @@ class QASampleRecord(SchemaModel):
     reader_provider: NonEmptyStr
     reader_model: NonEmptyStr
     reader_finish_reason: str | None = None
+    reader_prompt_version: NonEmptyStr = "longmemeval_full_session_reader_v1"
+    reader_evidence_mode: NonEmptyStr = "full_sessions"
     prompt_sha256: NonEmptyStr
+    evidence_profile_count: NonNegativeInt = 0
+    evidence_fact_count: NonNegativeInt = 0
     retrieved_tokens: NonNegativeInt = 0
     reader_input_tokens: NonNegativeInt = 0
     reader_output_tokens: NonNegativeInt = 0
@@ -72,6 +89,9 @@ class QAMethodSummary(SchemaModel):
     abstention_questions: NonNegativeInt
     metrics: dict[str, NonNegativeFloat] = Field(default_factory=dict)
     by_question_type: dict[str, dict[str, NonNegativeFloat]] = Field(default_factory=dict)
+    answerable_refusal_rate: NonNegativeFloat = 0.0
+    answerable_fact_coverage_rate: NonNegativeFloat = 0.0
+    mean_evidence_fact_count: NonNegativeFloat = 0.0
     mean_retrieved_tokens: NonNegativeFloat = 0.0
     mean_reader_input_tokens: NonNegativeFloat = 0.0
     mean_reader_output_tokens: NonNegativeFloat = 0.0
@@ -110,13 +130,42 @@ def run_longmemeval_qa(
     if config.top_k != reader.config.top_k:
         raise ValueError("QA config top_k must equal reader config top_k")
     LOGGER.info(
-        "Resolved %d QA methods: %s",
+        "Resolved %d QA methods: %s prompt=%s evidence=%s output=%s",
         len(methods),
         ",".join(methods),
+        reader.config.prompt_version,
+        reader.config.evidence_mode,
+        config.qa_subdir,
     )
 
-    qa_dir = retrieval_run / "qa"
-    hypothesis_dir = retrieval_run / "hypotheses"
+    retrieval_records_by_method = {
+        method: _load_retrieval_records(
+            retrieval_run / method / "retrieval.jsonl",
+            limit=config.limit,
+        )
+        for method in methods
+    }
+    if reader.config.evidence_mode == "reranker_facts":
+        for method, retrieval_records in retrieval_records_by_method.items():
+            fact_questions, fact_count = _preflight_evidence_profiles(
+                retrieval_records,
+                top_k=config.top_k,
+            )
+            LOGGER.info(
+                "Grounded-fact preflight passed for %s: questions=%d "
+                "questions_with_facts=%d facts=%d",
+                method,
+                len(retrieval_records),
+                fact_questions,
+                fact_count,
+            )
+
+    qa_dir = retrieval_run / config.qa_subdir
+    hypothesis_dir = (
+        retrieval_run / "hypotheses"
+        if config.qa_subdir == "qa"
+        else qa_dir / "hypotheses"
+    )
     qa_dir.mkdir(parents=True, exist_ok=True)
     hypothesis_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = qa_dir / "manifest.json"
@@ -133,10 +182,7 @@ def run_longmemeval_qa(
     try:
         for method in methods:
             method_started = perf_counter()
-            retrieval_records = _load_retrieval_records(
-                retrieval_run / method / "retrieval.jsonl",
-                limit=config.limit,
-            )
+            retrieval_records = retrieval_records_by_method[method]
             qa_path = qa_dir / f"{method}.jsonl"
             existing = _load_qa_records(qa_path) if config.resume else []
             existing_ids = {record.question_id for record in existing}
@@ -267,6 +313,7 @@ def summarize_qa_method(
     """Aggregate one method's answer records."""
 
     rows = [(record.metrics, record.is_abstention) for record in records]
+    answerable_records = [record for record in records if not record.is_abstention]
     by_type: dict[str, list[tuple[dict[str, float], bool]]] = defaultdict(list)
     for record in records:
         by_type[record.question_type].append(
@@ -293,6 +340,15 @@ def summarize_qa_method(
             question_type: aggregate_qa_metrics(question_rows)
             for question_type, question_rows in sorted(by_type.items())
         },
+        answerable_refusal_rate=_mean(
+            [float(is_abstention_answer(record.prediction)) for record in answerable_records]
+        ),
+        answerable_fact_coverage_rate=_mean(
+            [float(record.evidence_fact_count > 0) for record in answerable_records]
+        ),
+        mean_evidence_fact_count=_mean(
+            [record.evidence_fact_count for record in records]
+        ),
         mean_retrieved_tokens=_mean([record.retrieved_tokens for record in records]),
         mean_reader_input_tokens=_mean(
             [record.reader_input_tokens for record in records]
@@ -323,11 +379,16 @@ def _answer_one(
     top_k: int,
 ) -> QASampleRecord:
     memories = retrieval_record.retrieved_memories[:top_k]
+    evidence_profiles = _selected_evidence_profiles(
+        retrieval_record,
+        memories=memories,
+    )
     started_at = perf_counter()
     output = reader.answer(
         question=retrieval_record.question,
         question_date=retrieval_record.question_date,
         memories=memories,
+        evidence_profiles=evidence_profiles,
     )
     reader_latency_ms = (perf_counter() - started_at) * 1000.0
     ingest_latency_ms = _adapter_stat(
@@ -360,7 +421,13 @@ def _answer_one(
         reader_provider=output.provider,
         reader_model=output.model,
         reader_finish_reason=output.finish_reason,
-        prompt_sha256=hashlib.sha256(output.prompt.encode("utf-8")).hexdigest(),
+        reader_prompt_version=output.prompt_version,
+        reader_evidence_mode=output.evidence_mode,
+        prompt_sha256=hashlib.sha256(
+            (output.system_prompt + "\n" + output.prompt).encode("utf-8")
+        ).hexdigest(),
+        evidence_profile_count=output.evidence_profile_count,
+        evidence_fact_count=output.evidence_fact_count,
         retrieved_tokens=sum(memory.token_count for memory in memories),
         reader_input_tokens=output.input_tokens,
         reader_output_tokens=output.output_tokens,
@@ -381,6 +448,7 @@ def _prepare_manifest(
     resume: bool,
     retrieval_manifest_sha256: str,
 ) -> dict[str, JsonValue]:
+    existing: dict[str, JsonValue] | None = None
     if path.exists():
         existing = _read_json_object(path)
         if not resume:
@@ -394,13 +462,25 @@ def _prepare_manifest(
             f"QA records exist without a manifest in {path.parent}; "
             "move them aside before starting a new run."
         )
-    manifest: dict[str, JsonValue] = {
-        "schema_version": "1.0",
-        "status": "running",
-        "signature": signature,
-        "retrieval_manifest_sha256": retrieval_manifest_sha256,
-        "started_at": datetime.now(UTC).isoformat(),
-    }
+    now = datetime.now(UTC).isoformat()
+    manifest: dict[str, JsonValue] = (
+        {
+            **existing,
+            "status": "running",
+            "resumed_at": now,
+            "finished_at": None,
+            "error_type": None,
+            "error": None,
+        }
+        if existing is not None
+        else {
+            "schema_version": "2.0",
+            "status": "running",
+            "signature": signature,
+            "retrieval_manifest_sha256": retrieval_manifest_sha256,
+            "started_at": now,
+        }
+    )
     _write_json(path, manifest)
     return manifest
 
@@ -411,14 +491,82 @@ def _qa_signature(
     reader: LongMemEvalReader,
     methods: list[str],
 ) -> dict[str, JsonValue]:
+    method_values: list[JsonValue] = list(methods)
     return {
         "retrieval_run": str(config.retrieval_run.expanduser().resolve()),
-        "methods": methods,
+        "methods": method_values,
         "top_k": config.top_k,
         "limit": config.limit,
+        "qa_subdir": config.qa_subdir,
         "generation": reader.config.generation.model_dump(mode="json"),
+        "protocol": {
+            "prompt_version": reader.config.prompt_version,
+            "evidence_mode": reader.config.evidence_mode,
+            "gold_answers_visible_to_reader": False,
+        },
         "reader": config.reader_metadata,
     }
+
+
+def _selected_evidence_profiles(
+    record: RetrievalSampleRecord,
+    *,
+    memories: list[RetrievedMemory],
+) -> list[CandidateEvidenceProfile]:
+    """Load validated V6 fact profiles for only the selected Top-k sessions."""
+
+    raw_profiles = record.rerank_metadata.get("selector_evidence_selections", [])
+    if not isinstance(raw_profiles, list):
+        raise ValueError(
+            "selector_evidence_selections must be a list for "
+            f"question {record.question_id}"
+        )
+    selected_session_ids = {
+        memory.source_session_id
+        for memory in memories
+        if memory.source_session_id is not None
+    }
+    profiles: list[CandidateEvidenceProfile] = []
+    observed_sessions: set[str] = set()
+    for index, value in enumerate(raw_profiles, start=1):
+        try:
+            profile = CandidateEvidenceProfile.model_validate(value)
+        except ValidationError as exc:
+            raise ValueError(
+                "Invalid selector evidence profile "
+                f"{index} for question {record.question_id}: {exc}"
+            ) from exc
+        if profile.session_id not in selected_session_ids:
+            continue
+        if profile.session_id in observed_sessions:
+            raise ValueError(
+                "Duplicate selector evidence profile for session "
+                f"{profile.session_id} in question {record.question_id}"
+            )
+        profiles.append(profile)
+        observed_sessions.add(profile.session_id)
+    return profiles
+
+
+def _preflight_evidence_profiles(
+    records: list[RetrievalSampleRecord],
+    *,
+    top_k: int,
+) -> tuple[int, int]:
+    """Validate every saved profile before the first vLLM answer call."""
+
+    questions_with_facts = 0
+    fact_count = 0
+    for record in records:
+        profiles = _selected_evidence_profiles(
+            record,
+            memories=record.retrieved_memories[:top_k],
+        )
+        observed = sum(len(profile.facts) for profile in profiles)
+        if observed:
+            questions_with_facts += 1
+            fact_count += observed
+    return questions_with_facts, fact_count
 
 
 def _resolve_methods(retrieval_run: Path, requested: list[str]) -> list[str]:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -104,9 +104,10 @@ class CostMethodSummary(SchemaModel):
 class CostAnalysisReport(SchemaModel):
     """Replayable cost report tied to retrieval and QA manifest hashes."""
 
-    schema_version: NonEmptyStr = "1.0"
+    schema_version: NonEmptyStr = "1.1"
     retrieval_run: NonEmptyStr
     retrieval_manifest_sha256: NonEmptyStr
+    qa_subdir: NonEmptyStr
     qa_manifest_sha256: str | None = None
     qa_complete: bool
     reference_method: str | None = None
@@ -119,6 +120,7 @@ def analyze_longmemeval_cost(
     retrieval_run: str | Path,
     *,
     require_qa: bool = True,
+    qa_subdir: str = "qa",
 ) -> CostAnalysisReport:
     """Aggregate existing artifacts without running retrieval or generation."""
 
@@ -131,7 +133,8 @@ def analyze_longmemeval_cost(
     if not methods:
         raise ValueError("retrieval run contains no methods")
 
-    qa_manifest_path = run_dir / "qa" / "manifest.json"
+    qa_dir = run_dir / _validate_qa_subdir(qa_subdir)
+    qa_manifest_path = qa_dir / "manifest.json"
     qa_complete = False
     if qa_manifest_path.exists():
         qa_complete = _read_json(qa_manifest_path).get("status") == "completed"
@@ -144,7 +147,7 @@ def analyze_longmemeval_cost(
             run_dir / method / "retrieval.jsonl"
         )
         qa_records = (
-            _read_qa_records(run_dir / "qa" / f"{method}.jsonl")
+            _read_qa_records(qa_dir / f"{method}.jsonl")
             if qa_complete
             else []
         )
@@ -159,6 +162,7 @@ def analyze_longmemeval_cost(
     return CostAnalysisReport(
         retrieval_run=str(run_dir),
         retrieval_manifest_sha256=_sha256(retrieval_manifest_path),
+        qa_subdir=qa_subdir,
         qa_manifest_sha256=_sha256(qa_manifest_path) if qa_complete else None,
         qa_complete=qa_complete,
         reference_method=_reference_method(methods),
@@ -198,10 +202,15 @@ def export_longmemeval_cost(
     *,
     output_dir: str | Path | None = None,
     require_qa: bool = True,
+    qa_subdir: str = "qa",
 ) -> dict[str, Path]:
     """Write JSON plus CSV/Markdown/LaTeX Table 5 artifacts."""
 
-    report = analyze_longmemeval_cost(retrieval_run, require_qa=require_qa)
+    report = analyze_longmemeval_cost(
+        retrieval_run,
+        require_qa=require_qa,
+        qa_subdir=qa_subdir,
+    )
     run_dir = Path(report.retrieval_run)
     target = (
         Path(output_dir).expanduser().resolve()
@@ -226,6 +235,12 @@ def export_longmemeval_cost(
         ],
     )
     return {"cost_analysis_json": json_path, **table_paths}
+
+
+def _validate_qa_subdir(value: str) -> str:
+    if not value or value in {".", ".."} or "/" in value or "\\" in value:
+        raise ValueError("qa_subdir must be a single safe directory name")
+    return value
 
 
 def _summarize_cost(
@@ -578,7 +593,7 @@ def _recursive_token_value(
     return total if found else None
 
 
-def _mean(values: list[int | float]) -> float:
+def _mean(values: Sequence[int | float]) -> float:
     return sum(float(value) for value in values) / len(values) if values else 0.0
 
 

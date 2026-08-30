@@ -150,6 +150,49 @@ uv run --no-sync bash scripts/run_vmp_v64_experiment.sh
 
 只有 Dev gate 通过后，才应执行冻结的 Test candidate、rerank 和 QA 流程。中断后可设置 `RERANK_RESUME=1` 继续同一配置的 run。
 
+### Grounded QA Reader v2
+
+QA-v2 不再把整段原始对话直接拼进 reader prompt。它只读取 reranker 已保存且绑定到所选 session 的结构化事实，并将当前日期与问题放在 prompt 末尾。旧的 `qa/` 结果会保留；新结果分别写入 `qa_v2_smoke/`、`qa_v2_dev/` 和 `qa_v2_test/`。
+
+在 vLLM 已启动后，先运行 10 个 Dev 样本：
+
+```bash
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=dev_smoke \
+uv run --no-sync bash scripts/run_vmp_v64_qa_experiment.sh
+```
+
+确认 smoke 输出合理后运行完整 Dev；脚本会在结束时执行拒答率、事实覆盖率和本地答案质量 gate：
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=dev \
+uv run --no-sync bash scripts/run_vmp_v64_qa_experiment.sh
+```
+
+只有 Dev QA gate 通过后再生成 Test 答案：
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=test \
+uv run --no-sync bash scripts/run_vmp_v64_qa_experiment.sh
+```
+
+成本表必须显式读取通过 gate 的 QA 目录，避免误用旧结果：
+
+```bash
+uv run --no-sync python scripts/export_longmemeval_cost.py \
+  --retrieval-run outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42 \
+  --qa-subdir qa_v2_test
+```
+
 ## 公平比较原则
 
 论文主表遵循以下约束：

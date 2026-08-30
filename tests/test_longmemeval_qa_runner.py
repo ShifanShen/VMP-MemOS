@@ -6,6 +6,7 @@ import json
 from collections.abc import Sequence
 
 from vmp_memos.llm import (
+    LONGMEMEVAL_FACT_READER_PROMPT_VERSION,
     ChatMessage,
     LLMGenerationConfig,
     LLMResponse,
@@ -74,6 +75,40 @@ def test_qa_runner_writes_metrics_hypotheses_and_resumes(tmp_path) -> None:
     assert client.calls == 2
 
 
+def test_qa_runner_writes_fact_reader_to_a_versioned_subdirectory(tmp_path) -> None:
+    retrieval_run = _build_retrieval_run(tmp_path)
+    _add_reranker_facts(retrieval_run / "bm25" / "retrieval.jsonl")
+    client = FakeChatClient()
+    reader = LongMemEvalReader(
+        client,
+        LongMemEvalReaderConfig(
+            top_k=5,
+            prompt_version=LONGMEMEVAL_FACT_READER_PROMPT_VERSION,
+            evidence_mode="reranker_facts",
+        ),
+    )
+    config = LongMemEvalQARunConfig(
+        retrieval_run=retrieval_run,
+        methods=["bm25"],
+        top_k=5,
+        qa_subdir="qa_v2_dev",
+        reader_metadata={"provider": "fake-vllm", "model": "fake-reader"},
+    )
+
+    result = run_longmemeval_qa(config, reader=reader)
+
+    assert result.qa_dir == retrieval_run / "qa_v2_dev"
+    assert result.summaries["bm25"].answerable_fact_coverage_rate == 1.0
+    records = _read_jsonl(result.qa_dir / "bm25.jsonl")
+    assert records[0]["reader_prompt_version"] == LONGMEMEVAL_FACT_READER_PROMPT_VERSION
+    assert records[0]["evidence_fact_count"] == 1
+    assert (result.qa_dir / "hypotheses" / "bm25.jsonl").exists()
+
+    resumed = config.model_copy(update={"resume": True})
+    run_longmemeval_qa(resumed, reader=reader)
+    assert client.calls == 2
+
+
 def test_retrieval_table_export_writes_all_formats(tmp_path) -> None:
     retrieval_run = _build_retrieval_run(tmp_path)
 
@@ -112,6 +147,39 @@ def _read_jsonl(path) -> list[dict]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
+
+def _add_reranker_facts(path) -> None:
+    records = _read_jsonl(path)
+    records[0]["rerank_metadata"] = {
+        "selector_evidence_selections": [
+            {
+                "candidate_label": "C01",
+                "session_id": "s_new",
+                "rank": 1,
+                "candidate_relevant": True,
+                "lexical_overlap": 1.0,
+                "facts": [
+                    {
+                        "fact_id": "C01:F01",
+                        "entity": "Alex",
+                        "relation": "now_prefers",
+                        "value": "swimming",
+                        "temporal_anchor": "2024-01-20",
+                        "supports_needs": ["N1"],
+                        "evidence_spans": ["X:S01"],
+                        "confidence": "high",
+                    }
+                ],
+                "extraction_fallback": False,
+                "extraction_failures": [],
+            }
+        ]
+    }
+    path.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
 
 
 def _answerable_record() -> dict:

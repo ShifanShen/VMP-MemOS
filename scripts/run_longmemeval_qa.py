@@ -8,6 +8,8 @@ import logging
 from pathlib import Path
 
 from vmp_memos.llm import (
+    LONGMEMEVAL_FACT_READER_PROMPT_VERSION,
+    LONGMEMEVAL_LEGACY_READER_PROMPT_VERSION,
     LLMGenerationConfig,
     LongMemEvalReader,
     LongMemEvalReaderConfig,
@@ -37,6 +39,20 @@ def main() -> int:
     parser.add_argument("--model", default=None)
     parser.add_argument("--api-key", default=None)
     parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument(
+        "--prompt-version",
+        choices=(
+            LONGMEMEVAL_LEGACY_READER_PROMPT_VERSION,
+            LONGMEMEVAL_FACT_READER_PROMPT_VERSION,
+        ),
+        default=LONGMEMEVAL_LEGACY_READER_PROMPT_VERSION,
+    )
+    parser.add_argument(
+        "--evidence-mode",
+        choices=("full_sessions", "reranker_facts"),
+        default="full_sessions",
+    )
+    parser.add_argument("--qa-subdir", default="qa")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--temperature", type=float, default=0.0)
@@ -67,9 +83,17 @@ def main() -> int:
         args.resume,
     )
 
+    client = VLLMClient(client_config)
+    served_models = client.ensure_ready()
+    LOGGER.info("vLLM preflight passed: served_models=%s", ",".join(served_models))
     reader = LongMemEvalReader(
-        VLLMClient(client_config),
-        LongMemEvalReaderConfig(top_k=args.top_k, generation=generation),
+        client,
+        LongMemEvalReaderConfig(
+            top_k=args.top_k,
+            prompt_version=args.prompt_version,
+            evidence_mode=args.evidence_mode,
+            generation=generation,
+        ),
     )
     methods = (
         [method.strip() for method in args.methods.split(",") if method.strip()]
@@ -82,10 +106,14 @@ def main() -> int:
         top_k=args.top_k,
         limit=args.limit,
         resume=args.resume,
+        qa_subdir=args.qa_subdir,
         reader_metadata={
             "provider": "vllm",
             "base_url": client_config.base_url,
             "model": client_config.model,
+            "prompt_version": args.prompt_version,
+            "evidence_mode": args.evidence_mode,
+            "gold_answers_visible_to_reader": False,
         },
     )
     result = run_longmemeval_qa(run_config, reader=reader)
@@ -95,6 +123,8 @@ def main() -> int:
                 "retrieval_run": str(result.retrieval_run),
                 "qa_dir": str(result.qa_dir),
                 "manifest": str(result.manifest_path),
+                "prompt_version": args.prompt_version,
+                "evidence_mode": args.evidence_mode,
                 "methods": {
                     method: summary.model_dump(mode="json")
                     for method, summary in result.summaries.items()

@@ -150,6 +150,49 @@ uv run --no-sync bash scripts/run_vmp_v64_experiment.sh
 
 The frozen Test candidate, rerank, and QA stages should only be opened after the Dev quality gate passes. Set `RERANK_RESUME=1` only when continuing an interrupted run with identical settings.
 
+### Grounded QA Reader v2
+
+QA-v2 no longer inserts complete raw conversations into the reader prompt. It consumes only reranker facts grounded in the selected sessions and places the current date and question at the end of the prompt. Existing `qa/` artifacts remain untouched; new outputs are isolated under `qa_v2_smoke/`, `qa_v2_dev/`, and `qa_v2_test/`.
+
+With vLLM already running, begin with ten Dev samples:
+
+```bash
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=dev_smoke \
+uv run --no-sync bash scripts/run_vmp_v64_qa_experiment.sh
+```
+
+After inspecting the smoke answers, run all Dev questions. The script enforces refusal-rate, fact-coverage, and local-answer-quality gates at the end:
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=dev \
+uv run --no-sync bash scripts/run_vmp_v64_qa_experiment.sh
+```
+
+Generate Test answers only after the Dev QA gate passes:
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=test \
+uv run --no-sync bash scripts/run_vmp_v64_qa_experiment.sh
+```
+
+Cost export must explicitly select the gated QA directory so that stale results cannot be consumed accidentally:
+
+```bash
+uv run --no-sync python scripts/export_longmemeval_cost.py \
+  --retrieval-run outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42 \
+  --qa-subdir qa_v2_test
+```
+
 ## Fair-comparison policy
 
 Main paper comparisons follow these constraints:

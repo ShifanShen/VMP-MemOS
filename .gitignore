@@ -32,6 +32,7 @@ outputs/models/*
 outputs/demo-workspace/
 outputs/demo-*/
 outputs/longmemeval/
+tests/outputs/
 !memory_workspace/vector/.gitkeep
 !memory_workspace/cache/.gitkeep
 !outputs/runs/.gitkeep

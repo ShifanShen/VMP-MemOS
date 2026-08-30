@@ -15,6 +15,11 @@ def main() -> int:
     parser.add_argument("--retrieval-run", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument(
+        "--qa-subdir",
+        default="qa",
+        help="QA artifact directory inside the retrieval run (default: qa).",
+    )
+    parser.add_argument(
         "--allow-missing-qa",
         action="store_true",
         help="Export a retrieval-only preview with QA fields left at zero.",
@@ -25,6 +30,7 @@ def main() -> int:
         args.retrieval_run,
         output_dir=args.output_dir,
         require_qa=not args.allow_missing_qa,
+        qa_subdir=args.qa_subdir,
     )
     print(
         json.dumps(

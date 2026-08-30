@@ -76,13 +76,17 @@ def test_cost_analysis_requires_aligned_qa_and_exports_all_formats(tmp_path) -> 
             retrieval_run=retrieval.run_dir,
             methods=["bm25"],
             top_k=5,
+            qa_subdir="qa_v2",
         ),
         reader=reader,
     )
-    report = analyze_longmemeval_cost(retrieval.run_dir)
+    with pytest.raises(ValueError, match="QA artifacts"):
+        analyze_longmemeval_cost(retrieval.run_dir)
+    report = analyze_longmemeval_cost(retrieval.run_dir, qa_subdir="qa_v2")
     summary = report.methods["bm25"]
 
     assert report.qa_complete is True
+    assert report.qa_subdir == "qa_v2"
     assert summary.samples == 2
     assert summary.correct_answers == 2
     assert summary.total_reader_input_tokens == 200
@@ -95,6 +99,7 @@ def test_cost_analysis_requires_aligned_qa_and_exports_all_formats(tmp_path) -> 
     outputs = export_longmemeval_cost(
         retrieval.run_dir,
         output_dir=tmp_path / "tables",
+        qa_subdir="qa_v2",
     )
     assert len(outputs) == 4
     assert all(path.exists() for path in outputs.values())

@@ -18,6 +18,8 @@ from vmp_memos.llm.evidence_coverage import (
     select_evidence_coverage,
 )
 from vmp_memos.llm.reader import (
+    LONGMEMEVAL_FACT_READER_PROMPT_VERSION,
+    LONGMEMEVAL_LEGACY_READER_PROMPT_VERSION,
     LongMemEvalReader,
     LongMemEvalReaderConfig,
     ReaderOutput,
@@ -71,7 +73,9 @@ from vmp_memos.llm.vllm_client import VLLMClient, VLLMClientConfig, load_vllm_co
 __all__ = [
     "LONGMEMEVAL_ATOMIC_BOUNDARY_PROMPT_VERSION",
     "LONGMEMEVAL_BOUNDARY_PROMPT_VERSION",
+    "LONGMEMEVAL_FACT_READER_PROMPT_VERSION",
     "LONGMEMEVAL_IDENTITY_CANDIDATE_PLANNER_VERSION",
+    "LONGMEMEVAL_LEGACY_READER_PROMPT_VERSION",
     "LONGMEMEVAL_LEXICAL_EXCERPT_VERSION",
     "LONGMEMEVAL_RERANK_PROMPT_VERSION",
     "LONGMEMEVAL_ROLE_AWARE_EXCERPT_V3_VERSION",
