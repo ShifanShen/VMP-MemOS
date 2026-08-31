@@ -18,7 +18,11 @@ from vmp_memos.evaluation import (
     is_abstention_answer,
 )
 from vmp_memos.frameworks import RetrievedMemory
-from vmp_memos.llm import CandidateEvidenceProfile, LongMemEvalReader
+from vmp_memos.llm import (
+    CandidateEvidenceProfile,
+    LongMemEvalReader,
+    build_query_evidence_windows,
+)
 from vmp_memos.longmemeval.retrieval_runner import RetrievalSampleRecord
 from vmp_memos.schemas.base import (
     NonEmptyStr,
@@ -70,6 +74,9 @@ class QASampleRecord(SchemaModel):
     prompt_sha256: NonEmptyStr
     evidence_profile_count: NonNegativeInt = 0
     evidence_fact_count: NonNegativeInt = 0
+    evidence_window_count: NonNegativeInt = 0
+    evidence_span_count: NonNegativeInt = 0
+    evidence_window_chars: NonNegativeInt = 0
     retrieved_tokens: NonNegativeInt = 0
     reader_input_tokens: NonNegativeInt = 0
     reader_output_tokens: NonNegativeInt = 0
@@ -91,7 +98,11 @@ class QAMethodSummary(SchemaModel):
     by_question_type: dict[str, dict[str, NonNegativeFloat]] = Field(default_factory=dict)
     answerable_refusal_rate: NonNegativeFloat = 0.0
     answerable_fact_coverage_rate: NonNegativeFloat = 0.0
+    answerable_evidence_coverage_rate: NonNegativeFloat = 0.0
     mean_evidence_fact_count: NonNegativeFloat = 0.0
+    mean_evidence_window_count: NonNegativeFloat = 0.0
+    mean_evidence_span_count: NonNegativeFloat = 0.0
+    mean_evidence_window_chars: NonNegativeFloat = 0.0
     mean_retrieved_tokens: NonNegativeFloat = 0.0
     mean_reader_input_tokens: NonNegativeFloat = 0.0
     mean_reader_output_tokens: NonNegativeFloat = 0.0
@@ -145,7 +156,10 @@ def run_longmemeval_qa(
         )
         for method in methods
     }
-    if reader.config.evidence_mode == "reranker_facts":
+    if reader.config.evidence_mode in {
+        "reranker_facts",
+        "reranker_facts_with_query_windows",
+    }:
         for method, retrieval_records in retrieval_records_by_method.items():
             fact_questions, fact_count = _preflight_evidence_profiles(
                 retrieval_records,
@@ -159,6 +173,24 @@ def run_longmemeval_qa(
                 fact_questions,
                 fact_count,
             )
+            if reader.config.evidence_mode == "reranker_facts_with_query_windows":
+                window_questions, window_count, span_count, window_chars = (
+                    _preflight_query_windows(
+                        retrieval_records,
+                        reader=reader,
+                        top_k=config.top_k,
+                    )
+                )
+                LOGGER.info(
+                    "Query-window preflight passed for %s: questions=%d "
+                    "questions_with_windows=%d windows=%d spans=%d chars=%d",
+                    method,
+                    len(retrieval_records),
+                    window_questions,
+                    window_count,
+                    span_count,
+                    window_chars,
+                )
 
     qa_dir = retrieval_run / config.qa_subdir
     hypothesis_dir = (
@@ -346,8 +378,26 @@ def summarize_qa_method(
         answerable_fact_coverage_rate=_mean(
             [float(record.evidence_fact_count > 0) for record in answerable_records]
         ),
+        answerable_evidence_coverage_rate=_mean(
+            [
+                float(
+                    record.evidence_fact_count > 0
+                    or record.evidence_window_count > 0
+                )
+                for record in answerable_records
+            ]
+        ),
         mean_evidence_fact_count=_mean(
             [record.evidence_fact_count for record in records]
+        ),
+        mean_evidence_window_count=_mean(
+            [record.evidence_window_count for record in records]
+        ),
+        mean_evidence_span_count=_mean(
+            [record.evidence_span_count for record in records]
+        ),
+        mean_evidence_window_chars=_mean(
+            [record.evidence_window_chars for record in records]
         ),
         mean_retrieved_tokens=_mean([record.retrieved_tokens for record in records]),
         mean_reader_input_tokens=_mean(
@@ -428,6 +478,9 @@ def _answer_one(
         ).hexdigest(),
         evidence_profile_count=output.evidence_profile_count,
         evidence_fact_count=output.evidence_fact_count,
+        evidence_window_count=output.evidence_window_count,
+        evidence_span_count=output.evidence_span_count,
+        evidence_window_chars=output.evidence_window_chars,
         retrieved_tokens=sum(memory.token_count for memory in memories),
         reader_input_tokens=output.input_tokens,
         reader_output_tokens=output.output_tokens,
@@ -492,6 +545,24 @@ def _qa_signature(
     methods: list[str],
 ) -> dict[str, JsonValue]:
     method_values: list[JsonValue] = list(methods)
+    protocol: dict[str, JsonValue] = {
+        "prompt_version": reader.config.prompt_version,
+        "evidence_mode": reader.config.evidence_mode,
+        "gold_answers_visible_to_reader": False,
+    }
+    if reader.config.evidence_mode == "reranker_facts_with_query_windows":
+        protocol["query_windows"] = {
+            "version": reader.config.query_window_version,
+            "max_memories": reader.config.query_window_max_memories,
+            "max_spans_per_memory": (
+                reader.config.query_window_max_spans_per_memory
+            ),
+            "radius": reader.config.query_window_radius,
+            "max_chars_per_memory": (
+                reader.config.query_window_max_chars_per_memory
+            ),
+            "total_max_chars": reader.config.query_window_total_max_chars,
+        }
     return {
         "retrieval_run": str(config.retrieval_run.expanduser().resolve()),
         "methods": method_values,
@@ -499,11 +570,7 @@ def _qa_signature(
         "limit": config.limit,
         "qa_subdir": config.qa_subdir,
         "generation": reader.config.generation.model_dump(mode="json"),
-        "protocol": {
-            "prompt_version": reader.config.prompt_version,
-            "evidence_mode": reader.config.evidence_mode,
-            "gold_answers_visible_to_reader": False,
-        },
+        "protocol": protocol,
         "reader": config.reader_metadata,
     }
 
@@ -567,6 +634,36 @@ def _preflight_evidence_profiles(
             questions_with_facts += 1
             fact_count += observed
     return questions_with_facts, fact_count
+
+
+def _preflight_query_windows(
+    records: list[RetrievalSampleRecord],
+    *,
+    reader: LongMemEvalReader,
+    top_k: int,
+) -> tuple[int, int, int, int]:
+    """Build every deterministic window before the first vLLM answer call."""
+
+    questions_with_windows = 0
+    window_count = 0
+    span_count = 0
+    window_chars = 0
+    for record in records:
+        windows = build_query_evidence_windows(
+            question=record.question,
+            memories=record.retrieved_memories[:top_k],
+            max_memories=reader.config.query_window_max_memories,
+            max_spans_per_memory=reader.config.query_window_max_spans_per_memory,
+            radius=reader.config.query_window_radius,
+            max_chars_per_memory=reader.config.query_window_max_chars_per_memory,
+            total_max_chars=reader.config.query_window_total_max_chars,
+        )
+        if windows:
+            questions_with_windows += 1
+        window_count += len(windows)
+        span_count += sum(len(window.spans) for window in windows)
+        window_chars += sum(window.char_count for window in windows)
+    return questions_with_windows, window_count, span_count, window_chars
 
 
 def _resolve_methods(retrieval_run: Path, requested: list[str]) -> list[str]:

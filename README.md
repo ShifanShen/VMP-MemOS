@@ -150,9 +150,9 @@ uv run --no-sync bash scripts/run_vmp_v64_experiment.sh
 
 只有 Dev gate 通过后，才应执行冻结的 Test candidate、rerank 和 QA 流程。中断后可设置 `RERANK_RESUME=1` 继续同一配置的 run。
 
-### Grounded QA Reader v2
+### Hybrid QA Reader v2.1
 
-QA-v2 不再把整段原始对话直接拼进 reader prompt。它只读取 reranker 已保存且绑定到所选 session 的结构化事实，并将当前日期与问题放在 prompt 末尾。旧的 `qa/` 结果会保留；新结果分别写入 `qa_v2_smoke/`、`qa_v2_dev/` 和 `qa_v2_test/`。
+QA-v2.1 同时使用 reranker 保存的 grounded facts，以及从完整 Top-5 session 中无标签、确定性提取的 query-centered evidence windows。窗口保留 lexical anchor、相邻句和相邻同角色 turn，解决纯 facts handoff 遗漏答案或计算操作数的问题；当前日期与问题仍放在 prompt 末尾。旧的 `qa/` 和 `qa_v2_*` 结果会保留，新结果分别写入 `qa_v21_smoke/`、`qa_v21_dev/` 和 `qa_v21_test/`。
 
 在 vLLM 已启动后，先运行 10 个 Dev 样本：
 
@@ -190,7 +190,7 @@ uv run --no-sync bash scripts/run_vmp_v64_qa_experiment.sh
 ```bash
 uv run --no-sync python scripts/export_longmemeval_cost.py \
   --retrieval-run outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42 \
-  --qa-subdir qa_v2_test
+  --qa-subdir qa_v21_test
 ```
 
 ## 公平比较原则

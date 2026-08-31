@@ -9,6 +9,7 @@ from pathlib import Path
 
 from vmp_memos.llm import (
     LONGMEMEVAL_FACT_READER_PROMPT_VERSION,
+    LONGMEMEVAL_HYBRID_READER_PROMPT_VERSION,
     LONGMEMEVAL_LEGACY_READER_PROMPT_VERSION,
     LLMGenerationConfig,
     LongMemEvalReader,
@@ -44,15 +45,26 @@ def main() -> int:
         choices=(
             LONGMEMEVAL_LEGACY_READER_PROMPT_VERSION,
             LONGMEMEVAL_FACT_READER_PROMPT_VERSION,
+            LONGMEMEVAL_HYBRID_READER_PROMPT_VERSION,
         ),
         default=LONGMEMEVAL_LEGACY_READER_PROMPT_VERSION,
     )
     parser.add_argument(
         "--evidence-mode",
-        choices=("full_sessions", "reranker_facts"),
+        choices=(
+            "full_sessions",
+            "reranker_facts",
+            "reranker_facts_with_query_windows",
+        ),
         default="full_sessions",
     )
     parser.add_argument("--qa-subdir", default="qa")
+    parser.add_argument(
+        "--protocol-selection-split",
+        choices=("dev",),
+        default=None,
+        help="Declare the split used to select the frozen reader protocol.",
+    )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--temperature", type=float, default=0.0)
@@ -114,6 +126,7 @@ def main() -> int:
             "prompt_version": args.prompt_version,
             "evidence_mode": args.evidence_mode,
             "gold_answers_visible_to_reader": False,
+            "protocol_selection_split": args.protocol_selection_split,
         },
     )
     result = run_longmemeval_qa(run_config, reader=reader)

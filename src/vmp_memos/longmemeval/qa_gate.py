@@ -8,6 +8,7 @@ from pathlib import Path
 
 from pydantic import Field, JsonValue
 
+from vmp_memos.llm import LONGMEMEVAL_QUERY_WINDOW_VERSION
 from vmp_memos.longmemeval.qa_runner import QASampleRecord
 from vmp_memos.schemas.base import NonEmptyStr, SchemaModel, Score
 
@@ -20,8 +21,10 @@ class LongMemEvalQAGateConfig(SchemaModel):
     methods: list[NonEmptyStr] = Field(min_length=1)
     expected_prompt_version: NonEmptyStr
     expected_evidence_mode: NonEmptyStr
+    expected_query_window_version: NonEmptyStr = LONGMEMEVAL_QUERY_WINDOW_VERSION
     max_answerable_refusal_rate: Score = 0.25
     min_answerable_fact_coverage: Score = 0.90
+    min_answerable_evidence_coverage: Score = 0.95
     min_token_f1: Score = 0.25
     min_contains_answer: Score = 0.10
     min_abstention_accuracy: Score = 0.50
@@ -54,6 +57,8 @@ def evaluate_longmemeval_qa_gate(
     qa_manifest = _read_json(qa_manifest_path)
     signature = _mapping(qa_manifest.get("signature"))
     protocol = _mapping(signature.get("protocol"))
+    query_windows = _mapping(protocol.get("query_windows"))
+    reader_metadata = _mapping(signature.get("reader"))
     split = _mapping(retrieval_manifest.get("split"))
     expected_count = _as_int(retrieval_manifest.get("sample_count"))
 
@@ -74,10 +79,22 @@ def evaluate_longmemeval_qa_gate(
         "evidence_mode_matches": (
             protocol.get("evidence_mode") == config.expected_evidence_mode
         ),
+        "query_window_version_matches": (
+            query_windows.get("version") == config.expected_query_window_version
+            if config.expected_evidence_mode
+            == "reranker_facts_with_query_windows"
+            else True
+        ),
         "gold_answers_hidden_from_reader": (
             protocol.get("gold_answers_visible_to_reader") is False
         ),
         "test_labels_not_used": retrieval_manifest.get("test_labels_used") is False,
+        "dev_selection_declared": (
+            reader_metadata.get("protocol_selection_split") == "dev"
+            if config.expected_evidence_mode
+            == "reranker_facts_with_query_windows"
+            else True
+        ),
     }
     method_results: dict[str, JsonValue] = {}
     observed_readers: set[tuple[str, str]] = set()
@@ -85,6 +102,7 @@ def evaluate_longmemeval_qa_gate(
     all_protocol = True
     all_refusal = True
     all_fact_coverage = True
+    all_evidence_coverage = True
     all_token_f1 = True
     all_contains = True
     all_abstention = True
@@ -97,6 +115,9 @@ def evaluate_longmemeval_qa_gate(
             summary.get("answerable_refusal_rate")
         )
         fact_coverage = _as_float(summary.get("answerable_fact_coverage_rate"))
+        evidence_coverage = _as_float(
+            summary.get("answerable_evidence_coverage_rate")
+        )
         token_f1 = _as_float(metrics.get("token_f1"))
         contains_answer = _as_float(metrics.get("contains_answer"))
         abstention_accuracy = _as_float(metrics.get("abstention_accuracy"))
@@ -108,6 +129,12 @@ def evaluate_longmemeval_qa_gate(
         )
         refusal_pass = answerable_refusal_rate <= config.max_answerable_refusal_rate
         fact_pass = fact_coverage >= config.min_answerable_fact_coverage
+        evidence_pass = (
+            evidence_coverage >= config.min_answerable_evidence_coverage
+            if config.expected_evidence_mode
+            == "reranker_facts_with_query_windows"
+            else True
+        )
         token_f1_pass = token_f1 >= config.min_token_f1
         contains_pass = contains_answer >= config.min_contains_answer
         abstention_pass = abstention_accuracy >= config.min_abstention_accuracy
@@ -118,6 +145,7 @@ def evaluate_longmemeval_qa_gate(
         all_protocol = all_protocol and protocol_matches
         all_refusal = all_refusal and refusal_pass
         all_fact_coverage = all_fact_coverage and fact_pass
+        all_evidence_coverage = all_evidence_coverage and evidence_pass
         all_token_f1 = all_token_f1 and token_f1_pass
         all_contains = all_contains and contains_pass
         all_abstention = all_abstention and abstention_pass
@@ -127,6 +155,7 @@ def evaluate_longmemeval_qa_gate(
             "abstention_questions": _as_int(summary.get("abstention_questions")),
             "answerable_refusal_rate": answerable_refusal_rate,
             "answerable_fact_coverage_rate": fact_coverage,
+            "answerable_evidence_coverage_rate": evidence_coverage,
             "normalized_exact_match": _as_float(
                 metrics.get("normalized_exact_match")
             ),
@@ -138,6 +167,7 @@ def evaluate_longmemeval_qa_gate(
                 "record_protocol_matches": protocol_matches,
                 "answerable_refusal_rate": refusal_pass,
                 "answerable_fact_coverage": fact_pass,
+                "answerable_evidence_coverage": evidence_pass,
                 "token_f1": token_f1_pass,
                 "contains_answer": contains_pass,
                 "abstention_accuracy": abstention_pass,
@@ -150,6 +180,7 @@ def evaluate_longmemeval_qa_gate(
             "single_shared_reader": len(observed_readers) == 1,
             "answerable_refusal_rate": all_refusal,
             "answerable_fact_coverage": all_fact_coverage,
+            "answerable_evidence_coverage": all_evidence_coverage,
             "token_f1": all_token_f1,
             "contains_answer": all_contains,
             "abstention_accuracy": all_abstention,
@@ -166,12 +197,16 @@ def evaluate_longmemeval_qa_gate(
         required={
             "max_answerable_refusal_rate": config.max_answerable_refusal_rate,
             "min_answerable_fact_coverage": config.min_answerable_fact_coverage,
+            "min_answerable_evidence_coverage": (
+                config.min_answerable_evidence_coverage
+            ),
+            "expected_query_window_version": config.expected_query_window_version,
             "min_token_f1": config.min_token_f1,
             "min_contains_answer": config.min_contains_answer,
             "min_abstention_accuracy": config.min_abstention_accuracy,
         },
         checks=checks,
-        test_labels_used=False,
+        test_labels_used=retrieval_manifest.get("test_labels_used") is True,
     )
 
 

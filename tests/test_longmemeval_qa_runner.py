@@ -7,6 +7,7 @@ from collections.abc import Sequence
 
 from vmp_memos.llm import (
     LONGMEMEVAL_FACT_READER_PROMPT_VERSION,
+    LONGMEMEVAL_HYBRID_READER_PROMPT_VERSION,
     ChatMessage,
     LLMGenerationConfig,
     LLMResponse,
@@ -100,13 +101,54 @@ def test_qa_runner_writes_fact_reader_to_a_versioned_subdirectory(tmp_path) -> N
     assert result.qa_dir == retrieval_run / "qa_v2_dev"
     assert result.summaries["bm25"].answerable_fact_coverage_rate == 1.0
     records = _read_jsonl(result.qa_dir / "bm25.jsonl")
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     assert records[0]["reader_prompt_version"] == LONGMEMEVAL_FACT_READER_PROMPT_VERSION
     assert records[0]["evidence_fact_count"] == 1
+    assert "query_windows" not in manifest["signature"]["protocol"]
     assert (result.qa_dir / "hypotheses" / "bm25.jsonl").exists()
 
     resumed = config.model_copy(update={"resume": True})
     run_longmemeval_qa(resumed, reader=reader)
     assert client.calls == 2
+
+
+def test_qa_runner_audits_hybrid_query_windows(tmp_path) -> None:
+    retrieval_run = _build_retrieval_run(tmp_path)
+    _add_reranker_facts(retrieval_run / "bm25" / "retrieval.jsonl")
+    client = FakeChatClient()
+    reader = LongMemEvalReader(
+        client,
+        LongMemEvalReaderConfig(
+            top_k=5,
+            prompt_version=LONGMEMEVAL_HYBRID_READER_PROMPT_VERSION,
+            evidence_mode="reranker_facts_with_query_windows",
+        ),
+    )
+    config = LongMemEvalQARunConfig(
+        retrieval_run=retrieval_run,
+        methods=["bm25"],
+        top_k=5,
+        qa_subdir="qa_v21_dev",
+        reader_metadata={"provider": "fake-vllm", "model": "fake-reader"},
+    )
+
+    result = run_longmemeval_qa(config, reader=reader)
+
+    summary = result.summaries["bm25"]
+    records = _read_jsonl(result.qa_dir / "bm25.jsonl")
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert result.qa_dir == retrieval_run / "qa_v21_dev"
+    assert summary.answerable_evidence_coverage_rate == 1.0
+    assert records[0]["reader_prompt_version"] == (
+        LONGMEMEVAL_HYBRID_READER_PROMPT_VERSION
+    )
+    assert records[0]["evidence_window_count"] >= 1
+    assert records[0]["evidence_span_count"] >= 1
+    assert records[0]["evidence_window_chars"] >= 1
+    assert "Evidence Windows:" in client.prompts[0]
+    assert manifest["signature"]["protocol"]["query_windows"]["version"] == (
+        "query_centered_turn_context_v1"
+    )
 
 
 def test_retrieval_table_export_writes_all_formats(tmp_path) -> None:

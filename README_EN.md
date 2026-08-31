@@ -150,9 +150,9 @@ uv run --no-sync bash scripts/run_vmp_v64_experiment.sh
 
 The frozen Test candidate, rerank, and QA stages should only be opened after the Dev quality gate passes. Set `RERANK_RESUME=1` only when continuing an interrupted run with identical settings.
 
-### Grounded QA Reader v2
+### Hybrid QA Reader v2.1
 
-QA-v2 no longer inserts complete raw conversations into the reader prompt. It consumes only reranker facts grounded in the selected sessions and places the current date and question at the end of the prompt. Existing `qa/` artifacts remain untouched; new outputs are isolated under `qa_v2_smoke/`, `qa_v2_dev/`, and `qa_v2_test/`.
+QA-v2.1 combines reranker-grounded facts with label-free, deterministic query-centered evidence windows extracted from the complete Top-5 sessions. Each window retains lexical anchors, adjacent sentences, and adjacent same-role turns, recovering answer values and reasoning operands lost by a facts-only handoff. The current date and question remain at the end of the prompt. Existing `qa/` and `qa_v2_*` artifacts remain untouched; new outputs are isolated under `qa_v21_smoke/`, `qa_v21_dev/`, and `qa_v21_test/`.
 
 With vLLM already running, begin with ten Dev samples:
 
@@ -190,7 +190,7 @@ Cost export must explicitly select the gated QA directory so that stale results 
 ```bash
 uv run --no-sync python scripts/export_longmemeval_cost.py \
   --retrieval-run outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42 \
-  --qa-subdir qa_v2_test
+  --qa-subdir qa_v21_test
 ```
 
 ## Fair-comparison policy

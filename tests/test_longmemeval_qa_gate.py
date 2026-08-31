@@ -5,7 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 
-from vmp_memos.llm import LONGMEMEVAL_FACT_READER_PROMPT_VERSION
+from vmp_memos.llm import (
+    LONGMEMEVAL_FACT_READER_PROMPT_VERSION,
+    LONGMEMEVAL_HYBRID_READER_PROMPT_VERSION,
+    LONGMEMEVAL_QUERY_WINDOW_VERSION,
+)
 from vmp_memos.longmemeval.qa_gate import (
     LongMemEvalQAGateConfig,
     evaluate_longmemeval_qa_gate,
@@ -33,6 +37,60 @@ def test_qa_gate_rejects_answerable_refusal_collapse(tmp_path) -> None:
 
     assert result.status == "failed"
     assert result.checks["answerable_refusal_rate"] is False
+
+
+def test_hybrid_qa_gate_requires_query_window_evidence_coverage(tmp_path) -> None:
+    retrieval_run = _write_gate_fixture(tmp_path)
+    source = retrieval_run / "qa_v2_dev"
+    qa_dir = source.rename(retrieval_run / "qa_v21_dev")
+    records = [
+        json.loads(line)
+        for line in (qa_dir / "method.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    for record in records:
+        record["reader_prompt_version"] = LONGMEMEVAL_HYBRID_READER_PROMPT_VERSION
+        record["reader_evidence_mode"] = "reranker_facts_with_query_windows"
+    (qa_dir / "method.jsonl").write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    summary = json.loads(
+        (qa_dir / "method.summary.json").read_text(encoding="utf-8")
+    )
+    summary["answerable_evidence_coverage_rate"] = 0.5
+    (qa_dir / "method.summary.json").write_text(
+        json.dumps(summary),
+        encoding="utf-8",
+    )
+    manifest = json.loads((qa_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest["signature"]["qa_subdir"] = "qa_v21_dev"
+    manifest["signature"]["protocol"]["prompt_version"] = (
+        LONGMEMEVAL_HYBRID_READER_PROMPT_VERSION
+    )
+    manifest["signature"]["protocol"]["evidence_mode"] = (
+        "reranker_facts_with_query_windows"
+    )
+    manifest["signature"]["protocol"]["query_windows"] = {
+        "version": LONGMEMEVAL_QUERY_WINDOW_VERSION
+    }
+    manifest["signature"]["reader"] = {"protocol_selection_split": "dev"}
+    (qa_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = evaluate_longmemeval_qa_gate(
+        LongMemEvalQAGateConfig(
+            retrieval_run=retrieval_run,
+            qa_subdir="qa_v21_dev",
+            methods=["method"],
+            expected_prompt_version=LONGMEMEVAL_HYBRID_READER_PROMPT_VERSION,
+            expected_evidence_mode="reranker_facts_with_query_windows",
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.checks["answerable_evidence_coverage"] is False
+    assert result.checks["query_window_version_matches"] is True
+    assert result.checks["dev_selection_declared"] is True
 
 
 def _write_gate_fixture(tmp_path):

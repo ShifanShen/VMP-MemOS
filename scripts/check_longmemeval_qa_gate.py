@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
+from vmp_memos.llm import LONGMEMEVAL_QUERY_WINDOW_VERSION
 from vmp_memos.longmemeval.qa_gate import (
     LongMemEvalQAGateConfig,
     evaluate_longmemeval_qa_gate,
@@ -20,9 +21,14 @@ def main() -> int:
     parser.add_argument("--methods", required=True)
     parser.add_argument("--expected-prompt-version", required=True)
     parser.add_argument("--expected-evidence-mode", required=True)
+    parser.add_argument(
+        "--expected-query-window-version",
+        default=LONGMEMEVAL_QUERY_WINDOW_VERSION,
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--max-answerable-refusal-rate", type=float, default=0.25)
     parser.add_argument("--min-answerable-fact-coverage", type=float, default=0.90)
+    parser.add_argument("--min-answerable-evidence-coverage", type=float, default=0.95)
     parser.add_argument("--min-token-f1", type=float, default=0.25)
     parser.add_argument("--min-contains-answer", type=float, default=0.10)
     parser.add_argument("--min-abstention-accuracy", type=float, default=0.50)
@@ -35,8 +41,12 @@ def main() -> int:
             methods=[value.strip() for value in args.methods.split(",") if value.strip()],
             expected_prompt_version=args.expected_prompt_version,
             expected_evidence_mode=args.expected_evidence_mode,
+            expected_query_window_version=args.expected_query_window_version,
             max_answerable_refusal_rate=args.max_answerable_refusal_rate,
             min_answerable_fact_coverage=args.min_answerable_fact_coverage,
+            min_answerable_evidence_coverage=(
+                args.min_answerable_evidence_coverage
+            ),
             min_token_f1=args.min_token_f1,
             min_contains_answer=args.min_contains_answer,
             min_abstention_accuracy=args.min_abstention_accuracy,
