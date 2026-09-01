@@ -193,6 +193,45 @@ uv run --no-sync python scripts/export_longmemeval_cost.py \
   --qa-subdir qa_v21_test
 ```
 
+### Official-prompt-compatible judging and statistics
+
+EM, Token F1, and Contains Answer in a QA directory are model-free diagnostics; they are not the binary QA accuracy used by the LongMemEval paper. The repository now mirrors the six task-specific prompts and `yes` decision rule from the official `evaluate_qa.py`, while using one shared local vLLM model to judge every method fairly. Artifacts are explicitly labeled `official_prompt_local_vllm_judge`: they support within-repository comparisons but must not be presented as scores from the official pinned GPT-4o judge.
+
+First judge ten saved Test predictions. This does not regenerate any answer:
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=judge_smoke \
+uv run --no-sync bash scripts/run_vmp_v64_paper_qa_eval.sh
+```
+
+After confirming that the judge returns only `yes` or `no`, judge the complete run and export CSV, Markdown, and LaTeX tables, paired bootstrap 95% confidence intervals, and exact McNemar tests:
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=all \
+uv run --no-sync bash scripts/run_vmp_v64_paper_qa_eval.sh
+```
+
+Default artifacts are written under:
+
+```text
+outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42/
+  qa_v21_test/official_judge_local_vllm_v1/
+    manifest.json
+    summary.json
+    paper/qa_paper_report.json
+    paper/table3_qa_official_prompt_overall.{csv,md,tex}
+    paper/table4_qa_official_prompt_by_type.{csv,md,tex}
+    paper/table5_qa_paired_significance.{csv,md,tex}
+```
+
+Files under `qa_v21_test/hypotheses/*.jsonl` retain the upstream `question_id`/`hypothesis` format for independent regrading. Direct comparison with published results obtained from the pinned GPT-4o judge requires a separate run of the upstream LongMemEval evaluator with that exact judge version. A local-Qwen judge score is comparable only with methods graded by the same local judge.
+
 ## Fair-comparison policy
 
 Main paper comparisons follow these constraints:
@@ -215,7 +254,7 @@ Dataset caches, models, runtime logs, and `outputs/longmemeval/` are ignored by 
 
 ## Research status
 
-The repository contains the complete experiment infrastructure and the VMP-v6.4 Dev validation workflow. V6.2 reached `Recall-All@5 = 0.9362` on Dev but had one regression. V6.3 eliminated the regression but fell to `0.9149` because its extraction prompt was overly conservative. V6.4 restores the V6.2 extraction instruction templates while retaining the parser-side corrections; formal results still require a fresh local-vLLM run and the unchanged strict gate. Public main results, comparisons with recent academic systems, and a second benchmark still require frozen-configuration experiments, so this repository does not currently claim state of the art.
+VMP-v6.4 has completed frozen LongMemEval Test retrieval and QA-v2.1 generation. VMP-Hierarchical currently reaches `Recall-All@5 = 0.9388` and `MRR = 0.9555` on Test; its model-free QA diagnostics are `Token F1 = 0.4007` and `Contains Answer = 0.3963`. These QA values are diagnostics, not official judge accuracy. The next stage is to use the shared judge/report pipeline for same-model comparisons against official Mem0, LangMem, Graphiti, and Letta adapters and to add a second benchmark. The repository does not claim state of the art before those runs are complete.
 
 ## License
 

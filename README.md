@@ -193,6 +193,45 @@ uv run --no-sync python scripts/export_longmemeval_cost.py \
   --qa-subdir qa_v21_test
 ```
 
+### 官方 Prompt 兼容判分与统计
+
+QA 目录中的 EM、Token F1 和 Contains Answer 是无需模型的本地诊断指标，不等同于 LongMemEval 论文使用的二元 QA accuracy。仓库现在复刻官方 `evaluate_qa.py` 的六类判分 prompt 与 `yes` 判定规则，并通过同一个本地 vLLM 模型公平判分所有方法。产物会显式标记为 `official_prompt_local_vllm_judge`；它适合仓库内横向比较，但不能伪装成官方固定 GPT-4o judge 的公开分数。
+
+先用保存的 Test 答案运行 10 题 judge smoke；这一步不会重新生成答案：
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=judge_smoke \
+uv run --no-sync bash scripts/run_vmp_v64_paper_qa_eval.sh
+```
+
+确认 judge 仅输出 `yes`/`no` 后，完成全部判分并生成 CSV、Markdown、LaTeX 表格、成对 bootstrap 95% CI 与 exact McNemar 检验：
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct \
+STAGE=all \
+uv run --no-sync bash scripts/run_vmp_v64_paper_qa_eval.sh
+```
+
+默认产物位于：
+
+```text
+outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42/
+  qa_v21_test/official_judge_local_vllm_v1/
+    manifest.json
+    summary.json
+    paper/qa_paper_report.json
+    paper/table3_qa_official_prompt_overall.{csv,md,tex}
+    paper/table4_qa_official_prompt_by_type.{csv,md,tex}
+    paper/table5_qa_paired_significance.{csv,md,tex}
+```
+
+`qa_v21_test/hypotheses/*.jsonl` 同时保持官方上游要求的 `question_id`/`hypothesis` 格式，可用于独立复核。若要与使用固定 GPT-4o judge 的已发表数字直接比较，必须另外用 LongMemEval 上游 evaluator 和完全相同的 judge 版本复评；本地 Qwen judge 分数只能与使用同一 judge 的框架结果比较。
+
 ## 公平比较原则
 
 论文主表遵循以下约束：
@@ -215,7 +254,7 @@ uv run --no-sync python scripts/export_longmemeval_cost.py \
 
 ## 研究状态
 
-当前仓库已经具备完整实验基础设施和 VMP-v6.4 Dev 验证入口。V6.2 在 Dev 上达到 `Recall-All@5 = 0.9362`，但存在一个回退；V6.3 消除了回退，却因抽取提示词过度保守降至 `0.9149`。V6.4 恢复 V6.2 的抽取指令模板并保留解析侧修复，正式结果仍以新的本地 vLLM 运行及严格 gate 为准。公开主结果、近期学术框架对比以及第二 benchmark 仍需在冻结配置上完成，因此本仓库暂不宣称 SOTA。
+VMP-v6.4 已完成冻结的 LongMemEval Test 检索与 QA-v2.1 生成。当前 Test 上 VMP-Hierarchical 的 `Recall-All@5 = 0.9388`、`MRR = 0.9555`；本地词法 QA 指标为 `Token F1 = 0.4007`、`Contains Answer = 0.3963`。这些 QA 数字是诊断指标，不是官方 judge accuracy。下一阶段是使用新增的统一 judge/report 链路完成 VMP 与官方 Mem0、LangMem、Graphiti、Letta 的同模型对比，并增加第二 benchmark；在这些实验完成前，本仓库不宣称 SOTA。
 
 ## License
 
