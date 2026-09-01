@@ -232,6 +232,87 @@ outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42/
 
 Files under `qa_v21_test/hypotheses/*.jsonl` retain the upstream `question_id`/`hypothesis` format for independent regrading. Direct comparison with published results obtained from the pinned GPT-4o judge requires a separate run of the upstream LongMemEval evaluator with that exact judge version. A local-Qwen judge score is comparable only with methods graded by the same local judge.
 
+### Fair comparison with official OSS frameworks
+
+[`configs/official_frameworks.yaml`](configs/official_frameworks.yaml) freezes the package versions and shared protocol for Mem0, LangMem, Graphiti, and Letta. [`scripts/run_official_framework_paper_experiment.sh`](scripts/run_official_framework_paper_experiment.sh) runs one framework at a time and separates native memory retrieval, shared V6.4 evidence selection, QA-v2.1, and the local official-prompt judge into resumable stages. Official retrieval now persists and `fsync`s every completed question. Re-running an interrupted command with identical environment variables resumes only after validating the existing ordered prefix and all immutable inputs.
+
+Install the pinned extra for the current framework. Do not combine all four extras in one command:
+
+```bash
+# Replace official-mem0 with official-langmem / official-graphiti / official-letta
+uv sync --inexact --extra dev --extra embeddings --extra official-mem0
+```
+
+When serving the shared model, reserve GPU memory for BGE-M3. The values below are a starting point for a single 24 GB 4090D. If this still OOMs, lower the utilization or temporarily set `EMBEDDING_DEVICE=cpu`; CPU and CUDA latency must not be mixed in one efficiency table.
+
+```bash
+VMP_LLM_MODEL=/home/shenshifan/models/Qwen2.5-7B-Instruct \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_VLLM_GPU_MEMORY_UTILIZATION=0.72 \
+VMP_VLLM_MAX_MODEL_LEN=16384 \
+VMP_VLLM_ENABLE_TOOL_CALLING=0 \
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+uv run --no-sync bash scripts/serve_vllm.sh
+```
+
+For Mem0, run these stages in order. `status` is model-free and can be used at any time:
+
+```bash
+export FRAMEWORK=mem0
+export VMP_LLM_API_KEY=local-vllm-key
+export VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct  # must match the /v1/models id
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+STAGE=smoke           uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
+STAGE=audit           uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
+STAGE=test_candidates uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
+STAGE=test_rerank     uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
+STAGE=test_qa         uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
+STAGE=test_judge      uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
+STAGE=status          uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
+```
+
+Graphiti also requires a dedicated, disposable Neo4j instance:
+
+```bash
+export FRAMEWORK=graphiti
+export VMP_GRAPHITI_NEO4J_PASSWORD='password-for-this-experiment-container-only'
+uv run --no-sync bash scripts/serve_graphiti_neo4j.sh
+```
+
+Letta additionally requires a separate BGE OpenAI-compatible endpoint and the pinned Letta server:
+
+```bash
+uv run --no-sync python scripts/serve_embeddings.py \
+  --model BAAI/bge-m3 --device cuda --port 8001
+uv run --no-sync bash scripts/serve_letta.sh
+```
+
+Never feed a candidate run created with `FRAMEWORK=mem0` into another framework's later stages. The manifest and resume gate bind run ID, method, dataset hash, split, model, package versions, and every immutable setting. Report native retrieval and shared reranking separately to distinguish framework memory quality from shared post-processing gains.
+
+After all four framework judges complete, merge the independent runs into one strictly comparable statistics input. The merger never calls a model again. It rejects mismatched dataset hashes, question order, prompts, generation settings, or observed judge models:
+
+```bash
+COMPARE_DIR=outputs/longmemeval/comparisons/official_frameworks_qwen_seed42_v1
+
+uv run --no-sync python scripts/merge_longmemeval_official_judges.py \
+  --judge-run outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
+  --judge-run outputs/longmemeval/runs/lme_test_mem0_official_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
+  --judge-run outputs/longmemeval/runs/lme_test_langmem_official_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
+  --judge-run outputs/longmemeval/runs/lme_test_graphiti_official_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
+  --judge-run outputs/longmemeval/runs/lme_test_letta_official_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
+  --output "${COMPARE_DIR}"
+
+uv run --no-sync python scripts/export_longmemeval_qa_report.py \
+  --judge-run "${COMPARE_DIR}" \
+  --reference-method vmp_hierarchical__vllm_boundary \
+  --bootstrap-samples 10000 \
+  --seed 42
+```
+
+The comparison directory is immutable. Use a new versioned directory name when rebuilding it so that paper evidence is never overwritten.
+
 ## Fair-comparison policy
 
 Main paper comparisons follow these constraints:
@@ -254,7 +335,7 @@ Dataset caches, models, runtime logs, and `outputs/longmemeval/` are ignored by 
 
 ## Research status
 
-VMP-v6.4 has completed frozen LongMemEval Test retrieval and QA-v2.1 generation. VMP-Hierarchical currently reaches `Recall-All@5 = 0.9388` and `MRR = 0.9555` on Test; its model-free QA diagnostics are `Token F1 = 0.4007` and `Contains Answer = 0.3963`. These QA values are diagnostics, not official judge accuracy. The next stage is to use the shared judge/report pipeline for same-model comparisons against official Mem0, LangMem, Graphiti, and Letta adapters and to add a second benchmark. The repository does not claim state of the art before those runs are complete.
+VMP-v6.4 has completed frozen LongMemEval Test retrieval, QA-v2.1, and local official-prompt judging. VMP-Hierarchical reaches `Recall-All@5 = 0.9388` and `MRR = 0.9555`. Its shared local-Qwen judge accuracy is `0.5100`, versus `0.4825` for VMP-Tuned: a `+0.0275` difference with bootstrap 95% CI `[-0.0025, 0.0575]` and exact McNemar `p = 0.0895`. The current gain therefore does not pass the conventional 0.05 significance threshold and is not a SOTA claim. The next stage is the same-model official Mem0, LangMem, Graphiti, and Letta comparison above, followed by a second benchmark.
 
 ## License
 

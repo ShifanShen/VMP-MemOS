@@ -98,6 +98,96 @@ def test_retrieval_runner_rejects_unparseable_nonempty_dates(tmp_path) -> None:
         )
 
 
+def test_retrieval_runner_resumes_an_ordered_record_prefix(tmp_path) -> None:
+    data_path = tmp_path / "longmemeval.json"
+    data_path.write_text(
+        json.dumps([_answerable_record(), _abstention_record()]),
+        encoding="utf-8",
+    )
+    config = LongMemEvalRunConfig(
+        data_path=data_path,
+        methods=["bm25"],
+        output_dir=tmp_path / "outputs",
+    )
+    first = run_longmemeval_retrieval(config, run_id="resumable")
+    records_path = first.run_dir / "bm25" / "retrieval.jsonl"
+    first_record = records_path.read_text(encoding="utf-8").splitlines()[0]
+    records_path.write_text(first_record + "\n", encoding="utf-8")
+
+    resumed = run_longmemeval_retrieval(
+        config,
+        run_id="resumable",
+        resume=True,
+    )
+
+    records = _read_jsonl(records_path)
+    assert [record["question_id"] for record in records] == ["q1", "q2_abs"]
+    assert resumed.summaries["bm25"].processed_questions == 2
+    manifest = json.loads(resumed.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["status"] == "completed"
+    assert len(manifest["resume_history"]) == 1
+
+
+def test_retrieval_runner_resume_rejects_parameter_drift(tmp_path) -> None:
+    data_path = tmp_path / "longmemeval.json"
+    data_path.write_text(json.dumps([_answerable_record()]), encoding="utf-8")
+    original = LongMemEvalRunConfig(
+        data_path=data_path,
+        methods=["bm25"],
+        retrieval_depth=10,
+        output_dir=tmp_path / "outputs",
+    )
+    run_longmemeval_retrieval(original, run_id="immutable")
+    changed = original.model_copy(update={"retrieval_depth": 11})
+
+    with pytest.raises(ValueError, match="immutable inputs differ"):
+        run_longmemeval_retrieval(
+            changed,
+            run_id="immutable",
+            resume=True,
+        )
+
+
+def test_retrieval_runner_resume_repairs_only_a_torn_final_line(tmp_path) -> None:
+    data_path = tmp_path / "longmemeval.json"
+    data_path.write_text(json.dumps([_answerable_record()]), encoding="utf-8")
+    config = LongMemEvalRunConfig(
+        data_path=data_path,
+        methods=["bm25"],
+        output_dir=tmp_path / "outputs",
+    )
+    first = run_longmemeval_retrieval(config, run_id="torn")
+    records_path = first.run_dir / "bm25" / "retrieval.jsonl"
+    with records_path.open("a", encoding="utf-8") as stream:
+        stream.write('{"question_id":')
+
+    run_longmemeval_retrieval(config, run_id="torn", resume=True)
+
+    assert len(_read_jsonl(records_path)) == 1
+    assert records_path.read_text(encoding="utf-8").endswith("\n")
+
+
+def test_retrieval_runner_resume_terminates_a_valid_final_record(tmp_path) -> None:
+    data_path = tmp_path / "longmemeval.json"
+    data_path.write_text(json.dumps([_answerable_record()]), encoding="utf-8")
+    config = LongMemEvalRunConfig(
+        data_path=data_path,
+        methods=["bm25"],
+        output_dir=tmp_path / "outputs",
+    )
+    first = run_longmemeval_retrieval(config, run_id="missing_newline")
+    records_path = first.run_dir / "bm25" / "retrieval.jsonl"
+    records_path.write_text(
+        records_path.read_text(encoding="utf-8").rstrip("\n"),
+        encoding="utf-8",
+    )
+
+    run_longmemeval_retrieval(config, run_id="missing_newline", resume=True)
+
+    assert len(_read_jsonl(records_path)) == 1
+    assert records_path.read_text(encoding="utf-8").endswith("\n")
+
+
 def test_dev_model_selection_override_cannot_be_used_on_test() -> None:
     config = LongMemEvalRunConfig(
         data_path="data.json",

@@ -232,6 +232,87 @@ outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42/
 
 `qa_v21_test/hypotheses/*.jsonl` 同时保持官方上游要求的 `question_id`/`hypothesis` 格式，可用于独立复核。若要与使用固定 GPT-4o judge 的已发表数字直接比较，必须另外用 LongMemEval 上游 evaluator 和完全相同的 judge 版本复评；本地 Qwen judge 分数只能与使用同一 judge 的框架结果比较。
 
+### 官方 OSS 框架公平对比
+
+[`configs/official_frameworks.yaml`](configs/official_frameworks.yaml) 冻结了 Mem0、LangMem、Graphiti、Letta 的包版本和共享实验协议。[`scripts/run_official_framework_paper_experiment.sh`](scripts/run_official_framework_paper_experiment.sh) 每次只运行一个框架，并将 native memory retrieval、V6.4 共享 evidence selection、QA-v2.1 与本地 official-prompt judge 分成可恢复的独立阶段。官方检索现在每完成一个问题就持久化并 `fsync`；命令中断后使用完全相同的环境变量重跑即可从严格校验过的有序前缀继续。
+
+先安装当前框架的固定依赖；不要在同一个命令中混装四个 extra：
+
+```bash
+# 将 official-mem0 替换为 official-langmem / official-graphiti / official-letta
+uv sync --inexact --extra dev --extra embeddings --extra official-mem0
+```
+
+启动共享 vLLM 时建议给 BGE-M3 预留显存。以下设置适用于单张 24 GB 4090D 的起点；若仍 OOM，应降低 utilization 或暂时使用 `EMBEDDING_DEVICE=cpu`，但 CPU 延迟不得与 CUDA 延迟放进同一效率表：
+
+```bash
+VMP_LLM_MODEL=/home/shenshifan/models/Qwen2.5-7B-Instruct \
+VMP_LLM_API_KEY=local-vllm-key \
+VMP_VLLM_GPU_MEMORY_UTILIZATION=0.72 \
+VMP_VLLM_MAX_MODEL_LEN=16384 \
+VMP_VLLM_ENABLE_TOOL_CALLING=0 \
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+uv run --no-sync bash scripts/serve_vllm.sh
+```
+
+以 Mem0 为例，按顺序运行以下阶段。`status` 不访问模型，可随时查看已有产物：
+
+```bash
+export FRAMEWORK=mem0
+export VMP_LLM_API_KEY=local-vllm-key
+export VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct  # 必须等于 /v1/models 返回的 id
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+STAGE=smoke          uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
+STAGE=audit          uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
+STAGE=test_candidates uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
+STAGE=test_rerank    uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
+STAGE=test_qa        uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
+STAGE=test_judge     uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
+STAGE=status         uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
+```
+
+Graphiti 还需要一个专用且允许清空的 Neo4j：
+
+```bash
+export FRAMEWORK=graphiti
+export VMP_GRAPHITI_NEO4J_PASSWORD='仅用于该实验容器的密码'
+uv run --no-sync bash scripts/serve_graphiti_neo4j.sh
+```
+
+Letta 还需要独立的 BGE OpenAI-compatible endpoint 和固定版本的 Letta server：
+
+```bash
+uv run --no-sync python scripts/serve_embeddings.py \
+  --model BAAI/bge-m3 --device cuda --port 8001
+uv run --no-sync bash scripts/serve_letta.sh
+```
+
+不得用 `FRAMEWORK=mem0` 的候选 run 搭配其他框架的后续阶段；run ID、方法名、数据哈希、split、模型、包版本及所有不可变参数都会写入 manifest 并在恢复时核验。原生检索与共享 rerank 应分别报告，以区分框架本身的 memory quality 和统一后处理带来的增益。
+
+四个框架全部 judge 完成后，将独立 run 合并为一个严格可比的统计输入。合并器不重新调用模型；它会拒绝数据哈希、题目顺序、prompt、generation 参数或实际 judge 模型不一致的结果：
+
+```bash
+COMPARE_DIR=outputs/longmemeval/comparisons/official_frameworks_qwen_seed42_v1
+
+uv run --no-sync python scripts/merge_longmemeval_official_judges.py \
+  --judge-run outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
+  --judge-run outputs/longmemeval/runs/lme_test_mem0_official_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
+  --judge-run outputs/longmemeval/runs/lme_test_langmem_official_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
+  --judge-run outputs/longmemeval/runs/lme_test_graphiti_official_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
+  --judge-run outputs/longmemeval/runs/lme_test_letta_official_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
+  --output "${COMPARE_DIR}"
+
+uv run --no-sync python scripts/export_longmemeval_qa_report.py \
+  --judge-run "${COMPARE_DIR}" \
+  --reference-method vmp_hierarchical__vllm_boundary \
+  --bootstrap-samples 10000 \
+  --seed 42
+```
+
+比较目录是不可变产物；若需要重新合并，请使用新的版本化目录名，以免覆盖论文证据。
+
 ## 公平比较原则
 
 论文主表遵循以下约束：
@@ -254,7 +335,7 @@ outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42/
 
 ## 研究状态
 
-VMP-v6.4 已完成冻结的 LongMemEval Test 检索与 QA-v2.1 生成。当前 Test 上 VMP-Hierarchical 的 `Recall-All@5 = 0.9388`、`MRR = 0.9555`；本地词法 QA 指标为 `Token F1 = 0.4007`、`Contains Answer = 0.3963`。这些 QA 数字是诊断指标，不是官方 judge accuracy。下一阶段是使用新增的统一 judge/report 链路完成 VMP 与官方 Mem0、LangMem、Graphiti、Letta 的同模型对比，并增加第二 benchmark；在这些实验完成前，本仓库不宣称 SOTA。
+VMP-v6.4 已完成冻结的 LongMemEval Test 检索、QA-v2.1 和本地 official-prompt 判分。VMP-Hierarchical 的 `Recall-All@5 = 0.9388`、`MRR = 0.9555`；共享本地 Qwen judge accuracy 为 `0.5100`，VMP-Tuned 为 `0.4825`，差值 `+0.0275`，bootstrap 95% CI 为 `[-0.0025, 0.0575]`，exact McNemar `p = 0.0895`。因此当前改进尚未达到常用的 0.05 显著性阈值，也不能宣称 SOTA。下一阶段是运行上述官方 Mem0、LangMem、Graphiti、Letta 同模型对比，并增加第二 benchmark。
 
 ## License
 

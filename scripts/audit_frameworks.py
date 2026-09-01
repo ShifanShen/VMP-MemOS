@@ -41,6 +41,11 @@ def main() -> int:
         default="outputs/longmemeval/audit",
         help="Directory containing official adapter smoke JSON files.",
     )
+    parser.add_argument(
+        "--require-main-table-eligible",
+        action="store_true",
+        help="Exit with code 3 if any requested framework fails the audit.",
+    )
     args = parser.parse_args()
 
     names = [item.strip() for item in args.frameworks.split(",") if item.strip()]
@@ -80,6 +85,16 @@ def main() -> int:
 
     print(f"wrote: {json_path}")
     print(f"wrote: {csv_path}")
+    ineligible = [
+        report for report in reports if not report.main_table_eligible
+    ]
+    if args.require_main_table_eligible and ineligible:
+        for report in ineligible:
+            print(
+                f"ineligible: {report.framework_name}: "
+                f"{report.reason_if_excluded}",
+            )
+        return 3
     return 0
 
 

@@ -41,6 +41,14 @@ def main() -> int:
     )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--run-id", default=None)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Resume an interrupted run after validating immutable inputs. "
+            "Completed questions are loaded from retrieval.jsonl and skipped."
+        ),
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/longmemeval"))
     parser.add_argument("--split-manifest", type=Path, default=None)
     parser.add_argument("--split", choices=("dev", "test"), default=None)
@@ -252,6 +260,7 @@ def main() -> int:
         embedder=embedder,
         framework_runtime=framework_runtime,
         run_id=args.run_id,
+        resume=args.resume,
     )
     print(
         json.dumps(

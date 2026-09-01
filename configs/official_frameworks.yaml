@@ -1,0 +1,71 @@
+version: longmemeval-official-frameworks-v1
+dataset: LongMemEval-S-cleaned
+split_manifest: outputs/longmemeval/splits/dev_test_seed42.json
+evaluation_split: test
+test_labels_visible_to_memory_or_reader: false
+
+frameworks:
+  mem0:
+    distribution: mem0ai
+    version: 2.0.10
+  langmem:
+    distribution: langmem
+    version: 0.0.30
+  graphiti:
+    distribution: graphiti-core
+    version: 0.29.2
+    dedicated_neo4j_required: true
+  letta:
+    distribution: letta-client
+    client_version: 1.12.1
+    server_version: 0.16.8
+
+shared_models:
+  llm: Qwen/Qwen2.5-7B-Instruct
+  llm_provider: local_vllm_openai_compatible
+  embedding: BAAI/bge-m3
+  embedding_dimension: 1024
+  official_memory_inference: true
+  temperature: 0.0
+  top_p: 1.0
+  memory_max_tokens: 512
+
+retrieval:
+  ingestion_granularity: session
+  native_candidate_depth: 40
+  reported_top_k: 5
+  resumable_record_checkpoint: true
+
+shared_evidence_selection:
+  paper_version: VMP-v6.4
+  candidate_count_maximum: 10
+  candidate_planner_version: vmp_v55_dual_view_rrf_v1
+  selector_prompt_version: vmp_v64_high_recall_atomic_fact_extractor_v4
+  boundary_prompt_version: vmp_v64_deterministic_set_coverage_v4
+  candidate_excerpt_version: role_aware_fact_v4
+  output_top_k: 5
+  protected_top_n: 3
+  boundary_max_promotions: 2
+  selector_max_tokens: 512
+  boundary_max_tokens: 512
+  coverage:
+    min_gain: 0.25
+    need_weight: 3.0
+    relevance_weight: 1.5
+    diversity_weight: 1.25
+    temporal_weight: 1.25
+    rank_weight: 0.08
+
+reader:
+  prompt_version: longmemeval_hybrid_evidence_reader_v21
+  evidence_mode: reranker_facts_with_query_windows
+  protocol_selection_split: dev
+  top_k: 5
+  max_tokens: 256
+
+judge:
+  protocol: official_prompt_local_vllm_judge
+  model: Qwen/Qwen2.5-7B-Instruct
+  max_tokens: 10
+  temperature: 0.0
+  top_p: 1.0

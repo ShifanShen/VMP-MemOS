@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import platform
 import re
 from collections import defaultdict
@@ -109,6 +110,7 @@ def run_longmemeval_retrieval(
     embedder: BaseEmbedder | None = None,
     framework_runtime: FrameworkRuntimeConfig | None = None,
     run_id: str | None = None,
+    resume: bool = False,
 ) -> RetrievalRunResult:
     """Run every configured method and write replayable JSON/JSONL artifacts."""
 
@@ -118,9 +120,10 @@ def run_longmemeval_retrieval(
 
     resolved_run_id = _safe_component(run_id or _default_run_id())
     run_dir = config.output_dir / "runs" / resolved_run_id
-    if run_dir.exists():
+    if run_dir.exists() and not resume:
         raise FileExistsError(
-            f"Run directory already exists: {run_dir}. Choose a new --run-id."
+            f"Run directory already exists: {run_dir}. Choose a new --run-id "
+            "or use --resume."
         )
     started_at = datetime.now(UTC)
     wall_started = perf_counter()
@@ -137,9 +140,9 @@ def run_longmemeval_retrieval(
         split_manifest=split_manifest,
         embedder=embedder,
     )
-    run_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True, exist_ok=resume)
     manifest_path = run_dir / "manifest.json"
-    manifest = _build_manifest(
+    expected_manifest = _build_manifest(
         config,
         run_id=resolved_run_id,
         methods=methods,
@@ -149,22 +152,63 @@ def run_longmemeval_retrieval(
         started_at=started_at,
         split_manifest=split_manifest,
     )
-    manifest["date_validation"] = date_validation
+    expected_manifest["resume_signature"] = _resume_signature(expected_manifest)
+    previous_wall_duration = 0.0
+    if resume:
+        manifest = _load_resume_manifest(manifest_path, expected_manifest)
+        previous_wall_duration = _json_number(manifest.get("wall_duration_seconds"))
+        resume_history = manifest.get("resume_history", [])
+        if not isinstance(resume_history, list):
+            resume_history = []
+        resume_history.append(started_at.isoformat())
+        manifest.update(
+            {
+                "status": "running",
+                "resume_history": resume_history,
+                "date_validation": date_validation,
+            }
+        )
+        for key in ("finished_at", "error_type", "error"):
+            manifest.pop(key, None)
+        LOGGER.info(
+            "Resuming retrieval run %s from %s.",
+            resolved_run_id,
+            run_dir,
+        )
+    else:
+        manifest = expected_manifest
+        manifest["date_validation"] = date_validation
     _write_json(manifest_path, manifest)
 
     summaries: dict[str, RetrievalMethodSummary] = {}
     try:
-        manifest["embedding_prewarm"] = _prewarm_embeddings(
-            samples,
-            embedder=embedder,
-            ingestion_granularity=config.ingestion_granularity,
-            methods=methods,
-            enabled=config.prewarm_embeddings,
-        )
+        if not (resume and isinstance(manifest.get("embedding_prewarm"), dict)):
+            manifest["embedding_prewarm"] = _prewarm_embeddings(
+                samples,
+                embedder=embedder,
+                ingestion_granularity=config.ingestion_granularity,
+                methods=methods,
+                enabled=config.prewarm_embeddings,
+            )
+        else:
+            LOGGER.info("Reusing completed embedding-prewarm receipt.")
         _write_json(manifest_path, manifest)
         for method in methods:
             method_started = perf_counter()
-            LOGGER.info("Method %s started (%d samples).", method, len(samples))
+            method_dir = run_dir / method
+            records_path = method_dir / "retrieval.jsonl"
+            existing_records = (
+                _load_resume_records(records_path, method=method, samples=samples)
+                if resume
+                else []
+            )
+            LOGGER.info(
+                "Method %s started: total=%d existing=%d pending=%d.",
+                method,
+                len(samples),
+                len(existing_records),
+                len(samples) - len(existing_records),
+            )
             records = _run_method(
                 method,
                 samples=samples,
@@ -172,9 +216,9 @@ def run_longmemeval_retrieval(
                 embedder=embedder,
                 framework_runtime=framework_runtime,
                 run_dir=run_dir,
+                records_path=records_path,
+                existing_records=existing_records,
             )
-            method_dir = run_dir / method
-            _write_jsonl(method_dir / "retrieval.jsonl", records)
             summary = summarize_method(method, records)
             summaries[method] = summary
             _write_json(method_dir / "summary.json", summary.model_dump(mode="json"))
@@ -191,7 +235,9 @@ def run_longmemeval_retrieval(
             {
                 "status": "failed",
                 "finished_at": datetime.now(UTC).isoformat(),
-                "wall_duration_seconds": perf_counter() - wall_started,
+                "wall_duration_seconds": (
+                    previous_wall_duration + perf_counter() - wall_started
+                ),
                 "error_type": type(exc).__name__,
                 "error": str(exc),
             }
@@ -211,7 +257,9 @@ def run_longmemeval_retrieval(
         {
             "status": "completed",
             "finished_at": finished_at.isoformat(),
-            "wall_duration_seconds": perf_counter() - wall_started,
+            "wall_duration_seconds": (
+                previous_wall_duration + perf_counter() - wall_started
+            ),
         }
     )
     _write_json(manifest_path, manifest)
@@ -297,7 +345,14 @@ def _run_method(
     embedder: BaseEmbedder | None,
     framework_runtime: FrameworkRuntimeConfig | None,
     run_dir: Path,
+    records_path: Path,
+    existing_records: list[RetrievalSampleRecord],
 ) -> list[RetrievalSampleRecord]:
+    records = list(existing_records)
+    completed_count = len(records)
+    if completed_count == len(samples):
+        LOGGER.info("Method %s already has all %d records.", method, len(samples))
+        return records
     if method in {
         "mem0",
         "mem0_official",
@@ -322,11 +377,13 @@ def _run_method(
     )
     method_dir = run_dir / method
     workspace_root = method_dir / "workspaces"
-    records: list[RetrievalSampleRecord] = []
     method_started = perf_counter()
     sample_count = len(samples)
     try:
-        for sample_index, sample in enumerate(samples, start=1):
+        for sample_index, sample in enumerate(
+            samples[completed_count:],
+            start=completed_count + 1,
+        ):
             if sample_index == 1 or sample_index % 10 == 0 or sample_index == sample_count:
                 LOGGER.info(
                     "Method %s progress %d/%d: question_id=%s elapsed=%.1fs",
@@ -359,15 +416,15 @@ def _run_method(
             adapter_stats.update(
                 _cache_stats_delta(cache_before, _cache_stats(embedder))
             )
-            records.append(
-                _sample_record(
-                    sample,
-                    method=method,
-                    retrieved=retrieved,
-                    adapter_stats=adapter_stats,
-                    skip_abstention=config.skip_abstention_for_retrieval,
-                )
+            record = _sample_record(
+                sample,
+                method=method,
+                retrieved=retrieved,
+                adapter_stats=adapter_stats,
+                skip_abstention=config.skip_abstention_for_retrieval,
             )
+            _append_jsonl_record(records_path, record)
+            records.append(record)
     finally:
         adapter.close()
     return records
@@ -427,7 +484,7 @@ def _build_manifest(
     config_payload = config.model_dump(mode="json")
     config_payload["methods"] = methods
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "status": "running",
         "run_id": run_id,
         "dataset": "longmemeval-cleaned",
@@ -491,6 +548,140 @@ def _write_jsonl(path: Path, records: list[RetrievalSampleRecord]) -> None:
         for record in records:
             stream.write(record.model_dump_json())
             stream.write("\n")
+
+
+def _append_jsonl_record(path: Path, record: RetrievalSampleRecord) -> None:
+    """Durably checkpoint one completed question before continuing."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as stream:
+        stream.write(record.model_dump_json())
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _load_resume_records(
+    path: Path,
+    *,
+    method: str,
+    samples: list[LongMemEvalSample],
+) -> list[RetrievalSampleRecord]:
+    """Load a valid ordered prefix, repairing only a torn final JSONL line."""
+
+    if not path.exists():
+        return []
+    raw_text = path.read_text(encoding="utf-8")
+    lines = raw_text.splitlines()
+    nonempty = [(index, line) for index, line in enumerate(lines) if line.strip()]
+    records: list[RetrievalSampleRecord] = []
+    repaired = bool(raw_text and not raw_text.endswith("\n"))
+    for position, (line_index, line) in enumerate(nonempty):
+        try:
+            record = RetrievalSampleRecord.model_validate_json(line)
+        except Exception as exc:
+            if position == len(nonempty) - 1:
+                LOGGER.warning(
+                    "Discarding torn final JSONL record from %s (line %d).",
+                    path,
+                    line_index + 1,
+                )
+                repaired = True
+                break
+            raise ValueError(
+                f"Cannot resume: malformed JSONL record in {path} "
+                f"at line {line_index + 1}"
+            ) from exc
+        records.append(record)
+    if len(records) > len(samples):
+        raise ValueError(
+            f"Cannot resume {method}: {len(records)} records exceed "
+            f"the expected {len(samples)} samples"
+        )
+    expected_ids = [sample.question_id for sample in samples[: len(records)]]
+    observed_ids = [record.question_id for record in records]
+    if observed_ids != expected_ids:
+        raise ValueError(
+            f"Cannot resume {method}: existing records are not the exact "
+            "ordered prefix of the configured samples"
+        )
+    if any(record.method != method for record in records):
+        raise ValueError(
+            f"Cannot resume {method}: an existing record has a different method"
+        )
+    if repaired:
+        _write_jsonl(path, records)
+    return records
+
+
+def _resume_signature(manifest: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """Hash immutable inputs while excluding timestamps and cache counters."""
+
+    embedding_runtime = manifest.get("embedding_runtime")
+    if isinstance(embedding_runtime, dict):
+        embedding_runtime = {
+            key: value
+            for key, value in embedding_runtime.items()
+            if key != "cache_entries_at_start"
+        }
+    payload = {
+        key: manifest.get(key)
+        for key in (
+            "schema_version",
+            "run_id",
+            "dataset",
+            "data_sha256",
+            "sample_count",
+            "split",
+            "vmp_tuned_model",
+            "vmp_hierarchical_model",
+            "embedding_identifier",
+            "official_framework_runtime",
+            "official_framework_versions",
+            "config",
+        )
+    }
+    payload["embedding_runtime"] = embedding_runtime
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "version": "retrieval-resume-v1",
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+
+
+def _load_resume_manifest(
+    path: Path,
+    expected: dict[str, JsonValue],
+) -> dict[str, JsonValue]:
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Cannot resume retrieval run: manifest is missing: {path}"
+        )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"Cannot resume retrieval run: manifest is unreadable: {path}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Cannot resume retrieval run: manifest must be an object")
+    observed = payload.get("resume_signature")
+    wanted = expected.get("resume_signature")
+    if observed != wanted:
+        raise ValueError(
+            "Cannot resume retrieval run: immutable inputs differ from the "
+            "existing manifest (or it predates resumable schema 1.1)"
+        )
+    return payload
+
+
+def _json_number(value: object) -> float:
+    return float(value) if isinstance(value, int | float) else 0.0
 
 
 def _sha256(path: Path) -> str:
