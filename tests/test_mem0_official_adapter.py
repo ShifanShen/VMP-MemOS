@@ -6,6 +6,7 @@ from typing import Any
 
 from vmp_memos.frameworks import FrameworkRuntimeConfig
 from vmp_memos.frameworks.official import Mem0OfficialAdapter, build_mem0_config
+from vmp_memos.frameworks.official.mem0 import _Mem0LlmResponseAdapter
 from vmp_memos.longmemeval import LongMemEvalSample, sample_to_session_events
 
 
@@ -14,6 +15,7 @@ class FakeMem0:
         self.current: dict[str, Any] = {}
         self.add_calls = 0
         self.reset_calls = 0
+        self.llm = FakeMem0Llm('{"memory": []}')
 
     def add(self, messages, *, user_id, metadata, infer):
         self.add_calls += 1
@@ -42,6 +44,39 @@ class FakeMem0:
     def reset(self):
         self.reset_calls += 1
         self.current = {}
+
+
+class FakeMem0Llm:
+    def __init__(self, response: str) -> None:
+        self.response = response
+
+    def generate_response(self, *args, **kwargs) -> str:
+        return self.response
+
+
+def test_mem0_llm_adapter_normalizes_qwen_string_memory_items() -> None:
+    delegate = FakeMem0Llm(
+        '```json\n{"memory":["Likes hiking",'
+        '{"id":"1","text":"Lives in Paris"}]}\n```'
+    )
+    adapter = _Mem0LlmResponseAdapter(delegate)
+
+    response = adapter.generate_response(messages=[])
+
+    assert response == (
+        '{"memory": [{"text": "Likes hiking"}, '
+        '{"id": "1", "text": "Lives in Paris"}]}'
+    )
+    assert adapter.normalized_response_count == 1
+    assert adapter.normalized_item_count == 1
+
+
+def test_mem0_llm_adapter_leaves_native_object_schema_unchanged() -> None:
+    native = '{"memory":[{"id":"0","text":"Likes hiking"}]}'
+    adapter = _Mem0LlmResponseAdapter(FakeMem0Llm(native))
+
+    assert adapter.generate_response(messages=[]) == native
+    assert adapter.normalized_response_count == 0
 
 
 def test_mem0_config_uses_same_local_models(tmp_path) -> None:
@@ -92,6 +127,10 @@ def test_mem0_adapter_preserves_latest_operation_provenance(tmp_path) -> None:
     assert evidence[0].source_session_id == "s_new"
     assert evidence[0].memory_type == "mem0_memory"
     assert adapter.stats()["memory_count"] == 1
+    assert adapter.stats()["mem0_llm_compatibility_version"] == (
+        "mem0_v2010_string_memory_items_v1"
+    )
+    assert isinstance(fake.llm, _Mem0LlmResponseAdapter)
 
     adapter.reset(tmp_path / "mem0" / "q2")
     assert fake.reset_calls == 2

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import gc
+import json
+import logging
 import math
 import os
 from collections.abc import Callable
@@ -21,10 +23,43 @@ from vmp_memos.frameworks.text import estimate_tokens
 from vmp_memos.schemas import Event
 
 MemoryFactory = Callable[[dict[str, Any]], Any]
+LOGGER = logging.getLogger(__name__)
+MEM0_LLM_COMPATIBILITY_VERSION = "mem0_v2010_string_memory_items_v1"
 
 
 class Mem0DependencyError(RuntimeError):
     """Raised when the pinned official Mem0 package is unavailable."""
+
+
+class _Mem0LlmResponseAdapter:
+    """Normalize one known Mem0 2.0.10/Qwen schema mismatch.
+
+    Mem0's additive extractor consumes ``memory`` as a list of objects with a
+    ``text`` field. Local instruction models can preserve the semantic facts
+    while returning that list as strings. This adapter changes only that wire
+    shape and delegates every other response unchanged.
+    """
+
+    def __init__(self, delegate: Any) -> None:
+        self._delegate = delegate
+        self.normalized_response_count = 0
+        self.normalized_item_count = 0
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
+
+    def generate_response(self, *args: Any, **kwargs: Any) -> Any:
+        response = self._delegate.generate_response(*args, **kwargs)
+        normalized, item_count = _normalize_mem0_memory_items(response)
+        if item_count:
+            self.normalized_response_count += 1
+            self.normalized_item_count += item_count
+            if self.normalized_response_count == 1:
+                LOGGER.warning(
+                    "Applied %s to normalize Mem0 string-form memory items.",
+                    MEM0_LLM_COMPATIBILITY_VERSION,
+                )
+        return normalized
 
 
 class Mem0OfficialAdapter(BaseMemoryFrameworkAdapter):
@@ -76,6 +111,18 @@ class Mem0OfficialAdapter(BaseMemoryFrameworkAdapter):
         stats = super().stats()
         stats["storage_size_is_estimate"] = True
         stats["storage_size_note"] = "shared reset-store allocated bytes"
+        llm = getattr(self._memory, "llm", None)
+        stats["mem0_llm_compatibility_version"] = MEM0_LLM_COMPATIBILITY_VERSION
+        stats["mem0_llm_normalized_responses"] = (
+            llm.normalized_response_count
+            if isinstance(llm, _Mem0LlmResponseAdapter)
+            else 0
+        )
+        stats["mem0_llm_normalized_items"] = (
+            llm.normalized_item_count
+            if isinstance(llm, _Mem0LlmResponseAdapter)
+            else 0
+        )
         return stats
 
     def _reset_impl(self) -> None:
@@ -167,15 +214,18 @@ class Mem0OfficialAdapter(BaseMemoryFrameworkAdapter):
     def _create_memory(self, store_dir: Path) -> Any:
         config = build_mem0_config(self.runtime, store_dir=store_dir)
         if self._memory_factory is not None:
-            return self._memory_factory(config)
-        os.environ.setdefault("MEM0_TELEMETRY", "false")
-        try:
-            from mem0 import Memory  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise Mem0DependencyError(
-                'Mem0 adapter requires: python -m pip install -e ".[official-mem0]"'
-            ) from exc
-        return Memory.from_config(config)
+            memory = self._memory_factory(config)
+        else:
+            os.environ.setdefault("MEM0_TELEMETRY", "false")
+            try:
+                from mem0 import Memory  # type: ignore[import-not-found]
+            except ImportError as exc:
+                raise Mem0DependencyError(
+                    'Mem0 adapter requires: python -m pip install -e ".[official-mem0]"'
+                ) from exc
+            memory = Memory.from_config(config)
+        _install_mem0_llm_response_adapter(memory)
+        return memory
 
     def _add_messages(self, events: list[Event]) -> None:
         if self._memory is None:
@@ -269,6 +319,44 @@ def build_mem0_config(
         },
         "history_db_path": str(store_dir / "history.db"),
     }
+
+
+def _install_mem0_llm_response_adapter(memory: Any) -> None:
+    llm = getattr(memory, "llm", None)
+    if llm is not None and not isinstance(llm, _Mem0LlmResponseAdapter):
+        memory.llm = _Mem0LlmResponseAdapter(llm)
+
+
+def _normalize_mem0_memory_items(response: Any) -> tuple[Any, int]:
+    if not isinstance(response, str):
+        return response, 0
+    start = response.find("{")
+    end = response.rfind("}")
+    if start < 0 or end <= start:
+        return response, 0
+    try:
+        payload = json.loads(response[start : end + 1], strict=False)
+    except (json.JSONDecodeError, TypeError):
+        return response, 0
+    if not isinstance(payload, dict):
+        return response, 0
+    memories = payload.get("memory")
+    if not isinstance(memories, list):
+        return response, 0
+    normalized: list[dict[str, Any]] = []
+    normalized_count = 0
+    for item in memories:
+        if isinstance(item, str):
+            normalized.append({"text": item})
+            normalized_count += 1
+        elif isinstance(item, dict):
+            normalized.append(item)
+        else:
+            return response, 0
+    if not normalized_count:
+        return response, 0
+    payload["memory"] = normalized
+    return json.dumps(payload, ensure_ascii=False), normalized_count
 
 
 def _mem0_search(memory: Any, *, query: str, user_id: str, top_k: int) -> Any:
