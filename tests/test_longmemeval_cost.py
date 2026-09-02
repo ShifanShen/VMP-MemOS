@@ -108,6 +108,29 @@ def test_cost_analysis_requires_aligned_qa_and_exports_all_formats(tmp_path) -> 
     assert "bm25" in csv_text
 
 
+def test_cost_analysis_counts_shared_reranker_tokens_once() -> None:
+    record = RetrievalSampleRecord(
+        question_id="q1",
+        question_type="single_session_user",
+        question="Question?",
+        answer="Answer",
+        method="vmp_hierarchical__vllm_boundary",
+        is_abstention=False,
+        rerank_metadata={"input_tokens": 6000, "output_tokens": 400},
+    )
+
+    summary = _summarize_cost(
+        "vmp_hierarchical__vllm_boundary",
+        retrieval_records=[record],
+        qa_records=[],
+    )
+
+    assert summary.reranker_input_tokens == 6000
+    assert summary.reranker_output_tokens == 400
+    assert summary.reranker_tokens == 6400
+    assert summary.reranker_usage_coverage == 1.0
+    assert summary.total_observed_tokens == 6400
+
 def test_missing_official_framework_usage_is_not_imputed_as_zero() -> None:
     record = RetrievalSampleRecord(
         question_id="q1",
@@ -133,6 +156,54 @@ def test_missing_official_framework_usage_is_not_imputed_as_zero() -> None:
     assert summary.framework_llm_tokens is None
     assert summary.framework_usage_coverage == 0.0
     assert summary.storage_size_coverage == 0.0
+
+
+def test_reranked_official_framework_usage_is_not_imputed_as_zero() -> None:
+    record = RetrievalSampleRecord(
+        question_id="q1",
+        question_type="single_session_user",
+        question="Question?",
+        answer="Answer",
+        method="mem0_official__vllm_boundary",
+        is_abstention=False,
+        adapter_stats={"memory_count": 1},
+    )
+
+    summary = _summarize_cost(
+        "mem0_official__vllm_boundary",
+        retrieval_records=[record],
+        qa_records=[],
+    )
+
+    assert summary.framework_llm_tokens is None
+    assert summary.framework_usage_coverage == 0.0
+
+
+def test_cost_analysis_accepts_an_explicit_reference_method(tmp_path) -> None:
+    data_path = tmp_path / "longmemeval.json"
+    data_path.write_text(json.dumps([_answerable_record()]), encoding="utf-8")
+    retrieval = run_longmemeval_retrieval(
+        LongMemEvalRunConfig(
+            data_path=data_path,
+            methods=["bm25", "empty"],
+            output_dir=tmp_path / "outputs",
+        ),
+        run_id="explicit_reference",
+    )
+
+    report = analyze_longmemeval_cost(
+        retrieval.run_dir,
+        require_qa=False,
+        reference_method="empty",
+    )
+
+    assert report.reference_method == "empty"
+    with pytest.raises(ValueError, match="reference method is absent"):
+        analyze_longmemeval_cost(
+            retrieval.run_dir,
+            require_qa=False,
+            reference_method="missing",
+        )
 
 
 def _answerable_record() -> dict[str, object]:

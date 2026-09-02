@@ -24,6 +24,11 @@ def main() -> int:
         action="store_true",
         help="Export a retrieval-only preview with QA fields left at zero.",
     )
+    parser.add_argument(
+        "--reference-method",
+        default=None,
+        help="Optional method used for delta latency/token/memory columns.",
+    )
     args = parser.parse_args()
 
     outputs = export_longmemeval_cost(
@@ -31,6 +36,7 @@ def main() -> int:
         output_dir=args.output_dir,
         require_qa=not args.allow_missing_qa,
         qa_subdir=args.qa_subdir,
+        reference_method=args.reference_method,
     )
     print(
         json.dumps(

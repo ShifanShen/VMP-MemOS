@@ -47,6 +47,8 @@ _TABLE_COLUMNS = (
     "mean_reader_input_tokens",
     "mean_reader_output_tokens",
     "delta_reader_tokens",
+    "reranker_tokens",
+    "reranker_usage_coverage",
     "framework_llm_tokens",
     "framework_usage_coverage",
     "mean_memory_count",
@@ -82,6 +84,10 @@ class CostMethodSummary(SchemaModel):
     mean_reader_input_tokens: NonNegativeFloat
     total_reader_output_tokens: NonNegativeInt
     mean_reader_output_tokens: NonNegativeFloat
+    reranker_input_tokens: NonNegativeInt = 0
+    reranker_output_tokens: NonNegativeInt = 0
+    reranker_tokens: NonNegativeInt = 0
+    reranker_usage_coverage: Score = 0.0
     framework_llm_input_tokens: NonNegativeInt | None = None
     framework_llm_output_tokens: NonNegativeInt | None = None
     framework_llm_tokens: NonNegativeInt | None = None
@@ -104,7 +110,7 @@ class CostMethodSummary(SchemaModel):
 class CostAnalysisReport(SchemaModel):
     """Replayable cost report tied to retrieval and QA manifest hashes."""
 
-    schema_version: NonEmptyStr = "1.1"
+    schema_version: NonEmptyStr = "1.2"
     retrieval_run: NonEmptyStr
     retrieval_manifest_sha256: NonEmptyStr
     qa_subdir: NonEmptyStr
@@ -121,6 +127,7 @@ def analyze_longmemeval_cost(
     *,
     require_qa: bool = True,
     qa_subdir: str = "qa",
+    reference_method: str | None = None,
 ) -> CostAnalysisReport:
     """Aggregate existing artifacts without running retrieval or generation."""
 
@@ -132,6 +139,11 @@ def analyze_longmemeval_cost(
     methods = _manifest_methods(retrieval_manifest)
     if not methods:
         raise ValueError("retrieval run contains no methods")
+    if reference_method is not None and reference_method not in methods:
+        raise ValueError(
+            f"reference method is absent from retrieval run: {reference_method}"
+        )
+    resolved_reference = reference_method or _reference_method(methods)
 
     qa_dir = run_dir / _validate_qa_subdir(qa_subdir)
     qa_manifest_path = qa_dir / "manifest.json"
@@ -165,14 +177,15 @@ def analyze_longmemeval_cost(
         qa_subdir=qa_subdir,
         qa_manifest_sha256=_sha256(qa_manifest_path) if qa_complete else None,
         qa_complete=qa_complete,
-        reference_method=_reference_method(methods),
+        reference_method=resolved_reference,
         generated_at=datetime.now(UTC),
         methods=summaries,
         definitions={
             "token_accounting": (
                 "Reader input already contains retrieved evidence, so retrieved "
-                "tokens are reported separately and are not double-counted in "
-                "total_observed_tokens."
+                "tokens are reported separately and are not double-counted. "
+                "total_observed_tokens includes reranker, reader, and available "
+                "official-framework LLM usage."
             ),
             "correct_answer": (
                 "normalized_exact_match == 1 for answerable questions; "
@@ -203,6 +216,7 @@ def export_longmemeval_cost(
     output_dir: str | Path | None = None,
     require_qa: bool = True,
     qa_subdir: str = "qa",
+    reference_method: str | None = None,
 ) -> dict[str, Path]:
     """Write JSON plus CSV/Markdown/LaTeX Table 5 artifacts."""
 
@@ -210,6 +224,7 @@ def export_longmemeval_cost(
         retrieval_run,
         require_qa=require_qa,
         qa_subdir=qa_subdir,
+        reference_method=reference_method,
     )
     run_dir = Path(report.retrieval_run)
     target = (
@@ -265,12 +280,24 @@ def _summarize_cost(
     reader_output = [record.reader_output_tokens for record in qa_records]
     correct = sum(_is_locally_correct(record) for record in qa_records)
 
+    reranker_usage = [
+        usage
+        for record in retrieval_records
+        if (usage := _reranker_usage(record)) is not None
+    ]
+    reranker_input = sum(usage[0] for usage in reranker_usage)
+    reranker_output = sum(usage[1] for usage in reranker_usage)
+    reranker_total = sum(usage[2] for usage in reranker_usage)
+    reranker_coverage = (
+        len(reranker_usage) / sample_count if sample_count else 0.0
+    )
+
     framework_usage = [
         usage
         for record in retrieval_records
         if (usage := _framework_usage(record)) is not None
     ]
-    is_official = method in _OFFICIAL_METHODS
+    is_official = _is_official_method(method)
     coverage = (
         len(framework_usage) / sample_count
         if sample_count
@@ -293,7 +320,12 @@ def _summarize_cost(
         if framework_usage
         else None if is_official else 0
     )
-    observed_tokens = sum(reader_input) + sum(reader_output) + (framework_total or 0)
+    observed_tokens = (
+        sum(reader_input)
+        + sum(reader_output)
+        + reranker_total
+        + (framework_total or 0)
+    )
 
     memory_counts = [_adapter_number(record, "memory_count") for record in retrieval_records]
     memory_tokens = [_adapter_number(record, "total_tokens") for record in retrieval_records]
@@ -343,6 +375,10 @@ def _summarize_cost(
         mean_reader_input_tokens=_mean(reader_input),
         total_reader_output_tokens=sum(reader_output),
         mean_reader_output_tokens=_mean(reader_output),
+        reranker_input_tokens=reranker_input,
+        reranker_output_tokens=reranker_output,
+        reranker_tokens=reranker_total,
+        reranker_usage_coverage=reranker_coverage,
         framework_llm_input_tokens=framework_input,
         framework_llm_output_tokens=framework_output,
         framework_llm_tokens=framework_total,
@@ -483,6 +519,23 @@ def _reference_method(methods: list[str]) -> str | None:
         if candidate in methods:
             return candidate
     return None
+
+
+def _is_official_method(method: str) -> bool:
+    """Recognize native and shared-reranked official framework artifacts."""
+
+    normalized = method.strip().casefold().replace("-", "_")
+    source_method = normalized.split("__", maxsplit=1)[0]
+    return source_method in _OFFICIAL_METHODS
+
+
+def _reranker_usage(record: RetrievalSampleRecord) -> tuple[int, int, int] | None:
+    metadata = record.rerank_metadata
+    input_tokens = metadata.get("input_tokens")
+    output_tokens = metadata.get("output_tokens")
+    if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
+        return None
+    return input_tokens, output_tokens, input_tokens + output_tokens
 
 
 def _read_retrieval_records(path: Path) -> list[RetrievalSampleRecord]:

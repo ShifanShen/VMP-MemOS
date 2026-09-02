@@ -291,27 +291,24 @@ uv run --no-sync bash scripts/serve_letta.sh
 
 Never feed a candidate run created with `FRAMEWORK=mem0` into another framework's later stages. The manifest and resume gate bind run ID, method, dataset hash, split, model, package versions, and every immutable setting. Report native retrieval and shared reranking separately to distinguish framework memory quality from shared post-processing gains.
 
-After all four framework judges complete, merge the independent runs into one strictly comparable statistics input. The merger never calls a model again. It rejects mismatched dataset hashes, question order, prompts, generation settings, or observed judge models:
+After all four framework judges complete, merge the VMP and official-framework rerank runs into one strict, immutable paper-evidence bundle. The builder never calls a model again. It validates the complete rerank → QA → judge manifest-hash chain, including dataset, split, ordered coverage, prompts, generation settings, and observed models, then emits unified retrieval, QA, bootstrap/McNemar significance, cost, and official-correctness efficiency tables:
 
 ```bash
 COMPARE_DIR=outputs/longmemeval/comparisons/official_frameworks_qwen_seed42_v1
 
-uv run --no-sync python scripts/merge_longmemeval_official_judges.py \
-  --judge-run outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
-  --judge-run outputs/longmemeval/runs/lme_test_mem0_official_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
-  --judge-run outputs/longmemeval/runs/lme_test_langmem_official_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
-  --judge-run outputs/longmemeval/runs/lme_test_graphiti_official_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
-  --judge-run outputs/longmemeval/runs/lme_test_letta_official_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
-  --output "${COMPARE_DIR}"
-
-uv run --no-sync python scripts/export_longmemeval_qa_report.py \
-  --judge-run "${COMPARE_DIR}" \
+uv run --no-sync python scripts/build_longmemeval_paper_comparison.py \
+  --retrieval-run outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_mem0_official_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_langmem_official_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_graphiti_official_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_letta_official_v64_rerank_seed42 \
+  --output "${COMPARE_DIR}" \
   --reference-method vmp_hierarchical__vllm_boundary \
   --bootstrap-samples 10000 \
   --seed 42
 ```
 
-The comparison directory is immutable. Use a new versioned directory name when rebuilding it so that paper evidence is never overwritten.
+The comparison directory is immutable. Use a new versioned directory name when rebuilding it so that paper evidence is never overwritten. `token_accounting_complete=false` means that an official framework did not export native LLM usage for every question; tokens per correct is then an explicitly marked observed lower bound, never a missing value imputed as zero.
 
 ## Fair-comparison policy
 

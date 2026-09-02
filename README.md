@@ -291,27 +291,24 @@ uv run --no-sync bash scripts/serve_letta.sh
 
 不得用 `FRAMEWORK=mem0` 的候选 run 搭配其他框架的后续阶段；run ID、方法名、数据哈希、split、模型、包版本及所有不可变参数都会写入 manifest 并在恢复时核验。原生检索与共享 rerank 应分别报告，以区分框架本身的 memory quality 和统一后处理带来的增益。
 
-四个框架全部 judge 完成后，将独立 run 合并为一个严格可比的统计输入。合并器不重新调用模型；它会拒绝数据哈希、题目顺序、prompt、generation 参数或实际 judge 模型不一致的结果：
+四个框架全部 judge 完成后，将 VMP 和官方框架的独立 rerank run 合并为一个严格可比、不可变的论文证据包。构建器不重新调用模型；它会沿着 rerank → QA → judge 的 manifest 哈希链验证数据、split、完整题序、prompt、generation 参数和实际模型，然后统一生成检索表、QA 表、bootstrap/McNemar 显著性表、成本表以及以 official-prompt 正确数为分母的效率表：
 
 ```bash
 COMPARE_DIR=outputs/longmemeval/comparisons/official_frameworks_qwen_seed42_v1
 
-uv run --no-sync python scripts/merge_longmemeval_official_judges.py \
-  --judge-run outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
-  --judge-run outputs/longmemeval/runs/lme_test_mem0_official_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
-  --judge-run outputs/longmemeval/runs/lme_test_langmem_official_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
-  --judge-run outputs/longmemeval/runs/lme_test_graphiti_official_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
-  --judge-run outputs/longmemeval/runs/lme_test_letta_official_v64_rerank_seed42/qa_v21_test/official_judge_local_vllm_v1 \
-  --output "${COMPARE_DIR}"
-
-uv run --no-sync python scripts/export_longmemeval_qa_report.py \
-  --judge-run "${COMPARE_DIR}" \
+uv run --no-sync python scripts/build_longmemeval_paper_comparison.py \
+  --retrieval-run outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_mem0_official_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_langmem_official_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_graphiti_official_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_letta_official_v64_rerank_seed42 \
+  --output "${COMPARE_DIR}" \
   --reference-method vmp_hierarchical__vllm_boundary \
   --bootstrap-samples 10000 \
   --seed 42
 ```
 
-比较目录是不可变产物；若需要重新合并，请使用新的版本化目录名，以免覆盖论文证据。
+比较目录是不可变产物；若需要重新构建，请使用新的版本化目录名，以免覆盖论文证据。`token_accounting_complete=false` 表示某个官方框架没有为所有问题导出原生 LLM usage，此时 token/correct 只是明确标注的观测下界，绝不能把缺失 usage 当作 0。
 
 ## 公平比较原则
 
