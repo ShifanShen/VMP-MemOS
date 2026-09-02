@@ -254,6 +254,7 @@ uv sync --extra dev --extra official-mem0
 
 ```bash
 VMP_LLM_MODEL=/home/shenshifan/models/Qwen2.5-7B-Instruct \
+VMP_VLLM_SERVED_MODEL_NAME=Qwen/Qwen2.5-7B-Instruct \
 VMP_LLM_API_KEY=local-vllm-key \
 VMP_VLLM_GPU_MEMORY_UTILIZATION=0.72 \
 VMP_VLLM_MAX_MODEL_LEN=16384 \

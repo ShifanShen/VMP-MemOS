@@ -2,6 +2,7 @@
 set -euo pipefail
 
 MODEL="${VMP_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
+SERVED_MODEL_NAME="${VMP_VLLM_SERVED_MODEL_NAME:-}"
 HOST="${VMP_VLLM_HOST:-0.0.0.0}"
 PORT="${VMP_VLLM_PORT:-8000}"
 DTYPE="${VMP_VLLM_DTYPE:-auto}"
@@ -11,6 +12,10 @@ API_KEY="${VMP_LLM_API_KEY:-}"
 export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"
 
 cmd=(vllm serve "$MODEL" --host "$HOST" --port "$PORT" --dtype "$DTYPE")
+
+if [[ -n "$SERVED_MODEL_NAME" ]]; then
+  cmd+=(--served-model-name "$SERVED_MODEL_NAME")
+fi
 
 if [[ "${VMP_VLLM_ENABLE_TOOL_CALLING:-1}" == "1" ]]; then
   cmd+=(--enable-auto-tool-choice)
