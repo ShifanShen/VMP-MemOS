@@ -236,11 +236,18 @@ outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42/
 
 [`configs/official_frameworks.yaml`](configs/official_frameworks.yaml) 冻结了 Mem0、LangMem、Graphiti、Letta 的包版本和共享实验协议。[`scripts/run_official_framework_paper_experiment.sh`](scripts/run_official_framework_paper_experiment.sh) 每次只运行一个框架，并将 native memory retrieval、V6.4 共享 evidence selection、QA-v2.1 与本地 official-prompt judge 分成可恢复的独立阶段。官方检索现在每完成一个问题就持久化并 `fsync`；命令中断后使用完全相同的环境变量重跑即可从严格校验过的有序前缀继续。
 
-先安装当前框架的固定依赖；不要在同一个命令中混装四个 extra：
+每个官方框架使用独立 uv 环境，避免某个框架升级 `torch`、`transformers`
+或 `torchvision` 后影响 vLLM。不要在同一环境混装四个 extra。Mem0 的
+embedding 通过官方 OpenAI-compatible provider 调用本机 BGE-M3 服务，因此
+Mem0 实验环境本身不安装 `sentence-transformers`：
 
 ```bash
-# 将 official-mem0 替换为 official-langmem / official-graphiti / official-letta
-uv sync --inexact --extra dev --extra embeddings --extra official-mem0
+UV_PROJECT_ENVIRONMENT=.venv-official-mem0 \
+uv sync --extra dev --extra official-mem0
+
+# LangMem/Graphiti 需要进程内 BGE；分别换成自己的环境名和 extra。
+# UV_PROJECT_ENVIRONMENT=.venv-official-langmem \
+# uv sync --extra dev --extra embeddings --extra official-langmem
 ```
 
 启动共享 vLLM 时建议给 BGE-M3 预留显存。以下设置适用于单张 24 GB 4090D 的起点；若仍 OOM，应降低 utilization 或暂时使用 `EMBEDDING_DEVICE=cpu`，但 CPU 延迟不得与 CUDA 延迟放进同一效率表：
@@ -255,12 +262,29 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 uv run --no-sync bash scripts/serve_vllm.sh
 ```
 
+Mem0 和 Letta 共享一个独立的本地 BGE-M3 服务。首次创建其隔离环境，然后
+在另一个 tmux 窗口启动服务；它与 vLLM 使用不同 Python 环境：
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-embeddings \
+uv sync --extra embeddings
+
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+UV_PROJECT_ENVIRONMENT=.venv-embeddings \
+uv run --no-sync python scripts/serve_embeddings.py \
+  --model BAAI/bge-m3 --device cuda --port 8001 --batch-size 2
+
+curl http://127.0.0.1:8001/v1/models
+```
+
 以 Mem0 为例，按顺序运行以下阶段。`status` 不访问模型，可随时查看已有产物：
 
 ```bash
 export FRAMEWORK=mem0
 export VMP_LLM_API_KEY=local-vllm-key
 export VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct  # 必须等于 /v1/models 返回的 id
+export VMP_EMBEDDING_BASE_URL=http://127.0.0.1:8001/v1
+export UV_PROJECT_ENVIRONMENT=.venv-official-mem0
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
@@ -281,11 +305,10 @@ export VMP_GRAPHITI_NEO4J_PASSWORD='仅用于该实验容器的密码'
 uv run --no-sync bash scripts/serve_graphiti_neo4j.sh
 ```
 
-Letta 还需要独立的 BGE OpenAI-compatible endpoint 和固定版本的 Letta server：
+Letta 使用上面同一个 BGE OpenAI-compatible endpoint，并额外需要固定版本的
+Letta server：
 
 ```bash
-uv run --no-sync python scripts/serve_embeddings.py \
-  --model BAAI/bge-m3 --device cuda --port 8001
 uv run --no-sync bash scripts/serve_letta.sh
 ```
 

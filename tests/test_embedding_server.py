@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import threading
+from urllib.request import Request, urlopen
 
 from scripts.serve_embeddings import EmbeddingHTTPServer, EmbeddingRequestHandler
+
 from vmp_memos.embeddings import BaseEmbedder, OpenAICompatibleEmbedder
 
 
@@ -39,6 +42,41 @@ def test_openai_compatible_embedding_bridge_round_trip() -> None:
         )
 
         assert client.embed(["abc", "hello"]) == [[3.0, 1.0], [5.0, 1.0]]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_embedding_bridge_accepts_mem0_dimensions_parameter() -> None:
+    server = EmbeddingHTTPServer(
+        ("127.0.0.1", 0),
+        EmbeddingRequestHandler,
+        embedder=FakeEmbedder(),
+        model="BAAI/bge-m3",
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        payload = json.dumps(
+            {
+                "input": ["mem0 probe"],
+                "model": "BAAI/bge-m3",
+                "encoding_format": "float",
+                "dimensions": 2,
+            }
+        ).encode("utf-8")
+        request = Request(
+            f"http://{host}:{port}/v1/embeddings",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=2) as response:
+            result = json.loads(response.read().decode("utf-8"))
+
+        assert result["data"][0]["embedding"] == [10.0, 1.0]
     finally:
         server.shutdown()
         server.server_close()

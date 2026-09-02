@@ -1,4 +1,4 @@
-"""Official Mem0 OSS adapter using local vLLM and Hugging Face embeddings."""
+"""Official Mem0 OSS adapter using local OpenAI-compatible model services."""
 
 from __future__ import annotations
 
@@ -170,7 +170,7 @@ class Mem0OfficialAdapter(BaseMemoryFrameworkAdapter):
             return self._memory_factory(config)
         os.environ.setdefault("MEM0_TELEMETRY", "false")
         try:
-            from mem0 import Memory
+            from mem0 import Memory  # type: ignore[import-not-found]
         except ImportError as exc:
             raise Mem0DependencyError(
                 'Mem0 adapter requires: python -m pip install -e ".[official-mem0]"'
@@ -247,14 +247,15 @@ def build_mem0_config(
             },
         },
         "embedder": {
-            "provider": "huggingface",
+            # Keep Mem0's official provider/factory while serving the shared
+            # BGE-M3 model out of process.  This prevents Mem0 from importing a
+            # second torch/transformers stack into the vLLM experiment process.
+            "provider": "openai",
             "config": {
                 "model": runtime.embedding_model,
                 "embedding_dims": runtime.embedding_dimension,
-                "model_kwargs": {
-                    "device": runtime.embedding_device,
-                    "trust_remote_code": True,
-                },
+                "openai_base_url": runtime.embedding_base_url,
+                "api_key": runtime.embedding_api_key or "local-embedding-key",
             },
         },
         "vector_store": {

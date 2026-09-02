@@ -25,6 +25,8 @@ shared_models:
   llm_provider: local_vllm_openai_compatible
   embedding: BAAI/bge-m3
   embedding_dimension: 1024
+  mem0_embedding_provider: official_openai_compatible
+  embedding_endpoint: http://127.0.0.1:8001/v1
   official_memory_inference: true
   temperature: 0.0
   top_p: 1.0

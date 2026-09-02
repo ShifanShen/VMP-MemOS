@@ -43,6 +43,7 @@ def test_mem0_becomes_eligible_only_with_matching_smoke(tmp_path, monkeypatch) -
                 "llm_model": "Qwen/Qwen2.5-7B-Instruct",
                 "embedding_model": "BAAI/bge-m3",
                 "embedding_dimension": 1024,
+                "embedding_base_url": "http://127.0.0.1:8001/v1",
                 "official_llm_max_tokens": 512,
                 "official_llm_temperature": 0.0,
             }
@@ -56,12 +57,25 @@ def test_mem0_becomes_eligible_only_with_matching_smoke(tmp_path, monkeypatch) -
         llm_model="Qwen/Qwen2.5-7B-Instruct",
         embedding_model="BAAI/bge-m3",
         embedding_dimension=1024,
+        embedding_base_url="http://127.0.0.1:8001/v1",
         verification_dir=tmp_path,
     )[0]
 
     assert report.adapter_smoke_verified is True
     assert report.main_table_eligible is True
     assert report.fairness_level == FairnessLevel.FULLY_CONTROLLED
+
+    mismatched_endpoint = audit_known_frameworks(
+        ["mem0"],
+        vllm_base_url="http://127.0.0.1:8000/v1",
+        llm_model="Qwen/Qwen2.5-7B-Instruct",
+        embedding_model="BAAI/bge-m3",
+        embedding_dimension=1024,
+        embedding_base_url="http://127.0.0.1:9001/v1",
+        verification_dir=tmp_path,
+    )[0]
+    assert mismatched_endpoint.main_table_eligible is False
+    assert mismatched_endpoint.adapter_smoke_verified is False
 
 
 def test_graphiti_is_an_implemented_pinned_official_adapter(

@@ -26,6 +26,10 @@ def main() -> int:
     parser.add_argument("--embedding-model", default=None)
     parser.add_argument("--embedding-dimension", type=int, default=1024)
     parser.add_argument(
+        "--embedding-base-url",
+        default=os.getenv("VMP_EMBEDDING_BASE_URL"),
+    )
+    parser.add_argument(
         "--official-llm-max-tokens",
         type=int,
         default=int(os.getenv("VMP_OFFICIAL_LLM_MAX_TOKENS", "512")),
@@ -55,6 +59,7 @@ def main() -> int:
         llm_model=args.llm_model,
         embedding_model=args.embedding_model,
         embedding_dimension=args.embedding_dimension,
+        embedding_base_url=args.embedding_base_url,
         official_llm_max_tokens=args.official_llm_max_tokens,
         official_llm_temperature=args.official_llm_temperature,
         verification_dir=args.verification_dir,

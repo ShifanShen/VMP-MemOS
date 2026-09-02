@@ -85,6 +85,14 @@ def main() -> int:
     )
     parser.add_argument("--embedding-dimension", type=int, default=1024)
     parser.add_argument(
+        "--embedding-base-url",
+        default=os.getenv(
+            "VMP_EMBEDDING_BASE_URL",
+            "http://127.0.0.1:8001/v1",
+        ),
+        help="OpenAI-compatible embedding endpoint used by official Mem0.",
+    )
+    parser.add_argument(
         "--vllm-base-url",
         default=os.getenv("VMP_LLM_BASE_URL", "http://127.0.0.1:8000/v1"),
     )
@@ -240,6 +248,8 @@ def main() -> int:
         embedding_model=args.embedding_model,
         embedding_dimension=args.embedding_dimension,
         embedding_device=args.embedding_device,
+        embedding_base_url=args.embedding_base_url,
+        embedding_api_key=os.getenv("VMP_EMBEDDING_API_KEY") or None,
         official_memory_infer=args.official_memory_infer,
         official_llm_max_tokens=args.official_llm_max_tokens,
         official_llm_temperature=args.official_llm_temperature,

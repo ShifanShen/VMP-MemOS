@@ -74,6 +74,7 @@ def audit_known_frameworks(
     llm_model: str | None = None,
     embedding_model: str | None = None,
     embedding_dimension: int | None = None,
+    embedding_base_url: str | None = None,
     official_llm_max_tokens: int = 512,
     official_llm_temperature: float = 0.0,
     verification_dir: str | Path | None = None,
@@ -91,6 +92,7 @@ def audit_known_frameworks(
             llm_model=llm_model,
             embedding_model=embedding_model,
             embedding_dimension=embedding_dimension,
+            embedding_base_url=embedding_base_url,
             official_llm_max_tokens=official_llm_max_tokens,
             official_llm_temperature=official_llm_temperature,
             verification_dir=Path(verification_dir) if verification_dir else None,
@@ -106,6 +108,7 @@ def _audit_one(
     llm_model: str | None,
     embedding_model: str | None,
     embedding_dimension: int | None,
+    embedding_base_url: str | None,
     official_llm_max_tokens: int,
     official_llm_temperature: float,
     verification_dir: Path | None,
@@ -130,6 +133,7 @@ def _audit_one(
         llm_model=llm_model,
         embedding_model=embedding_model,
         embedding_dimension=embedding_dimension,
+        embedding_base_url=embedding_base_url,
         official_llm_max_tokens=official_llm_max_tokens,
         official_llm_temperature=official_llm_temperature,
         server_version=known.get("supported_server_version"),
@@ -142,6 +146,7 @@ def _audit_one(
         and embedding_dimension > 0
         and official_llm_max_tokens > 0
         and 0.0 <= official_llm_temperature <= 2.0
+        and (normalized != "mem0" or embedding_base_url)
     )
     eligible = bool(
         adapter_implemented
@@ -199,6 +204,7 @@ def _audit_one(
             "llm_model": llm_model,
             "embedding_model": embedding_model,
             "embedding_dimension": embedding_dimension,
+            "embedding_base_url": embedding_base_url,
             "official_llm_max_tokens": official_llm_max_tokens,
             "official_llm_temperature": official_llm_temperature,
             "verification_dir": str(verification_dir) if verification_dir else None,
@@ -229,6 +235,7 @@ def _smoke_verified(
     llm_model: str | None,
     embedding_model: str | None,
     embedding_dimension: int | None,
+    embedding_base_url: str | None,
     official_llm_max_tokens: int,
     official_llm_temperature: float,
     server_version: str | None,
@@ -250,6 +257,10 @@ def _smoke_verified(
         and payload.get("llm_model") == llm_model
         and payload.get("embedding_model") == embedding_model
         and payload.get("embedding_dimension") == embedding_dimension
+        and (
+            embedding_base_url is None
+            or payload.get("embedding_base_url") == embedding_base_url
+        )
         and payload.get("official_llm_max_tokens") == official_llm_max_tokens
         and payload.get("official_llm_temperature") == official_llm_temperature
         and (

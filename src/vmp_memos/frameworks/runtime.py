@@ -18,6 +18,8 @@ class FrameworkRuntimeConfig(SchemaModel):
     embedding_model: NonEmptyStr = "BAAI/bge-m3"
     embedding_dimension: int = Field(default=1024, gt=0)
     embedding_device: NonEmptyStr = "cuda"
+    embedding_base_url: NonEmptyStr = "http://127.0.0.1:8001/v1"
+    embedding_api_key: str | None = None
     official_memory_infer: bool = True
     official_llm_max_tokens: int = Field(default=512, gt=0)
     official_llm_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
@@ -32,7 +34,7 @@ class FrameworkRuntimeConfig(SchemaModel):
     letta_context_window: int = Field(default=16_384, gt=0)
 
     @classmethod
-    def from_env(cls) -> "FrameworkRuntimeConfig":
+    def from_env(cls) -> FrameworkRuntimeConfig:
         """Load non-secret defaults and the optional vLLM key from environment."""
 
         return cls(
@@ -48,6 +50,11 @@ class FrameworkRuntimeConfig(SchemaModel):
             embedding_model=os.getenv("VMP_EMBEDDING_MODEL", "BAAI/bge-m3"),
             embedding_dimension=int(os.getenv("VMP_EMBEDDING_DIMENSION", "1024")),
             embedding_device=os.getenv("VMP_EMBEDDING_DEVICE", "cuda"),
+            embedding_base_url=os.getenv(
+                "VMP_EMBEDDING_BASE_URL",
+                "http://127.0.0.1:8001/v1",
+            ),
+            embedding_api_key=os.getenv("VMP_EMBEDDING_API_KEY") or None,
             official_memory_infer=_env_bool("VMP_OFFICIAL_MEMORY_INFER", default=True),
             official_llm_max_tokens=int(
                 os.getenv("VMP_OFFICIAL_LLM_MAX_TOKENS", "512")
@@ -91,6 +98,7 @@ class FrameworkRuntimeConfig(SchemaModel):
             "embedding_model": self.embedding_model,
             "embedding_dimension": self.embedding_dimension,
             "embedding_device": self.embedding_device,
+            "embedding_base_url": self.embedding_base_url,
             "official_memory_infer": self.official_memory_infer,
             "official_llm_max_tokens": self.official_llm_max_tokens,
             "official_llm_temperature": self.official_llm_temperature,

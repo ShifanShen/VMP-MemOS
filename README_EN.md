@@ -236,11 +236,19 @@ Files under `qa_v21_test/hypotheses/*.jsonl` retain the upstream `question_id`/`
 
 [`configs/official_frameworks.yaml`](configs/official_frameworks.yaml) freezes the package versions and shared protocol for Mem0, LangMem, Graphiti, and Letta. [`scripts/run_official_framework_paper_experiment.sh`](scripts/run_official_framework_paper_experiment.sh) runs one framework at a time and separates native memory retrieval, shared V6.4 evidence selection, QA-v2.1, and the local official-prompt judge into resumable stages. Official retrieval now persists and `fsync`s every completed question. Re-running an interrupted command with identical environment variables resumes only after validating the existing ordered prefix and all immutable inputs.
 
-Install the pinned extra for the current framework. Do not combine all four extras in one command:
+Use a separate uv environment for each official framework so that one adapter
+cannot upgrade `torch`, `transformers`, or `torchvision` underneath vLLM. Do not
+combine all four extras in one environment. Mem0 calls the local BGE-M3 service
+through its official OpenAI-compatible provider, so its experiment environment
+does not install `sentence-transformers`:
 
 ```bash
-# Replace official-mem0 with official-langmem / official-graphiti / official-letta
-uv sync --inexact --extra dev --extra embeddings --extra official-mem0
+UV_PROJECT_ENVIRONMENT=.venv-official-mem0 \
+uv sync --extra dev --extra official-mem0
+
+# LangMem/Graphiti use in-process BGE; give each its own environment and extra.
+# UV_PROJECT_ENVIRONMENT=.venv-official-langmem \
+# uv sync --extra dev --extra embeddings --extra official-langmem
 ```
 
 When serving the shared model, reserve GPU memory for BGE-M3. The values below are a starting point for a single 24 GB 4090D. If this still OOMs, lower the utilization or temporarily set `EMBEDDING_DEVICE=cpu`; CPU and CUDA latency must not be mixed in one efficiency table.
@@ -255,12 +263,30 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 uv run --no-sync bash scripts/serve_vllm.sh
 ```
 
+Mem0 and Letta share a separate local BGE-M3 service. Create its isolated
+environment once, then start it in another tmux window. It does not share the
+vLLM Python environment:
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-embeddings \
+uv sync --extra embeddings
+
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+UV_PROJECT_ENVIRONMENT=.venv-embeddings \
+uv run --no-sync python scripts/serve_embeddings.py \
+  --model BAAI/bge-m3 --device cuda --port 8001 --batch-size 2
+
+curl http://127.0.0.1:8001/v1/models
+```
+
 For Mem0, run these stages in order. `status` is model-free and can be used at any time:
 
 ```bash
 export FRAMEWORK=mem0
 export VMP_LLM_API_KEY=local-vllm-key
 export VMP_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct  # must match the /v1/models id
+export VMP_EMBEDDING_BASE_URL=http://127.0.0.1:8001/v1
+export UV_PROJECT_ENVIRONMENT=.venv-official-mem0
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
@@ -281,11 +307,10 @@ export VMP_GRAPHITI_NEO4J_PASSWORD='password-for-this-experiment-container-only'
 uv run --no-sync bash scripts/serve_graphiti_neo4j.sh
 ```
 
-Letta additionally requires a separate BGE OpenAI-compatible endpoint and the pinned Letta server:
+Letta uses the same BGE OpenAI-compatible endpoint above and additionally
+requires the pinned Letta server:
 
 ```bash
-uv run --no-sync python scripts/serve_embeddings.py \
-  --model BAAI/bge-m3 --device cuda --port 8001
 uv run --no-sync bash scripts/serve_letta.sh
 ```
 

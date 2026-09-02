@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
 
+from vmp_memos.embeddings import OpenAICompatibleEmbedder
 from vmp_memos.frameworks import FrameworkRuntimeConfig, adapter_for_name
 from vmp_memos.longmemeval import LongMemEvalSample, sample_to_session_events
 
@@ -31,6 +32,14 @@ def main() -> int:
     parser.add_argument("--embedding-model", default="BAAI/bge-m3")
     parser.add_argument("--embedding-dimension", type=int, default=1024)
     parser.add_argument("--embedding-device", default="cuda")
+    parser.add_argument(
+        "--embedding-base-url",
+        default=os.getenv(
+            "VMP_EMBEDDING_BASE_URL",
+            "http://127.0.0.1:8001/v1",
+        ),
+        help="OpenAI-compatible BGE endpoint used by the official Mem0 adapter.",
+    )
     parser.add_argument(
         "--official-llm-max-tokens",
         type=int,
@@ -96,6 +105,8 @@ def main() -> int:
         embedding_model=args.embedding_model,
         embedding_dimension=args.embedding_dimension,
         embedding_device=args.embedding_device,
+        embedding_base_url=args.embedding_base_url,
+        embedding_api_key=os.getenv("VMP_EMBEDDING_API_KEY") or None,
         official_memory_infer=True,
         official_llm_max_tokens=args.official_llm_max_tokens,
         official_llm_temperature=args.official_llm_temperature,
@@ -120,6 +131,7 @@ def main() -> int:
         "llm_model": runtime.llm_model,
         "embedding_model": runtime.embedding_model,
         "embedding_dimension": runtime.embedding_dimension,
+        "embedding_base_url": runtime.embedding_base_url,
         "official_llm_max_tokens": runtime.official_llm_max_tokens,
         "official_llm_temperature": runtime.official_llm_temperature,
         "graphiti_neo4j_uri": (
@@ -136,6 +148,15 @@ def main() -> int:
     }
     adapter = adapter_for_name(args.framework, runtime=runtime)
     try:
+        if args.framework == "mem0":
+            probe = OpenAICompatibleEmbedder(
+                base_url=runtime.embedding_base_url,
+                model=runtime.embedding_model,
+                dimension=runtime.embedding_dimension,
+                api_key=runtime.embedding_api_key,
+            )
+            probe.embed(["VMP-MemOS official Mem0 embedding preflight"])
+            payload["embedding_endpoint_preflight"] = "passed"
         sample = LongMemEvalSample.model_validate(_smoke_sample())
         adapter.reset(args.workspace / "question_1")
         for events in sample_to_session_events(sample):

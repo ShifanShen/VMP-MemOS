@@ -52,6 +52,8 @@ def test_mem0_config_uses_same_local_models(tmp_path) -> None:
         embedding_model="BAAI/bge-m3",
         embedding_dimension=1024,
         embedding_device="cuda",
+        embedding_base_url="http://127.0.0.1:8001/v1",
+        embedding_api_key="embedding-secret-not-for-manifest",
     )
 
     config = build_mem0_config(runtime, store_dir=tmp_path)
@@ -60,10 +62,17 @@ def test_mem0_config_uses_same_local_models(tmp_path) -> None:
     assert config["llm"]["config"]["model"] == runtime.llm_model
     assert config["llm"]["config"]["temperature"] == 0.0
     assert config["llm"]["config"]["max_tokens"] == 512
-    assert config["embedder"]["provider"] == "huggingface"
+    assert config["embedder"]["provider"] == "openai"
     assert config["embedder"]["config"]["model"] == runtime.embedding_model
+    assert (
+        config["embedder"]["config"]["openai_base_url"]
+        == runtime.embedding_base_url
+    )
+    assert config["embedder"]["config"]["api_key"] == runtime.embedding_api_key
+    assert "model_kwargs" not in config["embedder"]["config"]
     assert config["vector_store"]["config"]["embedding_model_dims"] == 1024
     assert "secret-not-for-manifest" not in str(runtime.public_metadata())
+    assert "embedding-secret-not-for-manifest" not in str(runtime.public_metadata())
 
 
 def test_mem0_adapter_preserves_latest_operation_provenance(tmp_path) -> None:

@@ -25,6 +25,7 @@ VMP_LLM_MODEL="${VMP_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
 EMBEDDING_MODEL="${EMBEDDING_MODEL:-BAAI/bge-m3}"
 EMBEDDING_DIMENSION="${EMBEDDING_DIMENSION:-1024}"
 EMBEDDING_DEVICE="${EMBEDDING_DEVICE:-cuda}"
+EMBEDDING_BASE_URL="${VMP_EMBEDDING_BASE_URL:-http://127.0.0.1:8001/v1}"
 EMBEDDING_CACHE_DIR="${EMBEDDING_CACHE_DIR:-${HOME}/.cache/huggingface}"
 EMBEDDING_CACHE_DB="${EMBEDDING_CACHE_DB:-${OUTPUT_DIR}/cache/bge_m3.sqlite3}"
 EMBEDDING_BATCH_SIZE="${EMBEDDING_BATCH_SIZE:-2}"
@@ -125,6 +126,7 @@ run_smoke() {
     --embedding-model "${EMBEDDING_MODEL}" \
     --embedding-dimension "${EMBEDDING_DIMENSION}" \
     --embedding-device "${EMBEDDING_DEVICE}" \
+    --embedding-base-url "${EMBEDDING_BASE_URL}" \
     --official-llm-max-tokens "${OFFICIAL_LLM_MAX_TOKENS}" \
     --official-llm-temperature "${OFFICIAL_LLM_TEMPERATURE}" \
     --output-dir "${AUDIT_DIR}" \
@@ -138,6 +140,7 @@ run_audit() {
     --llm-model "${VMP_LLM_MODEL}" \
     --embedding-model "${EMBEDDING_MODEL}" \
     --embedding-dimension "${EMBEDDING_DIMENSION}" \
+    --embedding-base-url "${EMBEDDING_BASE_URL}" \
     --official-llm-max-tokens "${OFFICIAL_LLM_MAX_TOKENS}" \
     --official-llm-temperature "${OFFICIAL_LLM_TEMPERATURE}" \
     --verification-dir "${AUDIT_DIR}" \
@@ -160,6 +163,7 @@ run_candidates() {
     --ingestion-granularity session \
     --embedding-model "${EMBEDDING_MODEL}" \
     --embedding-device "${EMBEDDING_DEVICE}" \
+    --embedding-base-url "${EMBEDDING_BASE_URL}" \
     --embedding-cache-dir "${EMBEDDING_CACHE_DIR}" \
     --embedding-cache-db "${EMBEDDING_CACHE_DB}" \
     --embedding-batch-size "${EMBEDDING_BATCH_SIZE}" \
@@ -276,6 +280,9 @@ PY
 case "${STAGE}" in
   smoke)
     log_stage "Verifying the pinned official adapter with local vLLM and BGE-M3."
+    if [[ "${FRAMEWORK}" == "mem0" ]]; then
+      log_stage "Mem0 uses the official OpenAI embedder against ${EMBEDDING_BASE_URL}; start scripts/serve_embeddings.py first."
+    fi
     run_smoke
     ;;
   audit)
