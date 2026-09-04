@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import urllib.error
 from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
@@ -170,7 +171,21 @@ def main() -> int:
                 api_key=runtime.vllm_api_key,
             )
         )
-        model_payload = vllm.list_models(timeout_seconds=10.0)
+        try:
+            model_payload = vllm.list_models(timeout_seconds=10.0)
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(
+                "vLLM preflight was rejected at "
+                f"{runtime.vllm_base_url}/models (HTTP {exc.code}). Check "
+                "VMP_LLM_API_KEY and the served model process."
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError(
+                "vLLM preflight could not reach "
+                f"{runtime.vllm_base_url}/models: {exc}. Start "
+                "scripts/serve_vllm.sh in a separate tmux window and wait "
+                "until the authenticated /v1/models request succeeds."
+            ) from exc
         model_info = _model_info(model_payload, runtime.llm_model)
         observed_context = int(model_info.get("max_model_len") or 0)
         if observed_context < runtime.official_llm_context_window:
