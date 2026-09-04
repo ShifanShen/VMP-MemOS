@@ -260,13 +260,13 @@ uv run --no-sync python -c \
 # uv sync --extra dev --extra embeddings --extra official-langmem
 ```
 
-启动共享 vLLM 时建议给 BGE-M3 预留显存。以下设置适用于单张 24 GB 4090D 的起点；若仍 OOM，应降低 utilization 或暂时使用 `EMBEDDING_DEVICE=cpu`，但 CPU 延迟不得与 CUDA 延迟放进同一效率表：
+启动共享 vLLM 时建议给 BGE-M3 预留显存。以下设置已按单张 24 GB 4090D、vLLM 0.26.0 和 32K 上下文校准：`0.72` 只能提供约 1.51 GiB KV cache，不足以启动 32K；`0.75` 可覆盖约 1.75 GiB 的需求，并保留约 25% 显存给 BGE-M3。若两个服务同时运行仍 OOM，可暂时使用 `EMBEDDING_DEVICE=cpu`，但 CPU 延迟不得与 CUDA 延迟放进同一效率表：
 
 ```bash
 VMP_LLM_MODEL=/home/shenshifan/models/Qwen2.5-7B-Instruct \
 VMP_VLLM_SERVED_MODEL_NAME=Qwen/Qwen2.5-7B-Instruct \
 VMP_LLM_API_KEY=local-vllm-key \
-VMP_VLLM_GPU_MEMORY_UTILIZATION=0.72 \
+VMP_VLLM_GPU_MEMORY_UTILIZATION=0.75 \
 VMP_VLLM_MAX_MODEL_LEN=32768 \
 VMP_VLLM_ENABLE_TOOL_CALLING=0 \
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \

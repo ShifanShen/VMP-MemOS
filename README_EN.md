@@ -261,13 +261,13 @@ uv run --no-sync python -c \
 # uv sync --extra dev --extra embeddings --extra official-langmem
 ```
 
-When serving the shared model, reserve GPU memory for BGE-M3. The values below are a starting point for a single 24 GB 4090D. If this still OOMs, lower the utilization or temporarily set `EMBEDDING_DEVICE=cpu`; CPU and CUDA latency must not be mixed in one efficiency table.
+When serving the shared model, reserve GPU memory for BGE-M3. The values below are calibrated for one 24 GB 4090D, vLLM 0.26.0, and a 32K context: `0.72` exposes only about 1.51 GiB of KV cache and cannot start at 32K, while `0.75` covers the roughly 1.75 GiB requirement and leaves about 25% of the GPU for BGE-M3. If the two services still OOM when colocated, temporarily set `EMBEDDING_DEVICE=cpu`; CPU and CUDA latency must not be mixed in one efficiency table.
 
 ```bash
 VMP_LLM_MODEL=/home/shenshifan/models/Qwen2.5-7B-Instruct \
 VMP_VLLM_SERVED_MODEL_NAME=Qwen/Qwen2.5-7B-Instruct \
 VMP_LLM_API_KEY=local-vllm-key \
-VMP_VLLM_GPU_MEMORY_UTILIZATION=0.72 \
+VMP_VLLM_GPU_MEMORY_UTILIZATION=0.75 \
 VMP_VLLM_MAX_MODEL_LEN=32768 \
 VMP_VLLM_ENABLE_TOOL_CALLING=0 \
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
