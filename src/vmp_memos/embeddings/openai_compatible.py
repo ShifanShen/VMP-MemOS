@@ -71,7 +71,12 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 raw = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, OSError, json.JSONDecodeError) as exc:
+        except HTTPError as exc:
+            raise EmbeddingError(
+                "OpenAI-compatible embedding request failed: "
+                f"{_http_error_message(exc)}"
+            ) from exc
+        except (URLError, OSError, json.JSONDecodeError) as exc:
             raise EmbeddingError(
                 f"OpenAI-compatible embedding request failed: {exc}"
             ) from exc
@@ -102,3 +107,21 @@ def _embeddings_url(base_url: str) -> str:
         if base_url.endswith("/v1")
         else f"{base_url}/v1/embeddings"
     )
+
+
+def _http_error_message(exc: HTTPError) -> str:
+    try:
+        body = exc.read().decode("utf-8")
+    except Exception:
+        body = ""
+    detail = body
+    if body:
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            pass
+        else:
+            error = payload.get("error") if isinstance(payload, dict) else None
+            if isinstance(error, dict) and error.get("message"):
+                detail = str(error["message"])
+    return f"HTTP {exc.code}: {detail or exc.reason}"

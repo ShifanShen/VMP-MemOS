@@ -6,9 +6,14 @@ import json
 import threading
 from urllib.request import Request, urlopen
 
+import pytest
 from scripts.serve_embeddings import EmbeddingHTTPServer, EmbeddingRequestHandler
 
-from vmp_memos.embeddings import BaseEmbedder, OpenAICompatibleEmbedder
+from vmp_memos.embeddings import (
+    BaseEmbedder,
+    EmbeddingError,
+    OpenAICompatibleEmbedder,
+)
 
 
 class FakeEmbedder(BaseEmbedder):
@@ -22,6 +27,11 @@ class FakeEmbedder(BaseEmbedder):
 
     def embed(self, texts):
         return [[float(len(text)), 1.0] for text in texts]
+
+
+class FailingEmbedder(FakeEmbedder):
+    def embed(self, texts):
+        raise RuntimeError("CUDA out of memory during embedding probe")
 
 
 def test_openai_compatible_embedding_bridge_round_trip() -> None:
@@ -77,6 +87,35 @@ def test_embedding_bridge_accepts_mem0_dimensions_parameter() -> None:
             result = json.loads(response.read().decode("utf-8"))
 
         assert result["data"][0]["embedding"] == [10.0, 1.0]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_openai_compatible_embedding_error_includes_server_response() -> None:
+    server = EmbeddingHTTPServer(
+        ("127.0.0.1", 0),
+        EmbeddingRequestHandler,
+        embedder=FailingEmbedder(),
+        model="BAAI/bge-m3",
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        client = OpenAICompatibleEmbedder(
+            base_url=f"http://{host}:{port}/v1",
+            model="BAAI/bge-m3",
+            dimension=2,
+        )
+
+        with pytest.raises(EmbeddingError) as exc_info:
+            client.embed(["probe"])
+
+        message = str(exc_info.value)
+        assert "HTTP 500" in message
+        assert "CUDA out of memory during embedding probe" in message
     finally:
         server.shutdown()
         server.server_close()
