@@ -32,7 +32,17 @@ def main() -> int:
     parser.add_argument(
         "--official-llm-max-tokens",
         type=int,
-        default=int(os.getenv("VMP_OFFICIAL_LLM_MAX_TOKENS", "512")),
+        default=int(os.getenv("VMP_OFFICIAL_LLM_MAX_TOKENS", "2048")),
+    )
+    parser.add_argument(
+        "--official-llm-retry-max-tokens",
+        type=int,
+        default=int(os.getenv("VMP_OFFICIAL_LLM_RETRY_MAX_TOKENS", "4096")),
+    )
+    parser.add_argument(
+        "--official-llm-context-window",
+        type=int,
+        default=int(os.getenv("VMP_OFFICIAL_LLM_CONTEXT_WINDOW", "32768")),
     )
     parser.add_argument(
         "--official-llm-temperature",
@@ -61,6 +71,8 @@ def main() -> int:
         embedding_dimension=args.embedding_dimension,
         embedding_base_url=args.embedding_base_url,
         official_llm_max_tokens=args.official_llm_max_tokens,
+        official_llm_retry_max_tokens=args.official_llm_retry_max_tokens,
+        official_llm_context_window=args.official_llm_context_window,
         official_llm_temperature=args.official_llm_temperature,
         verification_dir=args.verification_dir,
     )

@@ -416,6 +416,38 @@ def _run_method(
             adapter_stats.update(
                 _cache_stats_delta(cache_before, _cache_stats(embedder))
             )
+            if method in {"mem0", "mem0_official"}:
+                LOGGER.info(
+                    "Mem0 protocol %d/%d: question_id=%s logical_calls=%d "
+                    "requests=%d invalid_json=%d retries=%d recovered=%d "
+                    "unrecovered=%d request_exceptions=%d memories=%d "
+                    "bm25=%s spacy_lemma=%s",
+                    sample_index,
+                    sample_count,
+                    sample.question_id,
+                    int(_json_number(adapter_stats.get("mem0_llm_logical_calls"))),
+                    int(_json_number(adapter_stats.get("mem0_llm_requests"))),
+                    int(
+                        _json_number(
+                            adapter_stats.get("mem0_llm_initial_invalid_json")
+                        )
+                    ),
+                    int(_json_number(adapter_stats.get("mem0_llm_retry_attempts"))),
+                    int(_json_number(adapter_stats.get("mem0_llm_retry_successes"))),
+                    int(
+                        _json_number(
+                            adapter_stats.get("mem0_llm_unrecovered_invalid_json")
+                        )
+                    ),
+                    int(
+                        _json_number(
+                            adapter_stats.get("mem0_llm_request_exceptions")
+                        )
+                    ),
+                    int(_json_number(adapter_stats.get("memory_count"))),
+                    adapter_stats.get("mem0_bm25_enabled"),
+                    adapter_stats.get("mem0_spacy_lemma_enabled"),
+                )
             record = _sample_record(
                 sample,
                 method=method,

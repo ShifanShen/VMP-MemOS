@@ -30,13 +30,24 @@ shared_models:
   official_memory_inference: true
   temperature: 0.0
   top_p: 1.0
-  memory_max_tokens: 512
+  memory_max_tokens: 2048
+  memory_retry_max_tokens: 4096
+  context_window: 32768
 
 retrieval:
   ingestion_granularity: session
   native_candidate_depth: 40
   reported_top_k: 5
   resumable_record_checkpoint: true
+
+mem0_protocol_gate:
+  compatibility_version: mem0_v2010_json_transport_v2
+  dev_samples: 20
+  max_initial_invalid_json_rate: 0.02
+  max_unrecovered_failure_rate: 0.0
+  require_native_bm25: true
+  require_spacy_lemmatization: true
+  memory_stats_top_k: 10000
 
 shared_evidence_selection:
   paper_version: VMP-v6.4

@@ -121,7 +121,7 @@ def test_letta_configs_use_same_local_models() -> None:
     assert llm["model_endpoint"] == "http://127.0.0.1:8000/v1"
     assert llm["model"] == runtime.llm_model
     assert llm["temperature"] == 0.0
-    assert llm["max_tokens"] == 512
+    assert llm["max_tokens"] == 2048
     assert embedding["embedding_endpoint_type"] == "openai"
     assert embedding["embedding_endpoint"] == runtime.letta_embedding_base_url
     assert embedding["embedding_model"] == runtime.embedding_model

@@ -109,7 +109,17 @@ def main() -> int:
     parser.add_argument(
         "--official-llm-max-tokens",
         type=int,
-        default=int(os.getenv("VMP_OFFICIAL_LLM_MAX_TOKENS", "512")),
+        default=int(os.getenv("VMP_OFFICIAL_LLM_MAX_TOKENS", "2048")),
+    )
+    parser.add_argument(
+        "--official-llm-retry-max-tokens",
+        type=int,
+        default=int(os.getenv("VMP_OFFICIAL_LLM_RETRY_MAX_TOKENS", "4096")),
+    )
+    parser.add_argument(
+        "--official-llm-context-window",
+        type=int,
+        default=int(os.getenv("VMP_OFFICIAL_LLM_CONTEXT_WINDOW", "32768")),
     )
     parser.add_argument(
         "--official-llm-temperature",
@@ -252,6 +262,8 @@ def main() -> int:
         embedding_api_key=os.getenv("VMP_EMBEDDING_API_KEY") or None,
         official_memory_infer=args.official_memory_infer,
         official_llm_max_tokens=args.official_llm_max_tokens,
+        official_llm_retry_max_tokens=args.official_llm_retry_max_tokens,
+        official_llm_context_window=args.official_llm_context_window,
         official_llm_temperature=args.official_llm_temperature,
         graphiti_neo4j_uri=args.graphiti_neo4j_uri,
         graphiti_neo4j_user=args.graphiti_neo4j_user,

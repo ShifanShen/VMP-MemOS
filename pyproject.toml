@@ -28,7 +28,9 @@ embeddings = [
     "sentence-transformers>=3.0,<4.0",
 ]
 official-mem0 = [
+    "fastembed>=0.3.1,<1.0",
     "mem0ai==2.0.10",
+    "spacy>=3.7,<4.0",
 ]
 official-langmem = [
     "langmem==0.0.30",

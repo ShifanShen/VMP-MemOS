@@ -246,6 +246,16 @@ does not install `sentence-transformers`:
 UV_PROJECT_ENVIRONMENT=.venv-official-mem0 \
 uv sync --extra dev --extra official-mem0
 
+# Mem0 native BM25 needs the fastembed model, while lemmatization needs a
+# spaCy model. Run both commands once before switching to offline mode.
+UV_PROJECT_ENVIRONMENT=.venv-official-mem0 \
+uv run --no-sync python -m spacy download en_core_web_sm
+
+HF_ENDPOINT=https://hf-mirror.com \
+UV_PROJECT_ENVIRONMENT=.venv-official-mem0 \
+uv run --no-sync python -c \
+  "from fastembed import SparseTextEmbedding; list(SparseTextEmbedding(model_name='Qdrant/bm25').embed(['cache warmup']))"
+
 # LangMem/Graphiti use in-process BGE; give each its own environment and extra.
 # UV_PROJECT_ENVIRONMENT=.venv-official-langmem \
 # uv sync --extra dev --extra embeddings --extra official-langmem
@@ -258,7 +268,7 @@ VMP_LLM_MODEL=/home/shenshifan/models/Qwen2.5-7B-Instruct \
 VMP_VLLM_SERVED_MODEL_NAME=Qwen/Qwen2.5-7B-Instruct \
 VMP_LLM_API_KEY=local-vllm-key \
 VMP_VLLM_GPU_MEMORY_UTILIZATION=0.72 \
-VMP_VLLM_MAX_MODEL_LEN=16384 \
+VMP_VLLM_MAX_MODEL_LEN=32768 \
 VMP_VLLM_ENABLE_TOOL_CALLING=0 \
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 uv run --no-sync bash scripts/serve_vllm.sh
@@ -293,12 +303,22 @@ export TRANSFORMERS_OFFLINE=1
 
 STAGE=smoke           uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
 STAGE=audit           uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
+STAGE=dev_protocol    uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
 STAGE=test_candidates uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
 STAGE=test_rerank     uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
 STAGE=test_qa         uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
 STAGE=test_judge      uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
 STAGE=status          uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
 ```
+
+For Mem0, `dev_protocol` first evaluates 20 Dev samples and records initial JSON
+failures, retries, final failures, complete memory counts, and BM25/spaCy status
+for every question. `test_candidates` starts only when the final failure rate is
+zero, the initial-invalid rate is at most 2%, and the native hybrid dependencies
+are active. This gate does not read Test labels. The old
+`lme_test_mem0_official_candidates_seed42` directory used the 512-token pilot
+protocol. Keep it as a diagnostic baseline; protocol-v2 paper runs use
+`lme_test_mem0_official_v2_candidates_seed42` and must not resume the old run.
 
 Graphiti also requires a dedicated, disposable Neo4j instance:
 
@@ -324,10 +344,10 @@ COMPARE_DIR=outputs/longmemeval/comparisons/official_frameworks_qwen_seed42_v1
 
 uv run --no-sync python scripts/build_longmemeval_paper_comparison.py \
   --retrieval-run outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_mem0_official_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_langmem_official_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_graphiti_official_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_letta_official_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_mem0_official_v2_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_langmem_official_v2_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_graphiti_official_v2_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_letta_official_v2_v64_rerank_seed42 \
   --output "${COMPARE_DIR}" \
   --reference-method vmp_hierarchical__vllm_boundary \
   --bootstrap-samples 10000 \

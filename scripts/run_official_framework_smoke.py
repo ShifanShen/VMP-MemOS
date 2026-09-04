@@ -11,6 +11,7 @@ from pathlib import Path
 
 from vmp_memos.embeddings import OpenAICompatibleEmbedder
 from vmp_memos.frameworks import FrameworkRuntimeConfig, adapter_for_name
+from vmp_memos.llm import VLLMClient, VLLMClientConfig
 from vmp_memos.longmemeval import LongMemEvalSample, sample_to_session_events
 
 
@@ -43,7 +44,17 @@ def main() -> int:
     parser.add_argument(
         "--official-llm-max-tokens",
         type=int,
-        default=int(os.getenv("VMP_OFFICIAL_LLM_MAX_TOKENS", "512")),
+        default=int(os.getenv("VMP_OFFICIAL_LLM_MAX_TOKENS", "2048")),
+    )
+    parser.add_argument(
+        "--official-llm-retry-max-tokens",
+        type=int,
+        default=int(os.getenv("VMP_OFFICIAL_LLM_RETRY_MAX_TOKENS", "4096")),
+    )
+    parser.add_argument(
+        "--official-llm-context-window",
+        type=int,
+        default=int(os.getenv("VMP_OFFICIAL_LLM_CONTEXT_WINDOW", "32768")),
     )
     parser.add_argument(
         "--official-llm-temperature",
@@ -109,6 +120,8 @@ def main() -> int:
         embedding_api_key=os.getenv("VMP_EMBEDDING_API_KEY") or None,
         official_memory_infer=True,
         official_llm_max_tokens=args.official_llm_max_tokens,
+        official_llm_retry_max_tokens=args.official_llm_retry_max_tokens,
+        official_llm_context_window=args.official_llm_context_window,
         official_llm_temperature=args.official_llm_temperature,
         graphiti_neo4j_uri=args.graphiti_neo4j_uri,
         graphiti_neo4j_user=args.graphiti_neo4j_user,
@@ -133,6 +146,8 @@ def main() -> int:
         "embedding_dimension": runtime.embedding_dimension,
         "embedding_base_url": runtime.embedding_base_url,
         "official_llm_max_tokens": runtime.official_llm_max_tokens,
+        "official_llm_retry_max_tokens": runtime.official_llm_retry_max_tokens,
+        "official_llm_context_window": runtime.official_llm_context_window,
         "official_llm_temperature": runtime.official_llm_temperature,
         "graphiti_neo4j_uri": (
             runtime.graphiti_neo4j_uri
@@ -148,6 +163,24 @@ def main() -> int:
     }
     adapter = adapter_for_name(args.framework, runtime=runtime)
     try:
+        vllm = VLLMClient(
+            VLLMClientConfig(
+                base_url=runtime.vllm_base_url,
+                model=runtime.llm_model,
+                api_key=runtime.vllm_api_key,
+            )
+        )
+        model_payload = vllm.list_models(timeout_seconds=10.0)
+        model_info = _model_info(model_payload, runtime.llm_model)
+        observed_context = int(model_info.get("max_model_len") or 0)
+        if observed_context < runtime.official_llm_context_window:
+            raise RuntimeError(
+                "official adapter requires vLLM max_model_len >= "
+                f"{runtime.official_llm_context_window}, observed {observed_context}. "
+                "Restart scripts/serve_vllm.sh with "
+                "VMP_VLLM_MAX_MODEL_LEN=32768."
+            )
+        payload["vllm_observed_max_model_len"] = observed_context
         if args.framework == "mem0":
             probe = OpenAICompatibleEmbedder(
                 base_url=runtime.embedding_base_url,
@@ -175,13 +208,25 @@ def main() -> int:
             raise RuntimeError("official adapter returned no evidence")
         if not all(item.source_session_id for item in evidence):
             raise RuntimeError("official adapter did not export source-session provenance")
+        adapter_stats = adapter.stats()
+        payload["adapter_stats"] = adapter_stats
+        if args.framework == "mem0":
+            if adapter_stats.get("mem0_bm25_enabled") is not True:
+                raise RuntimeError(
+                    "Mem0 native BM25 is disabled. Install the official-mem0 "
+                    "extra and pre-download Qdrant/bm25 before offline runs."
+                )
+            if adapter_stats.get("mem0_spacy_lemma_enabled") is not True:
+                raise RuntimeError(
+                    "Mem0 lemmatization is disabled. Install spaCy's "
+                    "en_core_web_sm model before offline runs."
+                )
         payload.update(
             {
                 "status": "passed",
                 "finished_at": datetime.now(UTC).isoformat(),
                 "evidence_count": len(evidence),
                 "top_source_session_id": evidence[0].source_session_id,
-                "adapter_stats": adapter.stats(),
             }
         )
     except Exception as exc:
@@ -216,6 +261,19 @@ def _distribution_for(framework: str) -> str:
         "graphiti": "graphiti-core",
         "letta": "letta-client",
     }[framework]
+
+
+def _model_info(payload: dict, model: str) -> dict:
+    data = payload.get("data")
+    if not isinstance(data, list):
+        raise RuntimeError("vLLM /v1/models returned no model list")
+    for item in data:
+        if isinstance(item, dict) and item.get("id") == model:
+            return item
+    served = [str(item.get("id")) for item in data if isinstance(item, dict)]
+    raise RuntimeError(
+        f"vLLM does not expose configured model {model!r}; served={served}"
+    )
 
 
 def _smoke_sample() -> dict:

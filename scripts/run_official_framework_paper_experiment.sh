@@ -29,8 +29,12 @@ EMBEDDING_BASE_URL="${VMP_EMBEDDING_BASE_URL:-http://127.0.0.1:8001/v1}"
 EMBEDDING_CACHE_DIR="${EMBEDDING_CACHE_DIR:-${HOME}/.cache/huggingface}"
 EMBEDDING_CACHE_DB="${EMBEDDING_CACHE_DB:-${OUTPUT_DIR}/cache/bge_m3.sqlite3}"
 EMBEDDING_BATCH_SIZE="${EMBEDDING_BATCH_SIZE:-2}"
-OFFICIAL_LLM_MAX_TOKENS="${VMP_OFFICIAL_LLM_MAX_TOKENS:-512}"
+OFFICIAL_LLM_MAX_TOKENS="${VMP_OFFICIAL_LLM_MAX_TOKENS:-2048}"
+OFFICIAL_LLM_RETRY_MAX_TOKENS="${VMP_OFFICIAL_LLM_RETRY_MAX_TOKENS:-4096}"
+OFFICIAL_LLM_CONTEXT_WINDOW="${VMP_OFFICIAL_LLM_CONTEXT_WINDOW:-32768}"
 OFFICIAL_LLM_TEMPERATURE="${VMP_OFFICIAL_LLM_TEMPERATURE:-0.0}"
+MEM0_MAX_INITIAL_INVALID_RATE="${MEM0_MAX_INITIAL_INVALID_RATE:-0.02}"
+DEV_PROTOCOL_LIMIT="${DEV_PROTOCOL_LIMIT:-20}"
 
 CANDIDATE_POOL_COUNT="${CANDIDATE_POOL_COUNT:-40}"
 CANDIDATE_COUNT="${CANDIDATE_COUNT:-10}"
@@ -42,10 +46,13 @@ CANDIDATE_EXCERPT_VERSION="${CANDIDATE_EXCERPT_VERSION:-role_aware_fact_v4}"
 READER_PROMPT_VERSION="${READER_PROMPT_VERSION:-longmemeval_hybrid_evidence_reader_v21}"
 READER_EVIDENCE_MODE="${READER_EVIDENCE_MODE:-reranker_facts_with_query_windows}"
 
-CANDIDATE_RUN_ID="${CANDIDATE_RUN_ID:-lme_test_${FRAMEWORK}_official_candidates_seed42}"
-RERANK_RUN_ID="${RERANK_RUN_ID:-lme_test_${FRAMEWORK}_official_v64_rerank_seed42}"
+CANDIDATE_RUN_ID="${CANDIDATE_RUN_ID:-lme_test_${FRAMEWORK}_official_v2_candidates_seed42}"
+RERANK_RUN_ID="${RERANK_RUN_ID:-lme_test_${FRAMEWORK}_official_v2_v64_rerank_seed42}"
+DEV_PROTOCOL_RUN_ID="${DEV_PROTOCOL_RUN_ID:-lme_dev_${FRAMEWORK}_official_v2_protocol_seed42}"
 CANDIDATE_RUN="${OUTPUT_DIR}/runs/${CANDIDATE_RUN_ID}"
 RERANK_RUN="${OUTPUT_DIR}/runs/${RERANK_RUN_ID}"
+DEV_PROTOCOL_RUN="${OUTPUT_DIR}/runs/${DEV_PROTOCOL_RUN_ID}"
+MEM0_PROTOCOL_AUDIT_OUTPUT="${FRAMEWORK_AUDIT_OUTPUT}/mem0_protocol_v2.json"
 QA_SUBDIR="${QA_SUBDIR:-qa_v21_test}"
 JUDGE_SUBDIR="${JUDGE_SUBDIR:-official_judge_local_vllm_v1}"
 LOG_DIR="${LOG_DIR:-${OUTPUT_DIR}/logs}"
@@ -128,6 +135,8 @@ run_smoke() {
     --embedding-device "${EMBEDDING_DEVICE}" \
     --embedding-base-url "${EMBEDDING_BASE_URL}" \
     --official-llm-max-tokens "${OFFICIAL_LLM_MAX_TOKENS}" \
+    --official-llm-retry-max-tokens "${OFFICIAL_LLM_RETRY_MAX_TOKENS}" \
+    --official-llm-context-window "${OFFICIAL_LLM_CONTEXT_WINDOW}" \
     --official-llm-temperature "${OFFICIAL_LLM_TEMPERATURE}" \
     --output-dir "${AUDIT_DIR}" \
     "${FRAMEWORK_SERVICE_ARGS[@]}"
@@ -142,6 +151,8 @@ run_audit() {
     --embedding-dimension "${EMBEDDING_DIMENSION}" \
     --embedding-base-url "${EMBEDDING_BASE_URL}" \
     --official-llm-max-tokens "${OFFICIAL_LLM_MAX_TOKENS}" \
+    --official-llm-retry-max-tokens "${OFFICIAL_LLM_RETRY_MAX_TOKENS}" \
+    --official-llm-context-window "${OFFICIAL_LLM_CONTEXT_WINDOW}" \
     --official-llm-temperature "${OFFICIAL_LLM_TEMPERATURE}" \
     --verification-dir "${AUDIT_DIR}" \
     --output-dir "${FRAMEWORK_AUDIT_OUTPUT}" \
@@ -172,10 +183,70 @@ run_candidates() {
     --vllm-model "${VMP_LLM_MODEL}" \
     --official-memory-infer \
     --official-llm-max-tokens "${OFFICIAL_LLM_MAX_TOKENS}" \
+    --official-llm-retry-max-tokens "${OFFICIAL_LLM_RETRY_MAX_TOKENS}" \
+    --official-llm-context-window "${OFFICIAL_LLM_CONTEXT_WINDOW}" \
     --official-llm-temperature "${OFFICIAL_LLM_TEMPERATURE}" \
     --run-id "${CANDIDATE_RUN_ID}" \
     "${FRAMEWORK_SERVICE_ARGS[@]}" \
     "${resume_args[@]}"
+}
+
+run_dev_protocol() {
+  if [[ "${FRAMEWORK}" != "mem0" ]]; then
+    echo "STAGE=dev_protocol is required only for FRAMEWORK=mem0." >&2
+    exit 2
+  fi
+  local resume_args=()
+  if [[ "${RETRIEVAL_RESUME}" == "1" && -d "${DEV_PROTOCOL_RUN}" ]]; then
+    resume_args+=(--resume)
+  fi
+  python scripts/run_longmemeval_retrieval.py \
+    --data "${DATA_PATH}" \
+    --split-manifest "${SPLIT_PATH}" \
+    --split dev \
+    --limit "${DEV_PROTOCOL_LIMIT}" \
+    --methods "${METHOD}" \
+    --top-k "${OUTPUT_TOP_K}" \
+    --retrieval-depth "${CANDIDATE_POOL_COUNT}" \
+    --ingestion-granularity session \
+    --embedding-model "${EMBEDDING_MODEL}" \
+    --embedding-device "${EMBEDDING_DEVICE}" \
+    --embedding-base-url "${EMBEDDING_BASE_URL}" \
+    --embedding-cache-dir "${EMBEDDING_CACHE_DIR}" \
+    --embedding-cache-db "${EMBEDDING_CACHE_DB}" \
+    --embedding-batch-size "${EMBEDDING_BATCH_SIZE}" \
+    --prewarm-embeddings \
+    --vllm-base-url "${VMP_LLM_BASE_URL}" \
+    --vllm-model "${VMP_LLM_MODEL}" \
+    --official-memory-infer \
+    --official-llm-max-tokens "${OFFICIAL_LLM_MAX_TOKENS}" \
+    --official-llm-retry-max-tokens "${OFFICIAL_LLM_RETRY_MAX_TOKENS}" \
+    --official-llm-context-window "${OFFICIAL_LLM_CONTEXT_WINDOW}" \
+    --official-llm-temperature "${OFFICIAL_LLM_TEMPERATURE}" \
+    --run-id "${DEV_PROTOCOL_RUN_ID}" \
+    "${resume_args[@]}"
+  audit_mem0_protocol "${DEV_PROTOCOL_RUN}" "${MEM0_PROTOCOL_AUDIT_OUTPUT}"
+}
+
+audit_mem0_protocol() {
+  local run_dir="$1"
+  local output_path="$2"
+  python scripts/audit_mem0_protocol.py \
+    --retrieval-run "${run_dir}" \
+    --output "${output_path}" \
+    --max-unrecovered-failure-rate 0 \
+    --max-initial-invalid-rate "${MEM0_MAX_INITIAL_INVALID_RATE}" \
+    --expected-llm-max-tokens "${OFFICIAL_LLM_MAX_TOKENS}" \
+    --expected-llm-retry-max-tokens "${OFFICIAL_LLM_RETRY_MAX_TOKENS}" \
+    --expected-llm-context-window "${OFFICIAL_LLM_CONTEXT_WINDOW}"
+}
+
+require_mem0_dev_protocol() {
+  if [[ "${FRAMEWORK}" == "mem0" ]]; then
+    require_completed_run "${DEV_PROTOCOL_RUN}"
+    log_stage "Rechecking the frozen Mem0 Dev protocol gate before Test."
+    audit_mem0_protocol "${DEV_PROTOCOL_RUN}" "${MEM0_PROTOCOL_AUDIT_OUTPUT}"
+  fi
 }
 
 run_rerank() {
@@ -253,14 +324,15 @@ run_judge() {
 }
 
 show_status() {
-  python - "${FRAMEWORK}" "${AUDIT_DIR}" "${CANDIDATE_RUN}" "${RERANK_RUN}" "${QA_SUBDIR}" "${JUDGE_SUBDIR}" <<'PY'
+  python - "${FRAMEWORK}" "${AUDIT_DIR}" "${DEV_PROTOCOL_RUN}" "${CANDIDATE_RUN}" "${RERANK_RUN}" "${QA_SUBDIR}" "${JUDGE_SUBDIR}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-framework, audit_dir, candidate, rerank, qa_subdir, judge_subdir = sys.argv[1:]
+framework, audit_dir, dev_protocol, candidate, rerank, qa_subdir, judge_subdir = sys.argv[1:]
 paths = {
     "smoke": Path(audit_dir) / f"{framework}_smoke.json",
+    "dev_protocol": Path(dev_protocol) / "manifest.json",
     "candidates": Path(candidate) / "manifest.json",
     "rerank": Path(rerank) / "manifest.json",
     "qa": Path(rerank) / qa_subdir / "manifest.json",
@@ -289,13 +361,25 @@ case "${STAGE}" in
     log_stage "Enforcing package-version, endpoint, model, and smoke-receipt equality."
     run_audit
     ;;
+  dev_protocol)
+    log_stage "Running a bounded, label-free Dev protocol audit before Test."
+    run_audit
+    create_split
+    run_dev_protocol
+    ;;
   test_candidates)
     log_stage "Rechecking the official-adapter eligibility gate."
     run_audit
     create_split
+    require_mem0_dev_protocol
     log_stage "Running native official memory ingestion/retrieval on frozen Test."
     log_stage "Each completed question is durably checkpointed; rerun this stage to resume."
     run_candidates
+    if [[ "${FRAMEWORK}" == "mem0" ]]; then
+      audit_mem0_protocol \
+        "${CANDIDATE_RUN}" \
+        "${CANDIDATE_RUN}/mem0_protocol_audit.json"
+    fi
     python scripts/export_longmemeval_tables.py \
       --retrieval-run "${CANDIDATE_RUN}"
     ;;
@@ -326,7 +410,7 @@ case "${STAGE}" in
     show_status
     ;;
   *)
-    echo "Unknown STAGE=${STAGE}. Expected smoke, audit, test_candidates, test_rerank, test_qa, test_judge, or status." >&2
+    echo "Unknown STAGE=${STAGE}. Expected smoke, audit, dev_protocol, test_candidates, test_rerank, test_qa, test_judge, or status." >&2
     exit 2
     ;;
 esac

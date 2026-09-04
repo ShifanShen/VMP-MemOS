@@ -24,32 +24,76 @@ from vmp_memos.schemas import Event
 
 MemoryFactory = Callable[[dict[str, Any]], Any]
 LOGGER = logging.getLogger(__name__)
-MEM0_LLM_COMPATIBILITY_VERSION = "mem0_v2010_string_memory_items_v1"
+MEM0_LLM_COMPATIBILITY_VERSION = "mem0_v2010_json_transport_v2"
+MEM0_MEMORY_STATS_TOP_K = 10_000
 
 
 class Mem0DependencyError(RuntimeError):
     """Raised when the pinned official Mem0 package is unavailable."""
 
 
+class Mem0LlmProtocolError(RuntimeError):
+    """Raised when Mem0's JSON response is still invalid after one retry."""
+
+
 class _Mem0LlmResponseAdapter:
-    """Normalize one known Mem0 2.0.10/Qwen schema mismatch.
+    """Harden the Mem0 2.0.10/Qwen JSON transport without changing semantics.
 
     Mem0's additive extractor consumes ``memory`` as a list of objects with a
     ``text`` field. Local instruction models can preserve the semantic facts
-    while returning that list as strings. This adapter changes only that wire
-    shape and delegates every other response unchanged.
+    while returning that list as strings. Long extraction responses can also
+    reach a generation ceiling before the JSON object closes. This adapter
+    normalizes only the known string wire shape and retries invalid JSON once
+    with a larger, frozen output budget. It never repairs or invents facts.
     """
 
-    def __init__(self, delegate: Any) -> None:
+    def __init__(self, delegate: Any, *, retry_max_tokens: int = 4096) -> None:
         self._delegate = delegate
+        self.retry_max_tokens = retry_max_tokens
+        self.reset_stats()
+
+    def reset_stats(self) -> None:
+        """Reset counters so every retrieval record contains per-question costs."""
+
+        self.logical_call_count = 0
+        self.request_count = 0
+        self.json_mode_call_count = 0
+        self.initial_invalid_json_count = 0
+        self.retry_attempt_count = 0
+        self.retry_success_count = 0
+        self.unrecovered_invalid_json_count = 0
+        self.request_exception_count = 0
         self.normalized_response_count = 0
         self.normalized_item_count = 0
+        self.output_character_count = 0
+        self.max_response_characters = 0
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._delegate, name)
 
     def generate_response(self, *args: Any, **kwargs: Any) -> Any:
-        response = self._delegate.generate_response(*args, **kwargs)
+        self.logical_call_count += 1
+        json_mode = _is_json_object_response_format(kwargs.get("response_format"))
+        if json_mode:
+            self.json_mode_call_count += 1
+        response = self._request(*args, **kwargs)
+        if json_mode and not _is_valid_json_object(response):
+            self.initial_invalid_json_count += 1
+            self.retry_attempt_count += 1
+            if self.retry_attempt_count == 1:
+                LOGGER.warning(
+                    "Mem0 returned invalid JSON; retrying once with max_tokens=%d.",
+                    self.retry_max_tokens,
+                )
+            retry_kwargs = dict(kwargs)
+            retry_kwargs["max_tokens"] = self.retry_max_tokens
+            response = self._request(*args, **retry_kwargs)
+            if not _is_valid_json_object(response):
+                self.unrecovered_invalid_json_count += 1
+                raise Mem0LlmProtocolError(
+                    "Mem0 extraction returned invalid JSON after one larger-budget retry"
+                )
+            self.retry_success_count += 1
         normalized, item_count = _normalize_mem0_memory_items(response)
         if item_count:
             self.normalized_response_count += 1
@@ -60,6 +104,44 @@ class _Mem0LlmResponseAdapter:
                     MEM0_LLM_COMPATIBILITY_VERSION,
                 )
         return normalized
+
+    def stats(self) -> dict[str, JsonValue]:
+        """Return manifest-safe per-question transport counters."""
+
+        return {
+            "mem0_llm_compatibility_version": MEM0_LLM_COMPATIBILITY_VERSION,
+            "mem0_llm_logical_calls": self.logical_call_count,
+            "mem0_llm_requests": self.request_count,
+            "mem0_llm_json_mode_calls": self.json_mode_call_count,
+            "mem0_llm_initial_invalid_json": self.initial_invalid_json_count,
+            "mem0_llm_retry_attempts": self.retry_attempt_count,
+            "mem0_llm_retry_successes": self.retry_success_count,
+            "mem0_llm_unrecovered_invalid_json": (
+                self.unrecovered_invalid_json_count
+            ),
+            "mem0_llm_request_exceptions": self.request_exception_count,
+            "mem0_llm_normalized_responses": self.normalized_response_count,
+            "mem0_llm_normalized_items": self.normalized_item_count,
+            "mem0_llm_output_characters": self.output_character_count,
+            "mem0_llm_max_response_characters": self.max_response_characters,
+            "mem0_llm_retry_max_tokens": self.retry_max_tokens,
+        }
+
+    def _request(self, *args: Any, **kwargs: Any) -> Any:
+        self.request_count += 1
+        try:
+            response = self._delegate.generate_response(*args, **kwargs)
+        except Exception:
+            self.request_exception_count += 1
+            raise
+        if isinstance(response, str):
+            response_characters = len(response)
+            self.output_character_count += response_characters
+            self.max_response_characters = max(
+                self.max_response_characters,
+                response_characters,
+            )
+        return response
 
 
 class Mem0OfficialAdapter(BaseMemoryFrameworkAdapter):
@@ -112,17 +194,18 @@ class Mem0OfficialAdapter(BaseMemoryFrameworkAdapter):
         stats["storage_size_is_estimate"] = True
         stats["storage_size_note"] = "shared reset-store allocated bytes"
         llm = getattr(self._memory, "llm", None)
-        stats["mem0_llm_compatibility_version"] = MEM0_LLM_COMPATIBILITY_VERSION
-        stats["mem0_llm_normalized_responses"] = (
-            llm.normalized_response_count
-            if isinstance(llm, _Mem0LlmResponseAdapter)
-            else 0
+        if isinstance(llm, _Mem0LlmResponseAdapter):
+            stats.update(llm.stats())
+        else:
+            stats["mem0_llm_compatibility_version"] = (
+                MEM0_LLM_COMPATIBILITY_VERSION
+            )
+        stats["mem0_memory_stats_top_k"] = MEM0_MEMORY_STATS_TOP_K
+        stats["mem0_memory_count_truncated"] = (
+            len(self._all_memories) >= MEM0_MEMORY_STATS_TOP_K
         )
-        stats["mem0_llm_normalized_items"] = (
-            llm.normalized_item_count
-            if isinstance(llm, _Mem0LlmResponseAdapter)
-            else 0
-        )
+        stats["mem0_bm25_enabled"] = _mem0_bm25_enabled(self._memory)
+        stats["mem0_spacy_lemma_enabled"] = _mem0_spacy_lemma_enabled()
         return stats
 
     def _reset_impl(self) -> None:
@@ -136,6 +219,9 @@ class Mem0OfficialAdapter(BaseMemoryFrameworkAdapter):
             self._store_dir.mkdir(parents=True, exist_ok=True)
             self._memory = self._create_memory(self._store_dir)
         self._memory.reset()
+        llm = getattr(self._memory, "llm", None)
+        if isinstance(llm, _Mem0LlmResponseAdapter):
+            llm.reset_stats()
 
     def _ingest_event_impl(self, event: Event) -> None:
         self._add_messages([event])
@@ -224,7 +310,10 @@ class Mem0OfficialAdapter(BaseMemoryFrameworkAdapter):
                     'Mem0 adapter requires: python -m pip install -e ".[official-mem0]"'
                 ) from exc
             memory = Memory.from_config(config)
-        _install_mem0_llm_response_adapter(memory)
+        _install_mem0_llm_response_adapter(
+            memory,
+            retry_max_tokens=self.runtime.official_llm_retry_max_tokens,
+        )
         return memory
 
     def _add_messages(self, events: list[Event]) -> None:
@@ -270,9 +359,18 @@ class Mem0OfficialAdapter(BaseMemoryFrameworkAdapter):
         if self._memory is None:
             return []
         try:
-            raw = self._memory.get_all(filters={"user_id": self._user_id})
+            raw = self._memory.get_all(
+                filters={"user_id": self._user_id},
+                top_k=MEM0_MEMORY_STATS_TOP_K,
+            )
         except TypeError:
-            raw = self._memory.get_all(user_id=self._user_id)
+            try:
+                raw = self._memory.get_all(filters={"user_id": self._user_id})
+            except TypeError:
+                raw = self._memory.get_all(
+                    user_id=self._user_id,
+                    limit=MEM0_MEMORY_STATS_TOP_K,
+                )
         return _result_items(raw)
 
 
@@ -321,10 +419,37 @@ def build_mem0_config(
     }
 
 
-def _install_mem0_llm_response_adapter(memory: Any) -> None:
+def _install_mem0_llm_response_adapter(
+    memory: Any,
+    *,
+    retry_max_tokens: int,
+) -> None:
     llm = getattr(memory, "llm", None)
     if llm is not None and not isinstance(llm, _Mem0LlmResponseAdapter):
-        memory.llm = _Mem0LlmResponseAdapter(llm)
+        memory.llm = _Mem0LlmResponseAdapter(
+            llm,
+            retry_max_tokens=retry_max_tokens,
+        )
+
+
+def _is_json_object_response_format(value: Any) -> bool:
+    return isinstance(value, dict) and value.get("type") in {
+        "json_object",
+        "json_schema",
+    }
+
+
+def _is_valid_json_object(response: Any) -> bool:
+    if not isinstance(response, str):
+        return False
+    start = response.find("{")
+    end = response.rfind("}")
+    if start < 0 or end <= start:
+        return False
+    try:
+        return isinstance(json.loads(response[start : end + 1], strict=False), dict)
+    except (json.JSONDecodeError, TypeError):
+        return False
 
 
 def _normalize_mem0_memory_items(response: Any) -> tuple[Any, int]:
@@ -368,6 +493,24 @@ def _mem0_search(memory: Any, *, query: str, user_id: str, top_k: int) -> Any:
         )
     except TypeError:
         return memory.search(query, user_id=user_id, limit=top_k)
+
+
+def _mem0_bm25_enabled(memory: Any) -> bool | None:
+    vector_store = getattr(memory, "vector_store", None)
+    if vector_store is None:
+        return None
+    if not bool(getattr(vector_store, "_has_bm25_slot", False)):
+        return False
+    encoder = getattr(vector_store, "_bm25_encoder", None)
+    return encoder is not None and encoder is not False
+
+
+def _mem0_spacy_lemma_enabled() -> bool | None:
+    try:
+        from mem0.utils import spacy_models  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    return getattr(spacy_models, "_nlp_lemma", None) is not None
 
 
 def _result_items(raw: Any) -> list[dict[str, Any]]:

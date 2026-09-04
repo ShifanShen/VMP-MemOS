@@ -14,6 +14,7 @@ def test_official_pipeline_is_staged_and_resumable() -> None:
     for stage in (
         "smoke)",
         "audit)",
+        "dev_protocol)",
         "test_candidates)",
         "test_rerank)",
         "test_qa)",
@@ -25,6 +26,8 @@ def test_official_pipeline_is_staged_and_resumable() -> None:
     assert "--resume" in script
     assert 'if [[ "${RETRIEVAL_RESUME}" == "1" && -d "${CANDIDATE_RUN}" ]]' in script
     assert "Each completed question is durably checkpointed" in script
+    assert "audit_mem0_protocol.py" in script
+    assert "lme_test_${FRAMEWORK}_official_v2_candidates_seed42" in script
 
 
 def test_official_pipeline_freezes_the_shared_v64_protocol() -> None:
@@ -58,4 +61,10 @@ def test_official_config_matches_pinned_optional_dependencies() -> None:
     assert config["frameworks"]["letta"]["client_version"] == "1.12.1"
     assert config["frameworks"]["letta"]["server_version"] == "0.16.8"
     assert config["shared_models"]["embedding"] == "BAAI/bge-m3"
+    assert config["shared_models"]["memory_max_tokens"] == 2048
+    assert config["shared_models"]["memory_retry_max_tokens"] == 4096
+    assert config["shared_models"]["context_window"] == 32768
+    assert config["mem0_protocol_gate"]["dev_samples"] == 20
+    assert config["mem0_protocol_gate"]["max_unrecovered_failure_rate"] == 0.0
+    assert config["mem0_protocol_gate"]["require_native_bm25"] is True
     assert config["test_labels_visible_to_memory_or_reader"] is False

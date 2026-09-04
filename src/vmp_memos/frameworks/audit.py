@@ -75,7 +75,9 @@ def audit_known_frameworks(
     embedding_model: str | None = None,
     embedding_dimension: int | None = None,
     embedding_base_url: str | None = None,
-    official_llm_max_tokens: int = 512,
+    official_llm_max_tokens: int = 2048,
+    official_llm_retry_max_tokens: int = 4096,
+    official_llm_context_window: int = 32_768,
     official_llm_temperature: float = 0.0,
     verification_dir: str | Path | None = None,
 ) -> list[FrameworkCapabilityReport]:
@@ -94,6 +96,8 @@ def audit_known_frameworks(
             embedding_dimension=embedding_dimension,
             embedding_base_url=embedding_base_url,
             official_llm_max_tokens=official_llm_max_tokens,
+            official_llm_retry_max_tokens=official_llm_retry_max_tokens,
+            official_llm_context_window=official_llm_context_window,
             official_llm_temperature=official_llm_temperature,
             verification_dir=Path(verification_dir) if verification_dir else None,
         )
@@ -110,6 +114,8 @@ def _audit_one(
     embedding_dimension: int | None,
     embedding_base_url: str | None,
     official_llm_max_tokens: int,
+    official_llm_retry_max_tokens: int,
+    official_llm_context_window: int,
     official_llm_temperature: float,
     verification_dir: Path | None,
 ) -> FrameworkCapabilityReport:
@@ -135,6 +141,8 @@ def _audit_one(
         embedding_dimension=embedding_dimension,
         embedding_base_url=embedding_base_url,
         official_llm_max_tokens=official_llm_max_tokens,
+        official_llm_retry_max_tokens=official_llm_retry_max_tokens,
+        official_llm_context_window=official_llm_context_window,
         official_llm_temperature=official_llm_temperature,
         server_version=known.get("supported_server_version"),
     )
@@ -145,6 +153,9 @@ def _audit_one(
         and embedding_dimension
         and embedding_dimension > 0
         and official_llm_max_tokens > 0
+        and official_llm_retry_max_tokens >= official_llm_max_tokens
+        and official_llm_context_window
+        >= official_llm_max_tokens + official_llm_retry_max_tokens
         and 0.0 <= official_llm_temperature <= 2.0
         and (normalized != "mem0" or embedding_base_url)
     )
@@ -206,6 +217,8 @@ def _audit_one(
             "embedding_dimension": embedding_dimension,
             "embedding_base_url": embedding_base_url,
             "official_llm_max_tokens": official_llm_max_tokens,
+            "official_llm_retry_max_tokens": official_llm_retry_max_tokens,
+            "official_llm_context_window": official_llm_context_window,
             "official_llm_temperature": official_llm_temperature,
             "verification_dir": str(verification_dir) if verification_dir else None,
             "next_step": (
@@ -237,6 +250,8 @@ def _smoke_verified(
     embedding_dimension: int | None,
     embedding_base_url: str | None,
     official_llm_max_tokens: int,
+    official_llm_retry_max_tokens: int,
+    official_llm_context_window: int,
     official_llm_temperature: float,
     server_version: str | None,
 ) -> bool:
@@ -262,6 +277,16 @@ def _smoke_verified(
             or payload.get("embedding_base_url") == embedding_base_url
         )
         and payload.get("official_llm_max_tokens") == official_llm_max_tokens
+        and payload.get("official_llm_retry_max_tokens")
+        == official_llm_retry_max_tokens
+        and payload.get("official_llm_context_window")
+        == official_llm_context_window
+        and isinstance(
+            payload.get("vllm_observed_max_model_len"),
+            int | float,
+        )
+        and int(payload["vllm_observed_max_model_len"])
+        >= official_llm_context_window
         and payload.get("official_llm_temperature") == official_llm_temperature
         and (
             server_version is None

@@ -245,6 +245,16 @@ Mem0 实验环境本身不安装 `sentence-transformers`：
 UV_PROJECT_ENVIRONMENT=.venv-official-mem0 \
 uv sync --extra dev --extra official-mem0
 
+# Mem0 原生 BM25 需要 fastembed 模型，lemmatization 需要 spaCy 模型。
+# 在切换到 offline 模式前各执行一次。
+UV_PROJECT_ENVIRONMENT=.venv-official-mem0 \
+uv run --no-sync python -m spacy download en_core_web_sm
+
+HF_ENDPOINT=https://hf-mirror.com \
+UV_PROJECT_ENVIRONMENT=.venv-official-mem0 \
+uv run --no-sync python -c \
+  "from fastembed import SparseTextEmbedding; list(SparseTextEmbedding(model_name='Qdrant/bm25').embed(['cache warmup']))"
+
 # LangMem/Graphiti 需要进程内 BGE；分别换成自己的环境名和 extra。
 # UV_PROJECT_ENVIRONMENT=.venv-official-langmem \
 # uv sync --extra dev --extra embeddings --extra official-langmem
@@ -257,7 +267,7 @@ VMP_LLM_MODEL=/home/shenshifan/models/Qwen2.5-7B-Instruct \
 VMP_VLLM_SERVED_MODEL_NAME=Qwen/Qwen2.5-7B-Instruct \
 VMP_LLM_API_KEY=local-vllm-key \
 VMP_VLLM_GPU_MEMORY_UTILIZATION=0.72 \
-VMP_VLLM_MAX_MODEL_LEN=16384 \
+VMP_VLLM_MAX_MODEL_LEN=32768 \
 VMP_VLLM_ENABLE_TOOL_CALLING=0 \
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 uv run --no-sync bash scripts/serve_vllm.sh
@@ -291,12 +301,20 @@ export TRANSFORMERS_OFFLINE=1
 
 STAGE=smoke          uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
 STAGE=audit          uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
+STAGE=dev_protocol   uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
 STAGE=test_candidates uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
 STAGE=test_rerank    uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
 STAGE=test_qa        uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
 STAGE=test_judge     uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
 STAGE=status         uv run --no-sync bash scripts/run_official_framework_paper_experiment.sh
 ```
+
+Mem0 的 `dev_protocol` 会先运行 20 个 Dev 样本，逐题记录 JSON 初次失败、重试、
+最终失败、完整 memory 数量以及 BM25/spaCy 状态。只有最终失败率为 0、初次无效
+JSON 比例不高于 2%，且原生 hybrid 依赖全部启用时，`test_candidates` 才会启动。
+该门禁不读取 Test 标签。旧目录 `lme_test_mem0_official_candidates_seed42` 使用
+512-token 旧协议，仅保留为 pilot；新论文运行写入
+`lme_test_mem0_official_v2_candidates_seed42`，不要对旧目录使用 `--resume`。
 
 Graphiti 还需要一个专用且允许清空的 Neo4j：
 
@@ -322,10 +340,10 @@ COMPARE_DIR=outputs/longmemeval/comparisons/official_frameworks_qwen_seed42_v1
 
 uv run --no-sync python scripts/build_longmemeval_paper_comparison.py \
   --retrieval-run outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_mem0_official_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_langmem_official_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_graphiti_official_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_letta_official_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_mem0_official_v2_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_langmem_official_v2_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_graphiti_official_v2_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_letta_official_v2_v64_rerank_seed42 \
   --output "${COMPARE_DIR}" \
   --reference-method vmp_hierarchical__vllm_boundary \
   --bootstrap-samples 10000 \
