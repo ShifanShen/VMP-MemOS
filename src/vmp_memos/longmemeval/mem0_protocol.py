@@ -22,7 +22,7 @@ def audit_mem0_protocol_run(
     require_bm25: bool = True,
     require_spacy: bool = True,
     expected_llm_max_tokens: int = 2048,
-    expected_llm_retry_max_tokens: int = 4096,
+    expected_llm_retry_max_tokens: int = 8192,
     expected_llm_context_window: int = 32_768,
 ) -> dict[str, JsonValue]:
     """Audit one completed Mem0 run without reading answer labels.
@@ -54,6 +54,22 @@ def audit_mem0_protocol_run(
     retry_successes = _sum_int(stats, "mem0_llm_retry_successes")
     unrecovered = _sum_int(stats, "mem0_llm_unrecovered_invalid_json")
     request_exceptions = _sum_int(stats, "mem0_llm_request_exceptions")
+    initial_invalid_reasons = _sum_counter(
+        stats,
+        "mem0_llm_initial_invalid_reason_counts",
+    )
+    unrecovered_invalid_reasons = _sum_counter(
+        stats,
+        "mem0_llm_unrecovered_invalid_reason_counts",
+    )
+    initial_invalid_max_characters = _max_int(
+        stats,
+        "mem0_llm_initial_invalid_max_response_characters",
+    )
+    unrecovered_invalid_max_characters = _max_int(
+        stats,
+        "mem0_llm_unrecovered_invalid_max_response_characters",
+    )
     final_failures = unrecovered + request_exceptions
     initial_invalid_rate = initial_invalid / json_mode_calls if json_mode_calls else 0.0
     unrecovered_failure_rate = final_failures / logical_calls if logical_calls else 0.0
@@ -73,6 +89,10 @@ def audit_mem0_protocol_run(
         "mem0_llm_retry_successes",
         "mem0_llm_unrecovered_invalid_json",
         "mem0_llm_request_exceptions",
+        "mem0_llm_initial_invalid_reason_counts",
+        "mem0_llm_unrecovered_invalid_reason_counts",
+        "mem0_llm_initial_invalid_max_response_characters",
+        "mem0_llm_unrecovered_invalid_max_response_characters",
         "mem0_memory_count_truncated",
         "mem0_bm25_enabled",
         "mem0_spacy_lemma_enabled",
@@ -102,6 +122,12 @@ def audit_mem0_protocol_run(
         "request_accounting": requests == logical_calls + retry_attempts,
         "initial_invalid_accounting": initial_invalid == retry_attempts,
         "retry_accounting": retry_successes + unrecovered == retry_attempts,
+        "initial_invalid_reason_accounting": (
+            sum(initial_invalid_reasons.values()) == initial_invalid
+        ),
+        "unrecovered_invalid_reason_accounting": (
+            sum(unrecovered_invalid_reasons.values()) == unrecovered
+        ),
         "initial_invalid_rate": initial_invalid_rate <= max_initial_invalid_rate,
         "unrecovered_failure_rate": (
             unrecovered_failure_rate <= max_unrecovered_failure_rate
@@ -148,6 +174,14 @@ def audit_mem0_protocol_run(
                 "retry_successes": retry_successes,
                 "unrecovered_invalid_json": unrecovered,
                 "request_exceptions": request_exceptions,
+                "initial_invalid_reason_counts": initial_invalid_reasons,
+                "unrecovered_invalid_reason_counts": unrecovered_invalid_reasons,
+                "initial_invalid_max_response_characters": (
+                    initial_invalid_max_characters
+                ),
+                "unrecovered_invalid_max_response_characters": (
+                    unrecovered_invalid_max_characters
+                ),
                 "unrecovered_failure_rate": unrecovered_failure_rate,
                 "memory_stats_truncated_questions": memory_stats_truncated,
                 "incomplete_protocol_stats_questions": incomplete_stats,
@@ -219,3 +253,22 @@ def _as_int(value: object) -> int:
 
 def _sum_int(rows: list[dict[str, JsonValue]], key: str) -> int:
     return sum(_as_int(row.get(key)) for row in rows)
+
+
+def _max_int(rows: list[dict[str, JsonValue]], key: str) -> int:
+    return max((_as_int(row.get(key)) for row in rows), default=0)
+
+
+def _sum_counter(
+    rows: list[dict[str, JsonValue]],
+    key: str,
+) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for row in rows:
+        value = row.get(key)
+        if not isinstance(value, dict):
+            continue
+        for name, count in value.items():
+            if isinstance(name, str):
+                result[name] = result.get(name, 0) + _as_int(count)
+    return result

@@ -23,7 +23,7 @@ def main() -> int:
     parser.add_argument("--allow-bm25-disabled", action="store_true")
     parser.add_argument("--allow-spacy-disabled", action="store_true")
     parser.add_argument("--expected-llm-max-tokens", type=int, default=2048)
-    parser.add_argument("--expected-llm-retry-max-tokens", type=int, default=4096)
+    parser.add_argument("--expected-llm-retry-max-tokens", type=int, default=8192)
     parser.add_argument("--expected-llm-context-window", type=int, default=32768)
     args = parser.parse_args()
 

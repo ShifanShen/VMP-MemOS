@@ -318,13 +318,16 @@ STAGE=status          uv run --no-sync bash scripts/run_official_framework_paper
 ```
 
 For Mem0, `dev_protocol` first evaluates 20 Dev samples and records initial JSON
-failures, retries, final failures, complete memory counts, and BM25/spaCy status
-for every question. `test_candidates` starts only when the final failure rate is
+failures, validation categories and lengths, retries, final failures, complete
+memory counts, and BM25/spaCy status for every question. Initial requests remain
+fixed at 2048 tokens; only invalid JSON receives one 8192-token retry.
+`test_candidates` starts only when the final failure rate is
 zero, the initial-invalid rate is at most 2%, and the native hybrid dependencies
 are active. This gate does not read Test labels. The old
 `lme_test_mem0_official_candidates_seed42` directory used the 512-token pilot
-protocol. Keep it as a diagnostic baseline; protocol-v2 paper runs use
-`lme_test_mem0_official_v2_candidates_seed42` and must not resume the old run.
+protocol, while `official_v2` used a 4096-token retry that did not cover the
+longest extractions. Keep both as diagnostic records; protocol-v3 paper runs use
+`lme_test_mem0_official_v3_candidates_seed42` and must not resume an old run.
 
 Graphiti also requires a dedicated, disposable Neo4j instance:
 
@@ -350,10 +353,10 @@ COMPARE_DIR=outputs/longmemeval/comparisons/official_frameworks_qwen_seed42_v1
 
 uv run --no-sync python scripts/build_longmemeval_paper_comparison.py \
   --retrieval-run outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_mem0_official_v2_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_langmem_official_v2_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_graphiti_official_v2_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_letta_official_v2_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_mem0_official_v3_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_langmem_official_v3_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_graphiti_official_v3_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_letta_official_v3_v64_rerank_seed42 \
   --output "${COMPARE_DIR}" \
   --reference-method vmp_hierarchical__vllm_boundary \
   --bootstrap-samples 10000 \

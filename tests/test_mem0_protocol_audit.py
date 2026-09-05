@@ -16,6 +16,9 @@ def test_mem0_protocol_audit_accepts_recovered_json_and_complete_runtime(tmp_pat
     assert report["checks"]["unrecovered_failure_rate"] is True
     assert report["observed"]["logical_calls"] == 6
     assert report["observed"]["retry_successes"] == 1
+    assert report["observed"]["initial_invalid_reason_counts"] == {
+        "unterminated_json_object": 1,
+    }
     assert report["test_labels_used"] is False
 
 
@@ -53,7 +56,7 @@ def _write_run(tmp_path, *, final_failures: int, bm25: bool, spacy: bool):
                 },
                 "official_framework_runtime": {
                     "official_llm_max_tokens": 2048,
-                    "official_llm_retry_max_tokens": 4096,
+                    "official_llm_retry_max_tokens": 8192,
                     "official_llm_context_window": 32768,
                 },
             }
@@ -66,7 +69,7 @@ def _write_run(tmp_path, *, final_failures: int, bm25: bool, spacy: bool):
             {
                 "question_id": f"q{index}",
                 "adapter_stats": {
-                    "mem0_llm_compatibility_version": "mem0_v2010_json_transport_v2",
+                    "mem0_llm_compatibility_version": "mem0_v2010_json_transport_v3",
                     "mem0_llm_logical_calls": 3,
                     "mem0_llm_json_mode_calls": 3,
                     "mem0_llm_requests": 4 if index == 0 else 3,
@@ -75,6 +78,20 @@ def _write_run(tmp_path, *, final_failures: int, bm25: bool, spacy: bool):
                     "mem0_llm_retry_successes": 1 if index == 0 else 0,
                     "mem0_llm_unrecovered_invalid_json": (
                         final_failures if index == 1 else 0
+                    ),
+                    "mem0_llm_initial_invalid_reason_counts": (
+                        {"unterminated_json_object": 1} if index == 0 else {}
+                    ),
+                    "mem0_llm_unrecovered_invalid_reason_counts": (
+                        {"unterminated_json_object": final_failures}
+                        if index == 1
+                        else {}
+                    ),
+                    "mem0_llm_initial_invalid_max_response_characters": (
+                        8192 if index == 0 else 0
+                    ),
+                    "mem0_llm_unrecovered_invalid_max_response_characters": (
+                        16384 if index == 1 and final_failures else 0
                     ),
                     "mem0_llm_request_exceptions": 0,
                     "mem0_memory_count_truncated": False,

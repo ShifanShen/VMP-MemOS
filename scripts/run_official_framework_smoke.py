@@ -50,7 +50,7 @@ def main() -> int:
     parser.add_argument(
         "--official-llm-retry-max-tokens",
         type=int,
-        default=int(os.getenv("VMP_OFFICIAL_LLM_RETRY_MAX_TOKENS", "4096")),
+        default=int(os.getenv("VMP_OFFICIAL_LLM_RETRY_MAX_TOKENS", "8192")),
     )
     parser.add_argument(
         "--official-llm-context-window",

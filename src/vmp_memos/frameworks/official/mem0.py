@@ -24,7 +24,7 @@ from vmp_memos.schemas import Event
 
 MemoryFactory = Callable[[dict[str, Any]], Any]
 LOGGER = logging.getLogger(__name__)
-MEM0_LLM_COMPATIBILITY_VERSION = "mem0_v2010_json_transport_v2"
+MEM0_LLM_COMPATIBILITY_VERSION = "mem0_v2010_json_transport_v3"
 MEM0_MEMORY_STATS_TOP_K = 10_000
 
 
@@ -45,9 +45,11 @@ class _Mem0LlmResponseAdapter:
     reach a generation ceiling before the JSON object closes. This adapter
     normalizes only the known string wire shape and retries invalid JSON once
     with a larger, frozen output budget. It never repairs or invents facts.
+    Version 3 records validation failure categories and raises the retry ceiling
+    to cover rare long-session extractions observed in the label-free Dev audit.
     """
 
-    def __init__(self, delegate: Any, *, retry_max_tokens: int = 4096) -> None:
+    def __init__(self, delegate: Any, *, retry_max_tokens: int = 8192) -> None:
         self._delegate = delegate
         self.retry_max_tokens = retry_max_tokens
         self.reset_stats()
@@ -67,6 +69,10 @@ class _Mem0LlmResponseAdapter:
         self.normalized_item_count = 0
         self.output_character_count = 0
         self.max_response_characters = 0
+        self.initial_invalid_reason_counts: dict[str, int] = {}
+        self.unrecovered_invalid_reason_counts: dict[str, int] = {}
+        self.initial_invalid_max_response_characters = 0
+        self.unrecovered_invalid_max_response_characters = 0
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._delegate, name)
@@ -77,8 +83,14 @@ class _Mem0LlmResponseAdapter:
         if json_mode:
             self.json_mode_call_count += 1
         response = self._request(*args, **kwargs)
-        if json_mode and not _is_valid_json_object(response):
+        validation_error = _json_object_validation_error(response)
+        if json_mode and validation_error is not None:
             self.initial_invalid_json_count += 1
+            _increment(self.initial_invalid_reason_counts, validation_error)
+            self.initial_invalid_max_response_characters = max(
+                self.initial_invalid_max_response_characters,
+                _response_characters(response),
+            )
             self.retry_attempt_count += 1
             if self.retry_attempt_count == 1:
                 LOGGER.warning(
@@ -88,10 +100,21 @@ class _Mem0LlmResponseAdapter:
             retry_kwargs = dict(kwargs)
             retry_kwargs["max_tokens"] = self.retry_max_tokens
             response = self._request(*args, **retry_kwargs)
-            if not _is_valid_json_object(response):
+            retry_validation_error = _json_object_validation_error(response)
+            if retry_validation_error is not None:
                 self.unrecovered_invalid_json_count += 1
+                _increment(
+                    self.unrecovered_invalid_reason_counts,
+                    retry_validation_error,
+                )
+                self.unrecovered_invalid_max_response_characters = max(
+                    self.unrecovered_invalid_max_response_characters,
+                    _response_characters(response),
+                )
                 raise Mem0LlmProtocolError(
-                    "Mem0 extraction returned invalid JSON after one larger-budget retry"
+                    "Mem0 extraction returned invalid JSON after one larger-budget "
+                    f"retry (reason={retry_validation_error}, "
+                    f"characters={_response_characters(response)})"
                 )
             self.retry_success_count += 1
         normalized, item_count = _normalize_mem0_memory_items(response)
@@ -125,6 +148,18 @@ class _Mem0LlmResponseAdapter:
             "mem0_llm_output_characters": self.output_character_count,
             "mem0_llm_max_response_characters": self.max_response_characters,
             "mem0_llm_retry_max_tokens": self.retry_max_tokens,
+            "mem0_llm_initial_invalid_reason_counts": dict(
+                self.initial_invalid_reason_counts
+            ),
+            "mem0_llm_unrecovered_invalid_reason_counts": dict(
+                self.unrecovered_invalid_reason_counts
+            ),
+            "mem0_llm_initial_invalid_max_response_characters": (
+                self.initial_invalid_max_response_characters
+            ),
+            "mem0_llm_unrecovered_invalid_max_response_characters": (
+                self.unrecovered_invalid_max_response_characters
+            ),
         }
 
     def _request(self, *args: Any, **kwargs: Any) -> Any:
@@ -440,16 +475,61 @@ def _is_json_object_response_format(value: Any) -> bool:
 
 
 def _is_valid_json_object(response: Any) -> bool:
+    return _json_object_validation_error(response) is None
+
+
+def _json_object_validation_error(response: Any) -> str | None:
     if not isinstance(response, str):
-        return False
+        return "non_string_response"
+    if not response.strip():
+        return "empty_response"
     start = response.find("{")
     end = response.rfind("}")
-    if start < 0 or end <= start:
-        return False
+    if start < 0:
+        return "missing_json_object"
+    if end <= start:
+        return "unterminated_json_object"
+    fragment = response[start : end + 1]
+    if _has_unclosed_json_delimiters(fragment):
+        return "unterminated_json_object"
     try:
-        return isinstance(json.loads(response[start : end + 1], strict=False), dict)
+        payload = json.loads(fragment, strict=False)
     except (json.JSONDecodeError, TypeError):
-        return False
+        return "json_decode_error"
+    return None if isinstance(payload, dict) else "non_object_json"
+
+
+def _increment(counts: dict[str, int], key: str) -> None:
+    counts[key] = counts.get(key, 0) + 1
+
+
+def _response_characters(response: Any) -> int:
+    return len(response) if isinstance(response, str) else 0
+
+
+def _has_unclosed_json_delimiters(value: str) -> bool:
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    pairs = {"}": "{", "]": "["}
+    for character in value:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "{[":
+            stack.append(character)
+        elif character in "}]":
+            if not stack or stack[-1] != pairs[character]:
+                return False
+            stack.pop()
+    return in_string or bool(stack)
 
 
 def _normalize_mem0_memory_items(response: Any) -> tuple[Any, int]:

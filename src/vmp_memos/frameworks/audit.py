@@ -76,7 +76,7 @@ def audit_known_frameworks(
     embedding_dimension: int | None = None,
     embedding_base_url: str | None = None,
     official_llm_max_tokens: int = 2048,
-    official_llm_retry_max_tokens: int = 4096,
+    official_llm_retry_max_tokens: int = 8192,
     official_llm_context_window: int = 32_768,
     official_llm_temperature: float = 0.0,
     verification_dir: str | Path | None = None,

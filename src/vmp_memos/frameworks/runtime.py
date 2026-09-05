@@ -22,7 +22,7 @@ class FrameworkRuntimeConfig(SchemaModel):
     embedding_api_key: str | None = None
     official_memory_infer: bool = True
     official_llm_max_tokens: int = Field(default=2048, gt=0)
-    official_llm_retry_max_tokens: int = Field(default=4096, gt=0)
+    official_llm_retry_max_tokens: int = Field(default=8192, gt=0)
     official_llm_context_window: int = Field(default=32_768, gt=0)
     official_llm_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     graphiti_neo4j_uri: NonEmptyStr = "bolt://127.0.0.1:7687"
@@ -80,7 +80,7 @@ class FrameworkRuntimeConfig(SchemaModel):
                 os.getenv("VMP_OFFICIAL_LLM_MAX_TOKENS", "2048")
             ),
             official_llm_retry_max_tokens=int(
-                os.getenv("VMP_OFFICIAL_LLM_RETRY_MAX_TOKENS", "4096")
+                os.getenv("VMP_OFFICIAL_LLM_RETRY_MAX_TOKENS", "8192")
             ),
             official_llm_context_window=int(
                 os.getenv("VMP_OFFICIAL_LLM_CONTEXT_WINDOW", "32768")

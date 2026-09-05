@@ -31,7 +31,7 @@ shared_models:
   temperature: 0.0
   top_p: 1.0
   memory_max_tokens: 2048
-  memory_retry_max_tokens: 4096
+  memory_retry_max_tokens: 8192
   context_window: 32768
 
 retrieval:
@@ -41,7 +41,7 @@ retrieval:
   resumable_record_checkpoint: true
 
 mem0_protocol_gate:
-  compatibility_version: mem0_v2010_json_transport_v2
+  compatibility_version: mem0_v2010_json_transport_v3
   dev_samples: 20
   max_initial_invalid_json_rate: 0.02
   max_unrecovered_failure_rate: 0.0
