@@ -285,9 +285,15 @@ uv sync --extra embeddings
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 UV_PROJECT_ENVIRONMENT=.venv-embeddings \
 uv run --no-sync python scripts/serve_embeddings.py \
-  --model BAAI/bge-m3 --device cuda --port 8001 --batch-size 2
+  --model BAAI/bge-m3 \
+  --cache-folder "$HOME/.cache/huggingface" \
+  --device cuda --port 8001 --batch-size 2
 
-curl http://127.0.0.1:8001/v1/models
+# `/v1/models` only checks liveness; this request also loads the cached model
+# and performs a real encoding readiness probe.
+curl -sS http://127.0.0.1:8001/v1/embeddings \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"BAAI/bge-m3","input":["embedding readiness probe"]}'
 ```
 
 For Mem0, run these stages in order. `status` is model-free and can be used at any time:

@@ -283,9 +283,14 @@ uv sync --extra embeddings
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 UV_PROJECT_ENVIRONMENT=.venv-embeddings \
 uv run --no-sync python scripts/serve_embeddings.py \
-  --model BAAI/bge-m3 --device cuda --port 8001 --batch-size 2
+  --model BAAI/bge-m3 \
+  --cache-folder "$HOME/.cache/huggingface" \
+  --device cuda --port 8001 --batch-size 2
 
-curl http://127.0.0.1:8001/v1/models
+# `/v1/models` 只检查进程存活；以下请求还会验证模型可从缓存加载并实际编码。
+curl -sS http://127.0.0.1:8001/v1/embeddings \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"BAAI/bge-m3","input":["embedding readiness probe"]}'
 ```
 
 以 Mem0 为例，按顺序运行以下阶段。`status` 不访问模型，可随时查看已有产物：
