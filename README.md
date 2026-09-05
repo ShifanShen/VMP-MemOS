@@ -319,8 +319,8 @@ Mem0 的 `dev_protocol` 会先运行 20 个 Dev 样本，逐题记录 JSON 初�
 为 2048 tokens；仅在 JSON 无效时使用 8192-token 单次重试。只有最终失败率为 0、初次无效
 JSON 比例不高于 2%，且原生 hybrid 依赖全部启用时，`test_candidates` 才会启动。
 该门禁不读取 Test 标签。旧目录 `lme_test_mem0_official_candidates_seed42` 使用
-512-token 旧协议，`official_v2` 使用不足以覆盖极长抽取的 4096-token 重试，两者仅
-保留为诊断记录；新论文运行写入 `lme_test_mem0_official_v3_candidates_seed42`，
+512-token 旧协议，`official_v2`/`official_v3` 仍受旧 shell 覆盖值影响，两者仅
+保留为诊断记录；新论文运行写入 `lme_test_mem0_official_v4_candidates_seed42`，
 不要对旧目录使用 `--resume`。
 
 Graphiti 还需要一个专用且允许清空的 Neo4j：
@@ -347,10 +347,10 @@ COMPARE_DIR=outputs/longmemeval/comparisons/official_frameworks_qwen_seed42_v1
 
 uv run --no-sync python scripts/build_longmemeval_paper_comparison.py \
   --retrieval-run outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_mem0_official_v3_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_langmem_official_v3_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_graphiti_official_v3_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_letta_official_v3_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_mem0_official_v4_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_langmem_official_v4_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_graphiti_official_v4_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_letta_official_v4_v64_rerank_seed42 \
   --output "${COMPARE_DIR}" \
   --reference-method vmp_hierarchical__vllm_boundary \
   --bootstrap-samples 10000 \

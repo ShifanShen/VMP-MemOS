@@ -325,9 +325,9 @@ fixed at 2048 tokens; only invalid JSON receives one 8192-token retry.
 zero, the initial-invalid rate is at most 2%, and the native hybrid dependencies
 are active. This gate does not read Test labels. The old
 `lme_test_mem0_official_candidates_seed42` directory used the 512-token pilot
-protocol, while `official_v2` used a 4096-token retry that did not cover the
-longest extractions. Keep both as diagnostic records; protocol-v3 paper runs use
-`lme_test_mem0_official_v3_candidates_seed42` and must not resume an old run.
+protocol, while `official_v2`/`official_v3` remained vulnerable to a stale shell
+override. Keep them as diagnostic records; protocol-v4 paper runs use
+`lme_test_mem0_official_v4_candidates_seed42` and must not resume an old run.
 
 Graphiti also requires a dedicated, disposable Neo4j instance:
 
@@ -353,10 +353,10 @@ COMPARE_DIR=outputs/longmemeval/comparisons/official_frameworks_qwen_seed42_v1
 
 uv run --no-sync python scripts/build_longmemeval_paper_comparison.py \
   --retrieval-run outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_mem0_official_v3_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_langmem_official_v3_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_graphiti_official_v3_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_letta_official_v3_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_mem0_official_v4_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_langmem_official_v4_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_graphiti_official_v4_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_letta_official_v4_v64_rerank_seed42 \
   --output "${COMPARE_DIR}" \
   --reference-method vmp_hierarchical__vllm_boundary \
   --bootstrap-samples 10000 \

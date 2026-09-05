@@ -69,7 +69,7 @@ def _write_run(tmp_path, *, final_failures: int, bm25: bool, spacy: bool):
             {
                 "question_id": f"q{index}",
                 "adapter_stats": {
-                    "mem0_llm_compatibility_version": "mem0_v2010_json_transport_v3",
+                    "mem0_llm_compatibility_version": "mem0_v2010_json_transport_v4",
                     "mem0_llm_logical_calls": 3,
                     "mem0_llm_json_mode_calls": 3,
                     "mem0_llm_requests": 4 if index == 0 else 3,

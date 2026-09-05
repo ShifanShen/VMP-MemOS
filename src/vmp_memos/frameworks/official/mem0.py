@@ -24,7 +24,7 @@ from vmp_memos.schemas import Event
 
 MemoryFactory = Callable[[dict[str, Any]], Any]
 LOGGER = logging.getLogger(__name__)
-MEM0_LLM_COMPATIBILITY_VERSION = "mem0_v2010_json_transport_v3"
+MEM0_LLM_COMPATIBILITY_VERSION = "mem0_v2010_json_transport_v4"
 MEM0_MEMORY_STATS_TOP_K = 10_000
 
 
@@ -45,8 +45,9 @@ class _Mem0LlmResponseAdapter:
     reach a generation ceiling before the JSON object closes. This adapter
     normalizes only the known string wire shape and retries invalid JSON once
     with a larger, frozen output budget. It never repairs or invents facts.
-    Version 3 records validation failure categories and raises the retry ceiling
-    to cover rare long-session extractions observed in the label-free Dev audit.
+    Version 4 records validation failure categories and uses a paper-pipeline
+    guard to keep the 8192-token retry ceiling from being overridden by stale
+    shell state.
     """
 
     def __init__(self, delegate: Any, *, retry_max_tokens: int = 8192) -> None:

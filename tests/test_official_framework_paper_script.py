@@ -27,7 +27,9 @@ def test_official_pipeline_is_staged_and_resumable() -> None:
     assert 'if [[ "${RETRIEVAL_RESUME}" == "1" && -d "${CANDIDATE_RUN}" ]]' in script
     assert "Each completed question is durably checkpointed" in script
     assert "audit_mem0_protocol.py" in script
-    assert "lme_test_${FRAMEWORK}_official_v3_candidates_seed42" in script
+    assert "lme_test_${FRAMEWORK}_official_v4_candidates_seed42" in script
+    assert 'PINNED_OFFICIAL_LLM_RETRY_MAX_TOKENS="8192"' in script
+    assert "Refusing VMP_OFFICIAL_LLM_RETRY_MAX_TOKENS" in script
 
 
 def test_official_pipeline_freezes_the_shared_v64_protocol() -> None:
