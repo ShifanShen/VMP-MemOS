@@ -56,7 +56,7 @@ def _write_run(tmp_path, *, final_failures: int, bm25: bool, spacy: bool):
                 },
                 "official_framework_runtime": {
                     "official_llm_max_tokens": 2048,
-                    "official_llm_retry_max_tokens": 8192,
+                    "official_llm_retry_max_tokens": 16384,
                     "official_llm_context_window": 32768,
                 },
             }
@@ -69,7 +69,7 @@ def _write_run(tmp_path, *, final_failures: int, bm25: bool, spacy: bool):
             {
                 "question_id": f"q{index}",
                 "adapter_stats": {
-                    "mem0_llm_compatibility_version": "mem0_v2010_json_transport_v4",
+                    "mem0_llm_compatibility_version": "mem0_v2010_json_transport_v5",
                     "mem0_llm_logical_calls": 3,
                     "mem0_llm_json_mode_calls": 3,
                     "mem0_llm_requests": 4 if index == 0 else 3,
@@ -88,7 +88,7 @@ def _write_run(tmp_path, *, final_failures: int, bm25: bool, spacy: bool):
                         else {}
                     ),
                     "mem0_llm_initial_invalid_max_response_characters": (
-                        8192 if index == 0 else 0
+                        16384 if index == 0 else 0
                     ),
                     "mem0_llm_unrecovered_invalid_max_response_characters": (
                         16384 if index == 1 and final_failures else 0

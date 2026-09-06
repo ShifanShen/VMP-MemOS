@@ -22,7 +22,7 @@ def audit_mem0_protocol_run(
     require_bm25: bool = True,
     require_spacy: bool = True,
     expected_llm_max_tokens: int = 2048,
-    expected_llm_retry_max_tokens: int = 8192,
+    expected_llm_retry_max_tokens: int = 16384,
     expected_llm_context_window: int = 32_768,
 ) -> dict[str, JsonValue]:
     """Audit one completed Mem0 run without reading answer labels.

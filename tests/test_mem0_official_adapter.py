@@ -105,7 +105,7 @@ def test_mem0_llm_adapter_retries_truncated_json_with_larger_budget() -> None:
             '{"memory":[{"text":"first fact"},{"text":"second fact"}]}',
         ]
     )
-    adapter = _Mem0LlmResponseAdapter(delegate, retry_max_tokens=8192)
+    adapter = _Mem0LlmResponseAdapter(delegate, retry_max_tokens=16384)
 
     response = adapter.generate_response(
         messages=[],
@@ -115,7 +115,7 @@ def test_mem0_llm_adapter_retries_truncated_json_with_larger_budget() -> None:
     assert response == '{"memory":[{"text":"first fact"},{"text":"second fact"}]}'
     assert len(delegate.calls) == 2
     assert "max_tokens" not in delegate.calls[0]
-    assert delegate.calls[1]["max_tokens"] == 8192
+    assert delegate.calls[1]["max_tokens"] == 16384
     assert adapter.logical_call_count == 1
     assert adapter.request_count == 2
     assert adapter.initial_invalid_json_count == 1
@@ -128,7 +128,7 @@ def test_mem0_llm_adapter_rejects_unrecoverable_json() -> None:
     delegate = SequencedMem0Llm(
         ['{"memory":[', '{"memory":[{"text":"still truncated"}']
     )
-    adapter = _Mem0LlmResponseAdapter(delegate, retry_max_tokens=8192)
+    adapter = _Mem0LlmResponseAdapter(delegate, retry_max_tokens=16384)
 
     with pytest.raises(Mem0LlmProtocolError, match="invalid JSON"):
         adapter.generate_response(
@@ -152,7 +152,7 @@ def test_mem0_llm_adapter_rejects_unrecoverable_json() -> None:
 def test_mem0_llm_adapter_reset_stats_is_per_question() -> None:
     adapter = _Mem0LlmResponseAdapter(
         FakeMem0Llm('{"memory":["Likes hiking"]}'),
-        retry_max_tokens=8192,
+        retry_max_tokens=16384,
     )
     adapter.generate_response(
         messages=[],
