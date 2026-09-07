@@ -53,7 +53,18 @@ def audit_mem0_protocol_run(
     retry_attempts = _sum_int(stats, "mem0_llm_retry_attempts")
     retry_successes = _sum_int(stats, "mem0_llm_retry_successes")
     unrecovered = _sum_int(stats, "mem0_llm_unrecovered_invalid_json")
+    initial_invalid_schema = _sum_int(
+        stats,
+        "mem0_llm_initial_invalid_schema",
+    )
+    unrecovered_invalid_schema = _sum_int(
+        stats,
+        "mem0_llm_unrecovered_invalid_schema",
+    )
     request_exceptions = _sum_int(stats, "mem0_llm_request_exceptions")
+    normalized_responses = _sum_int(stats, "mem0_llm_normalized_responses")
+    normalized_items = _sum_int(stats, "mem0_llm_normalized_items")
+    ignored_null_items = _sum_int(stats, "mem0_llm_ignored_null_items")
     initial_invalid_reasons = _sum_counter(
         stats,
         "mem0_llm_initial_invalid_reason_counts",
@@ -88,7 +99,12 @@ def audit_mem0_protocol_run(
         "mem0_llm_retry_attempts",
         "mem0_llm_retry_successes",
         "mem0_llm_unrecovered_invalid_json",
+        "mem0_llm_initial_invalid_schema",
+        "mem0_llm_unrecovered_invalid_schema",
         "mem0_llm_request_exceptions",
+        "mem0_llm_normalized_responses",
+        "mem0_llm_normalized_items",
+        "mem0_llm_ignored_null_items",
         "mem0_llm_initial_invalid_reason_counts",
         "mem0_llm_unrecovered_invalid_reason_counts",
         "mem0_llm_initial_invalid_max_response_characters",
@@ -122,6 +138,10 @@ def audit_mem0_protocol_run(
         "request_accounting": requests == logical_calls + retry_attempts,
         "initial_invalid_accounting": initial_invalid == retry_attempts,
         "retry_accounting": retry_successes + unrecovered == retry_attempts,
+        "schema_failure_accounting": (
+            initial_invalid_schema <= initial_invalid
+            and unrecovered_invalid_schema <= unrecovered
+        ),
         "initial_invalid_reason_accounting": (
             sum(initial_invalid_reasons.values()) == initial_invalid
         ),
@@ -173,7 +193,12 @@ def audit_mem0_protocol_run(
                 "retry_attempts": retry_attempts,
                 "retry_successes": retry_successes,
                 "unrecovered_invalid_json": unrecovered,
+                "initial_invalid_schema": initial_invalid_schema,
+                "unrecovered_invalid_schema": unrecovered_invalid_schema,
                 "request_exceptions": request_exceptions,
+                "normalized_responses": normalized_responses,
+                "normalized_items": normalized_items,
+                "ignored_null_items": ignored_null_items,
                 "initial_invalid_reason_counts": initial_invalid_reasons,
                 "unrecovered_invalid_reason_counts": unrecovered_invalid_reasons,
                 "initial_invalid_max_response_characters": (

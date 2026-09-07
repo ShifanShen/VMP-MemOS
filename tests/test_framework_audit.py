@@ -49,6 +49,11 @@ def test_mem0_becomes_eligible_only_with_matching_smoke(tmp_path, monkeypatch) -
                 "official_llm_context_window": 32768,
                 "vllm_observed_max_model_len": 32768,
                 "official_llm_temperature": 0.0,
+                "adapter_stats": {
+                    "mem0_llm_compatibility_version": (
+                        "mem0_v2010_json_transport_v6"
+                    )
+                },
             }
         ),
         encoding="utf-8",
@@ -79,6 +84,25 @@ def test_mem0_becomes_eligible_only_with_matching_smoke(tmp_path, monkeypatch) -
     )[0]
     assert mismatched_endpoint.main_table_eligible is False
     assert mismatched_endpoint.adapter_smoke_verified is False
+
+    stale_payload = json.loads((tmp_path / "mem0_smoke.json").read_text())
+    stale_payload["adapter_stats"]["mem0_llm_compatibility_version"] = (
+        "mem0_v2010_json_transport_v5"
+    )
+    (tmp_path / "mem0_smoke.json").write_text(
+        json.dumps(stale_payload),
+        encoding="utf-8",
+    )
+    stale_protocol = audit_known_frameworks(
+        ["mem0"],
+        vllm_base_url="http://127.0.0.1:8000/v1",
+        llm_model="Qwen/Qwen2.5-7B-Instruct",
+        embedding_model="BAAI/bge-m3",
+        embedding_dimension=1024,
+        embedding_base_url="http://127.0.0.1:8001/v1",
+        verification_dir=tmp_path,
+    )[0]
+    assert stale_protocol.adapter_smoke_verified is False
 
 
 def test_graphiti_is_an_implemented_pinned_official_adapter(

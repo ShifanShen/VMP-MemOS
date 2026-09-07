@@ -10,6 +10,7 @@ from pathlib import Path
 from pydantic import Field, JsonValue
 
 from vmp_memos.frameworks.base import FairnessLevel
+from vmp_memos.frameworks.official.mem0 import MEM0_LLM_COMPATIBILITY_VERSION
 from vmp_memos.schemas.base import NonEmptyStr, SchemaModel
 
 
@@ -288,6 +289,16 @@ def _smoke_verified(
         and int(payload["vllm_observed_max_model_len"])
         >= official_llm_context_window
         and payload.get("official_llm_temperature") == official_llm_temperature
+        and (
+            framework != "mem0"
+            or (
+                isinstance(payload.get("adapter_stats"), dict)
+                and payload["adapter_stats"].get(
+                    "mem0_llm_compatibility_version"
+                )
+                == MEM0_LLM_COMPATIBILITY_VERSION
+            )
+        )
         and (
             server_version is None
             or payload.get("server_version") == server_version

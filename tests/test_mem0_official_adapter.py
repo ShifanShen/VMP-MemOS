@@ -90,6 +90,61 @@ def test_mem0_llm_adapter_normalizes_qwen_string_memory_items() -> None:
     assert adapter.normalized_item_count == 1
 
 
+def test_mem0_llm_adapter_normalizes_qwen_scalar_memory() -> None:
+    adapter = _Mem0LlmResponseAdapter(
+        FakeMem0Llm('{"memory":"Likes hiking"}')
+    )
+
+    response = adapter.generate_response(
+        messages=[],
+        response_format={"type": "json_object"},
+    )
+
+    assert response == '{"memory": [{"text": "Likes hiking"}]}'
+    assert adapter.normalized_response_count == 1
+    assert adapter.normalized_item_count == 1
+
+
+def test_mem0_llm_adapter_ignores_null_alongside_string_memories() -> None:
+    adapter = _Mem0LlmResponseAdapter(
+        FakeMem0Llm('{"memory":["Likes hiking",null]}')
+    )
+
+    response = adapter.generate_response(
+        messages=[],
+        response_format={"type": "json_object"},
+    )
+
+    assert response == '{"memory": [{"text": "Likes hiking"}]}'
+    assert adapter.normalized_response_count == 1
+    assert adapter.normalized_item_count == 1
+    assert adapter.ignored_null_item_count == 1
+
+
+def test_mem0_llm_adapter_retries_unknown_memory_item_shape() -> None:
+    delegate = SequencedMem0Llm(
+        [
+            '{"memory":["Likes hiking",7]}',
+            '{"memory":[{"text":"Likes hiking"}]}',
+        ]
+    )
+    adapter = _Mem0LlmResponseAdapter(delegate, retry_max_tokens=16384)
+
+    response = adapter.generate_response(
+        messages=[],
+        response_format={"type": "json_object"},
+    )
+
+    assert response == '{"memory":[{"text":"Likes hiking"}]}'
+    assert len(delegate.calls) == 2
+    assert delegate.calls[1]["max_tokens"] == 16384
+    assert adapter.initial_invalid_schema_count == 1
+    assert adapter.initial_invalid_reason_counts == {
+        "memory_item_non_object": 1,
+    }
+    assert adapter.retry_success_count == 1
+
+
 def test_mem0_llm_adapter_leaves_native_object_schema_unchanged() -> None:
     native = '{"memory":[{"id":"0","text":"Likes hiking"}]}'
     adapter = _Mem0LlmResponseAdapter(FakeMem0Llm(native))

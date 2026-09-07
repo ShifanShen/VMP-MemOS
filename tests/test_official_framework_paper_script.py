@@ -27,7 +27,12 @@ def test_official_pipeline_is_staged_and_resumable() -> None:
     assert 'if [[ "${RETRIEVAL_RESUME}" == "1" && -d "${CANDIDATE_RUN}" ]]' in script
     assert "Each completed question is durably checkpointed" in script
     assert "audit_mem0_protocol.py" in script
-    assert "lme_test_${FRAMEWORK}_official_v5_candidates_seed42" in script
+    assert 'OFFICIAL_RUN_VERSION="v6"' in script
+    assert 'OFFICIAL_RUN_VERSION="v5"' in script
+    assert (
+        "lme_test_${FRAMEWORK}_official_${OFFICIAL_RUN_VERSION}_candidates_seed42"
+        in script
+    )
     assert 'PINNED_OFFICIAL_LLM_RETRY_MAX_TOKENS="16384"' in script
     assert "Refusing VMP_OFFICIAL_LLM_RETRY_MAX_TOKENS" in script
 
@@ -67,6 +72,13 @@ def test_official_config_matches_pinned_optional_dependencies() -> None:
     assert config["shared_models"]["memory_retry_max_tokens"] == 16384
     assert config["shared_models"]["context_window"] == 32768
     assert config["mem0_protocol_gate"]["dev_samples"] == 20
+    assert config["mem0_protocol_gate"]["compatibility_version"] == (
+        "mem0_v2010_json_transport_v6"
+    )
+    assert (
+        config["mem0_protocol_gate"]["max_initial_invalid_response_rate"]
+        == 0.02
+    )
     assert config["mem0_protocol_gate"]["max_unrecovered_failure_rate"] == 0.0
     assert config["mem0_protocol_gate"]["require_native_bm25"] is True
     assert config["test_labels_visible_to_memory_or_reader"] is False

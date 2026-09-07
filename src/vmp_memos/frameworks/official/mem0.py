@@ -8,6 +8,7 @@ import logging
 import math
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,7 @@ from vmp_memos.schemas import Event
 
 MemoryFactory = Callable[[dict[str, Any]], Any]
 LOGGER = logging.getLogger(__name__)
-MEM0_LLM_COMPATIBILITY_VERSION = "mem0_v2010_json_transport_v5"
+MEM0_LLM_COMPATIBILITY_VERSION = "mem0_v2010_json_transport_v6"
 MEM0_MEMORY_STATS_TOP_K = 10_000
 
 
@@ -33,7 +34,17 @@ class Mem0DependencyError(RuntimeError):
 
 
 class Mem0LlmProtocolError(RuntimeError):
-    """Raised when Mem0's JSON response is still invalid after one retry."""
+    """Raised when Mem0's JSON/schema response is invalid after one retry."""
+
+
+@dataclass(frozen=True)
+class _PreparedMem0Response:
+    """Validated Mem0 wire response plus label-free normalization counters."""
+
+    response: Any
+    validation_error: str | None = None
+    normalized_items: int = 0
+    ignored_null_items: int = 0
 
 
 class _Mem0LlmResponseAdapter:
@@ -43,11 +54,11 @@ class _Mem0LlmResponseAdapter:
     ``text`` field. Local instruction models can preserve the semantic facts
     while returning that list as strings. Long extraction responses can also
     reach a generation ceiling before the JSON object closes. This adapter
-    normalizes only the known string wire shape and retries invalid JSON once
-    with a larger, frozen output budget. It never repairs or invents facts.
-    Version 5 records validation failure categories and uses a paper-pipeline
-    guard to keep the 16384-token retry ceiling from being overridden by stale
-    shell state.
+    normalizes only known lossless scalar/string wire shapes and retries invalid
+    JSON or an unknown ``memory`` item shape once with a larger, frozen output
+    budget. It never repairs or invents facts. Version 6 also rejects structural
+    values that would make Mem0 call ``.get`` on a non-object and records those
+    failures separately from syntax failures.
     """
 
     def __init__(self, delegate: Any, *, retry_max_tokens: int = 16384) -> None:
@@ -65,9 +76,12 @@ class _Mem0LlmResponseAdapter:
         self.retry_attempt_count = 0
         self.retry_success_count = 0
         self.unrecovered_invalid_json_count = 0
+        self.initial_invalid_schema_count = 0
+        self.unrecovered_invalid_schema_count = 0
         self.request_exception_count = 0
         self.normalized_response_count = 0
         self.normalized_item_count = 0
+        self.ignored_null_item_count = 0
         self.output_character_count = 0
         self.max_response_characters = 0
         self.initial_invalid_reason_counts: dict[str, int] = {}
@@ -84,9 +98,12 @@ class _Mem0LlmResponseAdapter:
         if json_mode:
             self.json_mode_call_count += 1
         response = self._request(*args, **kwargs)
-        validation_error = _json_object_validation_error(response)
+        prepared = _prepare_mem0_memory_response(response)
+        validation_error = prepared.validation_error
         if json_mode and validation_error is not None:
             self.initial_invalid_json_count += 1
+            if _is_memory_schema_error(validation_error):
+                self.initial_invalid_schema_count += 1
             _increment(self.initial_invalid_reason_counts, validation_error)
             self.initial_invalid_max_response_characters = max(
                 self.initial_invalid_max_response_characters,
@@ -95,15 +112,19 @@ class _Mem0LlmResponseAdapter:
             self.retry_attempt_count += 1
             if self.retry_attempt_count == 1:
                 LOGGER.warning(
-                    "Mem0 returned invalid JSON; retrying once with max_tokens=%d.",
+                    "Mem0 returned invalid JSON/schema; retrying once with "
+                    "max_tokens=%d.",
                     self.retry_max_tokens,
                 )
             retry_kwargs = dict(kwargs)
             retry_kwargs["max_tokens"] = self.retry_max_tokens
             response = self._request(*args, **retry_kwargs)
-            retry_validation_error = _json_object_validation_error(response)
+            prepared = _prepare_mem0_memory_response(response)
+            retry_validation_error = prepared.validation_error
             if retry_validation_error is not None:
                 self.unrecovered_invalid_json_count += 1
+                if _is_memory_schema_error(retry_validation_error):
+                    self.unrecovered_invalid_schema_count += 1
                 _increment(
                     self.unrecovered_invalid_reason_counts,
                     retry_validation_error,
@@ -113,21 +134,21 @@ class _Mem0LlmResponseAdapter:
                     _response_characters(response),
                 )
                 raise Mem0LlmProtocolError(
-                    "Mem0 extraction returned invalid JSON after one larger-budget "
-                    f"retry (reason={retry_validation_error}, "
+                    "Mem0 extraction returned invalid JSON/schema after one "
+                    f"larger-budget retry (reason={retry_validation_error}, "
                     f"characters={_response_characters(response)})"
                 )
             self.retry_success_count += 1
-        normalized, item_count = _normalize_mem0_memory_items(response)
-        if item_count:
+        if prepared.normalized_items or prepared.ignored_null_items:
             self.normalized_response_count += 1
-            self.normalized_item_count += item_count
+            self.normalized_item_count += prepared.normalized_items
+            self.ignored_null_item_count += prepared.ignored_null_items
             if self.normalized_response_count == 1:
                 LOGGER.warning(
-                    "Applied %s to normalize Mem0 string-form memory items.",
+                    "Applied %s to normalize a Mem0 memory wire shape.",
                     MEM0_LLM_COMPATIBILITY_VERSION,
                 )
-        return normalized
+        return prepared.response
 
     def stats(self) -> dict[str, JsonValue]:
         """Return manifest-safe per-question transport counters."""
@@ -143,9 +164,14 @@ class _Mem0LlmResponseAdapter:
             "mem0_llm_unrecovered_invalid_json": (
                 self.unrecovered_invalid_json_count
             ),
+            "mem0_llm_initial_invalid_schema": self.initial_invalid_schema_count,
+            "mem0_llm_unrecovered_invalid_schema": (
+                self.unrecovered_invalid_schema_count
+            ),
             "mem0_llm_request_exceptions": self.request_exception_count,
             "mem0_llm_normalized_responses": self.normalized_response_count,
             "mem0_llm_normalized_items": self.normalized_item_count,
+            "mem0_llm_ignored_null_items": self.ignored_null_item_count,
             "mem0_llm_output_characters": self.output_character_count,
             "mem0_llm_max_response_characters": self.max_response_characters,
             "mem0_llm_retry_max_tokens": self.retry_max_tokens,
@@ -533,36 +559,77 @@ def _has_unclosed_json_delimiters(value: str) -> bool:
     return in_string or bool(stack)
 
 
-def _normalize_mem0_memory_items(response: Any) -> tuple[Any, int]:
-    if not isinstance(response, str):
-        return response, 0
+def _prepare_mem0_memory_response(response: Any) -> _PreparedMem0Response:
+    """Validate and losslessly normalize Mem0's additive extraction wire shape."""
+
+    validation_error = _json_object_validation_error(response)
+    if validation_error is not None:
+        return _PreparedMem0Response(response, validation_error=validation_error)
+    assert isinstance(response, str)
     start = response.find("{")
     end = response.rfind("}")
-    if start < 0 or end <= start:
-        return response, 0
     try:
         payload = json.loads(response[start : end + 1], strict=False)
     except (json.JSONDecodeError, TypeError):
-        return response, 0
-    if not isinstance(payload, dict):
-        return response, 0
+        return _PreparedMem0Response(response, validation_error="json_decode_error")
+    assert isinstance(payload, dict)
+    if "memory" not in payload:
+        return _PreparedMem0Response(response)
     memories = payload.get("memory")
-    if not isinstance(memories, list):
-        return response, 0
-    normalized: list[dict[str, Any]] = []
     normalized_count = 0
+    ignored_null_count = 0
+    changed = False
+    if memories is None:
+        memories = []
+        ignored_null_count = 1
+        changed = True
+    elif isinstance(memories, str):
+        memories = [{"text": memories}]
+        normalized_count = 1
+        changed = True
+    elif isinstance(memories, dict):
+        memories = [memories]
+        normalized_count = 1
+        changed = True
+    elif not isinstance(memories, list):
+        return _PreparedMem0Response(
+            response,
+            validation_error="memory_non_list",
+        )
+    normalized: list[dict[str, Any]] = []
     for item in memories:
         if isinstance(item, str):
             normalized.append({"text": item})
             normalized_count += 1
+            changed = True
         elif isinstance(item, dict):
+            text = item.get("text")
+            if text is not None and not isinstance(text, str):
+                return _PreparedMem0Response(
+                    response,
+                    validation_error="memory_text_non_string",
+                )
             normalized.append(item)
+        elif item is None:
+            ignored_null_count += 1
+            changed = True
         else:
-            return response, 0
-    if not normalized_count:
-        return response, 0
+            return _PreparedMem0Response(
+                response,
+                validation_error="memory_item_non_object",
+            )
+    if not changed:
+        return _PreparedMem0Response(response)
     payload["memory"] = normalized
-    return json.dumps(payload, ensure_ascii=False), normalized_count
+    return _PreparedMem0Response(
+        json.dumps(payload, ensure_ascii=False),
+        normalized_items=normalized_count,
+        ignored_null_items=ignored_null_count,
+    )
+
+
+def _is_memory_schema_error(reason: str) -> bool:
+    return reason.startswith("memory_")
 
 
 def _mem0_search(memory: Any, *, query: str, user_id: str, top_k: int) -> Any:

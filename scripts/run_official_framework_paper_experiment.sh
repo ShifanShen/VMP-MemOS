@@ -52,13 +52,18 @@ CANDIDATE_EXCERPT_VERSION="${CANDIDATE_EXCERPT_VERSION:-role_aware_fact_v4}"
 READER_PROMPT_VERSION="${READER_PROMPT_VERSION:-longmemeval_hybrid_evidence_reader_v21}"
 READER_EVIDENCE_MODE="${READER_EVIDENCE_MODE:-reranker_facts_with_query_windows}"
 
-CANDIDATE_RUN_ID="${CANDIDATE_RUN_ID:-lme_test_${FRAMEWORK}_official_v5_candidates_seed42}"
-RERANK_RUN_ID="${RERANK_RUN_ID:-lme_test_${FRAMEWORK}_official_v5_v64_rerank_seed42}"
-DEV_PROTOCOL_RUN_ID="${DEV_PROTOCOL_RUN_ID:-lme_dev_${FRAMEWORK}_official_v5_protocol_seed42}"
+if [[ "${FRAMEWORK}" == "mem0" ]]; then
+  OFFICIAL_RUN_VERSION="v6"
+else
+  OFFICIAL_RUN_VERSION="v5"
+fi
+CANDIDATE_RUN_ID="${CANDIDATE_RUN_ID:-lme_test_${FRAMEWORK}_official_${OFFICIAL_RUN_VERSION}_candidates_seed42}"
+RERANK_RUN_ID="${RERANK_RUN_ID:-lme_test_${FRAMEWORK}_official_${OFFICIAL_RUN_VERSION}_v64_rerank_seed42}"
+DEV_PROTOCOL_RUN_ID="${DEV_PROTOCOL_RUN_ID:-lme_dev_${FRAMEWORK}_official_${OFFICIAL_RUN_VERSION}_protocol_seed42}"
 CANDIDATE_RUN="${OUTPUT_DIR}/runs/${CANDIDATE_RUN_ID}"
 RERANK_RUN="${OUTPUT_DIR}/runs/${RERANK_RUN_ID}"
 DEV_PROTOCOL_RUN="${OUTPUT_DIR}/runs/${DEV_PROTOCOL_RUN_ID}"
-MEM0_PROTOCOL_AUDIT_OUTPUT="${FRAMEWORK_AUDIT_OUTPUT}/mem0_protocol_v5.json"
+MEM0_PROTOCOL_AUDIT_OUTPUT="${FRAMEWORK_AUDIT_OUTPUT}/mem0_protocol_v6.json"
 QA_SUBDIR="${QA_SUBDIR:-qa_v21_test}"
 JUDGE_SUBDIR="${JUDGE_SUBDIR:-official_judge_local_vllm_v1}"
 LOG_DIR="${LOG_DIR:-${OUTPUT_DIR}/logs}"

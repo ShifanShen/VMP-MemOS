@@ -420,7 +420,8 @@ def _run_method(
                 LOGGER.info(
                     "Mem0 protocol %d/%d: question_id=%s logical_calls=%d "
                     "requests=%d invalid_json=%d retries=%d recovered=%d "
-                    "unrecovered=%d request_exceptions=%d memories=%d "
+                    "unrecovered=%d invalid_schema=%d normalized=%d "
+                    "ignored_null=%d request_exceptions=%d memories=%d "
                     "bm25=%s spacy_lemma=%s",
                     sample_index,
                     sample_count,
@@ -437,6 +438,21 @@ def _run_method(
                     int(
                         _json_number(
                             adapter_stats.get("mem0_llm_unrecovered_invalid_json")
+                        )
+                    ),
+                    int(
+                        _json_number(
+                            adapter_stats.get("mem0_llm_initial_invalid_schema")
+                        )
+                    ),
+                    int(
+                        _json_number(
+                            adapter_stats.get("mem0_llm_normalized_items")
+                        )
+                    ),
+                    int(
+                        _json_number(
+                            adapter_stats.get("mem0_llm_ignored_null_items")
                         )
                     ),
                     int(

@@ -69,7 +69,7 @@ def _write_run(tmp_path, *, final_failures: int, bm25: bool, spacy: bool):
             {
                 "question_id": f"q{index}",
                 "adapter_stats": {
-                    "mem0_llm_compatibility_version": "mem0_v2010_json_transport_v5",
+                    "mem0_llm_compatibility_version": "mem0_v2010_json_transport_v6",
                     "mem0_llm_logical_calls": 3,
                     "mem0_llm_json_mode_calls": 3,
                     "mem0_llm_requests": 4 if index == 0 else 3,
@@ -79,6 +79,11 @@ def _write_run(tmp_path, *, final_failures: int, bm25: bool, spacy: bool):
                     "mem0_llm_unrecovered_invalid_json": (
                         final_failures if index == 1 else 0
                     ),
+                    "mem0_llm_initial_invalid_schema": 0,
+                    "mem0_llm_unrecovered_invalid_schema": 0,
+                    "mem0_llm_normalized_responses": 0,
+                    "mem0_llm_normalized_items": 0,
+                    "mem0_llm_ignored_null_items": 0,
                     "mem0_llm_initial_invalid_reason_counts": (
                         {"unterminated_json_object": 1} if index == 0 else {}
                     ),
