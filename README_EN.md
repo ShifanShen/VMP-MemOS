@@ -319,20 +319,26 @@ STAGE=status          uv run --no-sync bash scripts/run_official_framework_paper
 
 For Mem0, `dev_protocol` first evaluates 20 Dev samples and records initial JSON
 or structural failures, validation categories and lengths, lossless wire-shape
-normalizations, retries, final failures, complete memory counts, and BM25/spaCy
-status for every question. Initial requests remain fixed at 2048 tokens; invalid
-JSON or an unknown `memory` shape receives one 16384-token retry. String facts
-are only wrapped unchanged in Mem0's required `{"text": ...}` object; no facts
-are rewritten or generated.
-`test_candidates` starts only when the final failure rate is
-zero, the initial-invalid rate is at most 2%, and the native hybrid dependencies
-are active. This gate does not read Test labels. The old
+normalizations, partial recoveries, final failures, complete memory counts, and
+BM25/spaCy status for every question. Initial requests remain fixed at 2048
+tokens; invalid JSON or an unknown `memory` shape receives one 16384-token retry.
+If that retry still ends in truncated JSON, V7 admits only fully closed objects
+from the `memory` array and discards the unfinished suffix; it never completes,
+rewrites, or generates facts. The audit discloses the partially recovered call
+count, recovered object count, and discarded suffix characters.
+Partial recovery can lose trailing facts and is not complete extraction. Paper
+results must identify Mem0 2.0.10 with the V7 recovery adapter and report complete
+retry successes separately from partial recoveries.
+`test_candidates` starts only when the hard-failure rate is zero, the partial
+recovery rate is at most 1%, the initial-invalid rate is at most 2%, and the
+native hybrid dependencies are active. This gate does not read Test labels. The old
 `lme_test_mem0_official_candidates_seed42` directory used the 512-token pilot
 protocol, while retries in `official_v2` through `official_v4` were still
 truncated or vulnerable to a stale shell override. `official_v5` then exposed
 an upstream type crash caused by scalar or mixed `memory` values inside otherwise
-valid JSON. Keep those runs as diagnostic records; protocol-v6 paper runs use
-`lme_test_mem0_official_v6_candidates_seed42` and must not resume an old run.
+valid JSON. The 16384-token retries in `official_v6` could still be truncated.
+Keep those runs as diagnostic records; protocol-v7 paper runs use
+`lme_test_mem0_official_v7_candidates_seed42` and must not resume an old run.
 
 Graphiti also requires a dedicated, disposable Neo4j instance:
 
@@ -358,7 +364,7 @@ COMPARE_DIR=outputs/longmemeval/comparisons/official_frameworks_qwen_seed42_v1
 
 uv run --no-sync python scripts/build_longmemeval_paper_comparison.py \
   --retrieval-run outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_mem0_official_v6_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_mem0_official_v7_v64_rerank_seed42 \
   --retrieval-run outputs/longmemeval/runs/lme_test_langmem_official_v5_v64_rerank_seed42 \
   --retrieval-run outputs/longmemeval/runs/lme_test_graphiti_official_v5_v64_rerank_seed42 \
   --retrieval-run outputs/longmemeval/runs/lme_test_letta_official_v5_v64_rerank_seed42 \

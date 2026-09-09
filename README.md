@@ -315,16 +315,20 @@ STAGE=status         uv run --no-sync bash scripts/run_official_framework_paper_
 ```
 
 Mem0 的 `dev_protocol` 会先运行 20 个 Dev 样本，逐题记录 JSON/结构初次失败、重试、
-失败类别与长度、无损 wire-shape 归一化、最终失败、完整 memory 数量以及 BM25/spaCy
-状态。初次请求仍固定为 2048 tokens；仅在 JSON 或未知 `memory` 结构无效时使用
-16384-token 单次重试。字符串事实只会原样包装为 Mem0 要求的 `{"text": ...}` 对象，
-不会改写或生成事实。只有最终失败率为 0、初次无效率不高于 2%，且原生 hybrid
-依赖全部启用时，`test_candidates` 才会启动。
+失败类别与长度、无损 wire-shape 归一化、部分恢复、最终失败、完整 memory 数量以及
+BM25/spaCy 状态。初次请求仍固定为 2048 tokens；仅在 JSON 或未知 `memory` 结构
+无效时使用 16384-token 单次重试。如果重试仍以截断的 JSON 结束，V7 只接纳
+`memory` 数组中已经完整闭合的对象并丢弃未完成的后缀；不会补全、改写或生成事实。
+审计会披露部分恢复的调用数、恢复对象数和丢弃后缀字符数。
+部分恢复可能丢失尾部事实，不能等同于完整提取；论文中应明确标注为带 V7
+恢复适配层的 Mem0 2.0.10，并同时报告完整重试成功数与部分恢复数。只有硬失败率为 0、
+部分恢复率不高于 1%、初次无效率不高于 2%，且原生 hybrid 依赖全部启用时，
+`test_candidates` 才会启动。
 该门禁不读取 Test 标签。旧目录 `lme_test_mem0_official_candidates_seed42` 使用
 512-token 旧协议，`official_v2`—`official_v4` 的重试输出仍被截断或受旧 shell 覆盖值
 影响；`official_v5` 又暴露了合法 JSON 中标量/混合 `memory` 导致的上游类型崩溃，
-这些目录仅保留为诊断记录。新论文运行写入
-`lme_test_mem0_official_v6_candidates_seed42`，
+`official_v6` 的 16384-token 重试仍可能被截断。这些目录仅保留为诊断记录。
+V7 论文运行写入 `lme_test_mem0_official_v7_candidates_seed42`，
 不要对旧目录使用 `--resume`。
 
 Graphiti 还需要一个专用且允许清空的 Neo4j：
@@ -351,7 +355,7 @@ COMPARE_DIR=outputs/longmemeval/comparisons/official_frameworks_qwen_seed42_v1
 
 uv run --no-sync python scripts/build_longmemeval_paper_comparison.py \
   --retrieval-run outputs/longmemeval/runs/lme_test_vmp_v64_rerank_seed42 \
-  --retrieval-run outputs/longmemeval/runs/lme_test_mem0_official_v6_v64_rerank_seed42 \
+  --retrieval-run outputs/longmemeval/runs/lme_test_mem0_official_v7_v64_rerank_seed42 \
   --retrieval-run outputs/longmemeval/runs/lme_test_langmem_official_v5_v64_rerank_seed42 \
   --retrieval-run outputs/longmemeval/runs/lme_test_graphiti_official_v5_v64_rerank_seed42 \
   --retrieval-run outputs/longmemeval/runs/lme_test_letta_official_v5_v64_rerank_seed42 \

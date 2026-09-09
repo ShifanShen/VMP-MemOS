@@ -20,8 +20,10 @@ def main() -> int:
         default=0.0,
     )
     parser.add_argument("--max-initial-invalid-rate", type=float, default=0.02)
+    parser.add_argument("--max-partial-recovery-rate", type=float, default=0.01)
     parser.add_argument("--allow-bm25-disabled", action="store_true")
     parser.add_argument("--allow-spacy-disabled", action="store_true")
+    parser.add_argument("--expected-sample-count", type=int, default=20)
     parser.add_argument("--expected-llm-max-tokens", type=int, default=2048)
     parser.add_argument("--expected-llm-retry-max-tokens", type=int, default=16384)
     parser.add_argument("--expected-llm-context-window", type=int, default=32768)
@@ -32,8 +34,10 @@ def main() -> int:
         method=args.method,
         max_unrecovered_failure_rate=args.max_unrecovered_failure_rate,
         max_initial_invalid_rate=args.max_initial_invalid_rate,
+        max_partial_recovery_rate=args.max_partial_recovery_rate,
         require_bm25=not args.allow_bm25_disabled,
         require_spacy=not args.allow_spacy_disabled,
+        expected_sample_count=args.expected_sample_count,
         expected_llm_max_tokens=args.expected_llm_max_tokens,
         expected_llm_retry_max_tokens=args.expected_llm_retry_max_tokens,
         expected_llm_context_window=args.expected_llm_context_window,

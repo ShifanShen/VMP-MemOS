@@ -40,7 +40,21 @@ OFFICIAL_LLM_RETRY_MAX_TOKENS="${PINNED_OFFICIAL_LLM_RETRY_MAX_TOKENS}"
 OFFICIAL_LLM_CONTEXT_WINDOW="${VMP_OFFICIAL_LLM_CONTEXT_WINDOW:-32768}"
 OFFICIAL_LLM_TEMPERATURE="${VMP_OFFICIAL_LLM_TEMPERATURE:-0.0}"
 MEM0_MAX_INITIAL_INVALID_RATE="${MEM0_MAX_INITIAL_INVALID_RATE:-0.02}"
-DEV_PROTOCOL_LIMIT="${DEV_PROTOCOL_LIMIT:-20}"
+MEM0_MAX_PARTIAL_RECOVERY_RATE="${MEM0_MAX_PARTIAL_RECOVERY_RATE:-0.01}"
+PINNED_DEV_PROTOCOL_LIMIT="20"
+if [[ "${FRAMEWORK}" == "mem0" ]]; then
+  if [[ -n "${VMP_MEM0_DEV_PROTOCOL_LIMIT:-}" && \
+        "${VMP_MEM0_DEV_PROTOCOL_LIMIT:-}" != "${PINNED_DEV_PROTOCOL_LIMIT}" ]]; then
+    echo "Refusing VMP_MEM0_DEV_PROTOCOL_LIMIT=${VMP_MEM0_DEV_PROTOCOL_LIMIT:-}; the paper protocol pins 20 Dev samples." >&2
+    exit 2
+  fi
+  if [[ -n "${DEV_PROTOCOL_LIMIT:-}" && \
+        "${DEV_PROTOCOL_LIMIT:-}" != "${PINNED_DEV_PROTOCOL_LIMIT}" ]]; then
+    echo "Refusing DEV_PROTOCOL_LIMIT=${DEV_PROTOCOL_LIMIT:-}; the paper protocol pins 20 Dev samples. Unset the stale override." >&2
+    exit 2
+  fi
+fi
+DEV_PROTOCOL_LIMIT="${PINNED_DEV_PROTOCOL_LIMIT}"
 
 CANDIDATE_POOL_COUNT="${CANDIDATE_POOL_COUNT:-40}"
 CANDIDATE_COUNT="${CANDIDATE_COUNT:-10}"
@@ -53,7 +67,7 @@ READER_PROMPT_VERSION="${READER_PROMPT_VERSION:-longmemeval_hybrid_evidence_read
 READER_EVIDENCE_MODE="${READER_EVIDENCE_MODE:-reranker_facts_with_query_windows}"
 
 if [[ "${FRAMEWORK}" == "mem0" ]]; then
-  OFFICIAL_RUN_VERSION="v6"
+  OFFICIAL_RUN_VERSION="v7"
 else
   OFFICIAL_RUN_VERSION="v5"
 fi
@@ -63,7 +77,7 @@ DEV_PROTOCOL_RUN_ID="${DEV_PROTOCOL_RUN_ID:-lme_dev_${FRAMEWORK}_official_${OFFI
 CANDIDATE_RUN="${OUTPUT_DIR}/runs/${CANDIDATE_RUN_ID}"
 RERANK_RUN="${OUTPUT_DIR}/runs/${RERANK_RUN_ID}"
 DEV_PROTOCOL_RUN="${OUTPUT_DIR}/runs/${DEV_PROTOCOL_RUN_ID}"
-MEM0_PROTOCOL_AUDIT_OUTPUT="${FRAMEWORK_AUDIT_OUTPUT}/mem0_protocol_v6.json"
+MEM0_PROTOCOL_AUDIT_OUTPUT="${FRAMEWORK_AUDIT_OUTPUT}/mem0_protocol_v7.json"
 QA_SUBDIR="${QA_SUBDIR:-qa_v21_test}"
 JUDGE_SUBDIR="${JUDGE_SUBDIR:-official_judge_local_vllm_v1}"
 LOG_DIR="${LOG_DIR:-${OUTPUT_DIR}/logs}"
@@ -242,11 +256,14 @@ run_dev_protocol() {
 audit_mem0_protocol() {
   local run_dir="$1"
   local output_path="$2"
+  local expected_count="${3:-20}"
   python scripts/audit_mem0_protocol.py \
     --retrieval-run "${run_dir}" \
     --output "${output_path}" \
     --max-unrecovered-failure-rate 0 \
     --max-initial-invalid-rate "${MEM0_MAX_INITIAL_INVALID_RATE}" \
+    --max-partial-recovery-rate "${MEM0_MAX_PARTIAL_RECOVERY_RATE}" \
+    --expected-sample-count "${expected_count}" \
     --expected-llm-max-tokens "${OFFICIAL_LLM_MAX_TOKENS}" \
     --expected-llm-retry-max-tokens "${OFFICIAL_LLM_RETRY_MAX_TOKENS}" \
     --expected-llm-context-window "${OFFICIAL_LLM_CONTEXT_WINDOW}"
@@ -389,7 +406,7 @@ case "${STAGE}" in
     if [[ "${FRAMEWORK}" == "mem0" ]]; then
       audit_mem0_protocol \
         "${CANDIDATE_RUN}" \
-        "${CANDIDATE_RUN}/mem0_protocol_audit.json"
+        "${CANDIDATE_RUN}/mem0_protocol_audit.json" 400
     fi
     python scripts/export_longmemeval_tables.py \
       --retrieval-run "${CANDIDATE_RUN}"

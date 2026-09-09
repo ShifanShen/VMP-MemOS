@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,8 +26,9 @@ from vmp_memos.schemas import Event
 
 MemoryFactory = Callable[[dict[str, Any]], Any]
 LOGGER = logging.getLogger(__name__)
-MEM0_LLM_COMPATIBILITY_VERSION = "mem0_v2010_json_transport_v6"
+MEM0_LLM_COMPATIBILITY_VERSION = "mem0_v2010_json_transport_v7"
 MEM0_MEMORY_STATS_TOP_K = 10_000
+_MEMORY_ARRAY_PATTERN = re.compile(r'\{\s*"memory"\s*:\s*\[')
 
 
 class Mem0DependencyError(RuntimeError):
@@ -45,6 +47,9 @@ class _PreparedMem0Response:
     validation_error: str | None = None
     normalized_items: int = 0
     ignored_null_items: int = 0
+    partial_recovery: bool = False
+    partial_recovered_items: int = 0
+    partial_discarded_characters: int = 0
 
 
 class _Mem0LlmResponseAdapter:
@@ -58,7 +63,9 @@ class _Mem0LlmResponseAdapter:
     JSON or an unknown ``memory`` item shape once with a larger, frozen output
     budget. It never repairs or invents facts. Version 6 also rejects structural
     values that would make Mem0 call ``.get`` on a non-object and records those
-    failures separately from syntax failures.
+    failures separately from syntax failures. Version 7 performs one final,
+    label-free recovery of complete array items after an exhausted retry. It
+    never completes a truncated item or changes an item's text.
     """
 
     def __init__(self, delegate: Any, *, retry_max_tokens: int = 16384) -> None:
@@ -82,6 +89,11 @@ class _Mem0LlmResponseAdapter:
         self.normalized_response_count = 0
         self.normalized_item_count = 0
         self.ignored_null_item_count = 0
+        self.partial_recovery_count = 0
+        self.partial_recovered_item_count = 0
+        self.partial_discarded_character_count = 0
+        self.max_partial_discarded_characters = 0
+        self.partial_recovery_reason_counts: dict[str, int] = {}
         self.output_character_count = 0
         self.max_response_characters = 0
         self.initial_invalid_reason_counts: dict[str, int] = {}
@@ -122,22 +134,50 @@ class _Mem0LlmResponseAdapter:
             prepared = _prepare_mem0_memory_response(response)
             retry_validation_error = prepared.validation_error
             if retry_validation_error is not None:
-                self.unrecovered_invalid_json_count += 1
-                if _is_memory_schema_error(retry_validation_error):
-                    self.unrecovered_invalid_schema_count += 1
-                _increment(
-                    self.unrecovered_invalid_reason_counts,
+                salvaged = _salvage_complete_mem0_memory_prefix(
+                    response,
                     retry_validation_error,
                 )
-                self.unrecovered_invalid_max_response_characters = max(
-                    self.unrecovered_invalid_max_response_characters,
-                    _response_characters(response),
+                if salvaged is None:
+                    self.unrecovered_invalid_json_count += 1
+                    if _is_memory_schema_error(retry_validation_error):
+                        self.unrecovered_invalid_schema_count += 1
+                    _increment(
+                        self.unrecovered_invalid_reason_counts,
+                        retry_validation_error,
+                    )
+                    self.unrecovered_invalid_max_response_characters = max(
+                        self.unrecovered_invalid_max_response_characters,
+                        _response_characters(response),
+                    )
+                    raise Mem0LlmProtocolError(
+                        "Mem0 extraction returned invalid JSON/schema after one "
+                        f"larger-budget retry (reason={retry_validation_error}, "
+                        f"characters={_response_characters(response)})"
+                    )
+                prepared = salvaged
+                self.partial_recovery_count += 1
+                self.partial_recovered_item_count += (
+                    salvaged.partial_recovered_items
                 )
-                raise Mem0LlmProtocolError(
-                    "Mem0 extraction returned invalid JSON/schema after one "
-                    f"larger-budget retry (reason={retry_validation_error}, "
-                    f"characters={_response_characters(response)})"
+                self.partial_discarded_character_count += (
+                    salvaged.partial_discarded_characters
                 )
+                self.max_partial_discarded_characters = max(
+                    self.max_partial_discarded_characters,
+                    salvaged.partial_discarded_characters,
+                )
+                _increment(
+                    self.partial_recovery_reason_counts,
+                    retry_validation_error,
+                )
+                if self.partial_recovery_count == 1:
+                    LOGGER.warning(
+                        "Recovered %d complete Mem0 memory items from a "
+                        "truncated retry; discarded %d trailing characters.",
+                        salvaged.partial_recovered_items,
+                        salvaged.partial_discarded_characters,
+                    )
             self.retry_success_count += 1
         if prepared.normalized_items or prepared.ignored_null_items:
             self.normalized_response_count += 1
@@ -172,6 +212,19 @@ class _Mem0LlmResponseAdapter:
             "mem0_llm_normalized_responses": self.normalized_response_count,
             "mem0_llm_normalized_items": self.normalized_item_count,
             "mem0_llm_ignored_null_items": self.ignored_null_item_count,
+            "mem0_llm_partial_recoveries": self.partial_recovery_count,
+            "mem0_llm_partial_recovered_items": (
+                self.partial_recovered_item_count
+            ),
+            "mem0_llm_partial_discarded_characters": (
+                self.partial_discarded_character_count
+            ),
+            "mem0_llm_max_partial_discarded_characters": (
+                self.max_partial_discarded_characters
+            ),
+            "mem0_llm_partial_recovery_reason_counts": dict(
+                self.partial_recovery_reason_counts
+            ),
             "mem0_llm_output_characters": self.output_character_count,
             "mem0_llm_max_response_characters": self.max_response_characters,
             "mem0_llm_retry_max_tokens": self.retry_max_tokens,
@@ -598,26 +651,19 @@ def _prepare_mem0_memory_response(response: Any) -> _PreparedMem0Response:
         )
     normalized: list[dict[str, Any]] = []
     for item in memories:
-        if isinstance(item, str):
-            normalized.append({"text": item})
-            normalized_count += 1
-            changed = True
-        elif isinstance(item, dict):
-            text = item.get("text")
-            if text is not None and not isinstance(text, str):
-                return _PreparedMem0Response(
-                    response,
-                    validation_error="memory_text_non_string",
-                )
-            normalized.append(item)
-        elif item is None:
-            ignored_null_count += 1
-            changed = True
-        else:
+        prepared_item, item_normalized, item_ignored, item_error = (
+            _prepare_mem0_memory_item(item)
+        )
+        if item_error is not None:
             return _PreparedMem0Response(
                 response,
-                validation_error="memory_item_non_object",
+                validation_error=item_error,
             )
+        normalized_count += item_normalized
+        ignored_null_count += item_ignored
+        changed = changed or bool(item_normalized or item_ignored)
+        if prepared_item is not None:
+            normalized.append(prepared_item)
     if not changed:
         return _PreparedMem0Response(response)
     payload["memory"] = normalized
@@ -630,6 +676,105 @@ def _prepare_mem0_memory_response(response: Any) -> _PreparedMem0Response:
 
 def _is_memory_schema_error(reason: str) -> bool:
     return reason.startswith("memory_")
+
+
+def _prepare_mem0_memory_item(
+    item: Any,
+) -> tuple[dict[str, Any] | None, int, int, str | None]:
+    if isinstance(item, str):
+        return {"text": item}, 1, 0, None
+    if isinstance(item, dict):
+        text = item.get("text")
+        if text is not None and not isinstance(text, str):
+            return None, 0, 0, "memory_text_non_string"
+        return item, 0, 0, None
+    if item is None:
+        return None, 0, 1, None
+    return None, 0, 0, "memory_item_non_object"
+
+
+def _salvage_complete_mem0_memory_prefix(
+    response: Any,
+    validation_error: str,
+) -> _PreparedMem0Response | None:
+    """Return only fully decoded leading memory items from a truncated retry."""
+
+    if validation_error != "unterminated_json_object" or not isinstance(
+        response,
+        str,
+    ):
+        return None
+    object_start = response.find("{")
+    if object_start < 0:
+        return None
+    match = _MEMORY_ARRAY_PATTERN.match(response, object_start)
+    if match is None:
+        return None
+
+    decoder = json.JSONDecoder(strict=False)
+    cursor = match.end()
+    normalized: list[dict[str, Any]] = []
+    normalized_count = 0
+    ignored_null_count = 0
+    parsed_value = False
+    array_closed = False
+    retained_end = cursor
+
+    while True:
+        cursor = _skip_json_whitespace(response, cursor)
+        if cursor >= len(response):
+            break
+        if response[cursor] == "]":
+            array_closed = True
+            cursor += 1
+            retained_end = cursor
+            break
+        if parsed_value:
+            if response[cursor] != ",":
+                return None
+            cursor = _skip_json_whitespace(response, cursor + 1)
+            if cursor >= len(response):
+                break
+            if response[cursor] == "]":
+                return None
+        try:
+            item, cursor = decoder.raw_decode(response, cursor)
+        except json.JSONDecodeError as exc:
+            if exc.pos < len(response.rstrip()) and not exc.msg.startswith(
+                "Unterminated string"
+            ):
+                return None
+            break
+        prepared_item, item_normalized, item_ignored, item_error = (
+            _prepare_mem0_memory_item(item)
+        )
+        if item_error is not None:
+            return None
+        parsed_value = True
+        retained_end = cursor
+        normalized_count += item_normalized
+        ignored_null_count += item_ignored
+        if prepared_item is not None:
+            normalized.append(prepared_item)
+
+    if array_closed and response[cursor:].strip():
+        return None
+    if not array_closed and not normalized:
+        return None
+    return _PreparedMem0Response(
+        json.dumps({"memory": normalized}, ensure_ascii=False),
+        normalized_items=normalized_count,
+        ignored_null_items=ignored_null_count,
+        partial_recovery=True,
+        partial_recovered_items=len(normalized),
+        partial_discarded_characters=max(len(response) - retained_end, 0),
+    )
+
+
+def _skip_json_whitespace(value: str, start: int) -> int:
+    while start < len(value) and value[start] in " \t\r\n":
+        start += 1
+    return start
 
 
 def _mem0_search(memory: Any, *, query: str, user_id: str, top_k: int) -> Any:

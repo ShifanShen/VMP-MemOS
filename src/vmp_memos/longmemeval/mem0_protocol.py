@@ -19,8 +19,10 @@ def audit_mem0_protocol_run(
     method: str = "mem0_official",
     max_unrecovered_failure_rate: float = 0.0,
     max_initial_invalid_rate: float = 0.02,
+    max_partial_recovery_rate: float = 0.01,
     require_bm25: bool = True,
     require_spacy: bool = True,
+    expected_sample_count: int = 20,
     expected_llm_max_tokens: int = 2048,
     expected_llm_retry_max_tokens: int = 16384,
     expected_llm_context_window: int = 32_768,
@@ -36,6 +38,10 @@ def audit_mem0_protocol_run(
         raise ValueError("max_unrecovered_failure_rate must be in [0, 1]")
     if not 0.0 <= max_initial_invalid_rate <= 1.0:
         raise ValueError("max_initial_invalid_rate must be in [0, 1]")
+    if not 0.0 <= max_partial_recovery_rate <= 1.0:
+        raise ValueError("max_partial_recovery_rate must be in [0, 1]")
+    if expected_sample_count <= 0:
+        raise ValueError("expected_sample_count must be positive")
 
     root = Path(run_dir)
     manifest = _read_json_object(root / "manifest.json")
@@ -65,6 +71,23 @@ def audit_mem0_protocol_run(
     normalized_responses = _sum_int(stats, "mem0_llm_normalized_responses")
     normalized_items = _sum_int(stats, "mem0_llm_normalized_items")
     ignored_null_items = _sum_int(stats, "mem0_llm_ignored_null_items")
+    partial_recoveries = _sum_int(stats, "mem0_llm_partial_recoveries")
+    partial_recovered_items = _sum_int(
+        stats,
+        "mem0_llm_partial_recovered_items",
+    )
+    partial_discarded_characters = _sum_int(
+        stats,
+        "mem0_llm_partial_discarded_characters",
+    )
+    max_partial_discarded_characters = _max_int(
+        stats,
+        "mem0_llm_max_partial_discarded_characters",
+    )
+    partial_recovery_reasons = _sum_counter(
+        stats,
+        "mem0_llm_partial_recovery_reason_counts",
+    )
     initial_invalid_reasons = _sum_counter(
         stats,
         "mem0_llm_initial_invalid_reason_counts",
@@ -84,8 +107,9 @@ def audit_mem0_protocol_run(
     final_failures = unrecovered + request_exceptions
     initial_invalid_rate = initial_invalid / json_mode_calls if json_mode_calls else 0.0
     unrecovered_failure_rate = final_failures / logical_calls if logical_calls else 0.0
+    partial_recovery_rate = partial_recoveries / logical_calls if logical_calls else 0.0
 
-    expected_count = _as_int(manifest.get("sample_count"))
+    manifest_sample_count = _as_int(manifest.get("sample_count"))
     versions = {
         str(item.get("mem0_llm_compatibility_version") or "")
         for item in stats
@@ -105,6 +129,11 @@ def audit_mem0_protocol_run(
         "mem0_llm_normalized_responses",
         "mem0_llm_normalized_items",
         "mem0_llm_ignored_null_items",
+        "mem0_llm_partial_recoveries",
+        "mem0_llm_partial_recovered_items",
+        "mem0_llm_partial_discarded_characters",
+        "mem0_llm_max_partial_discarded_characters",
+        "mem0_llm_partial_recovery_reason_counts",
         "mem0_llm_initial_invalid_reason_counts",
         "mem0_llm_unrecovered_invalid_reason_counts",
         "mem0_llm_initial_invalid_max_response_characters",
@@ -124,7 +153,8 @@ def audit_mem0_protocol_run(
 
     checks: dict[str, bool] = {
         "run_completed": manifest.get("status") == "completed",
-        "record_count": bool(records) and len(records) == expected_count,
+        "manifest_sample_count": manifest_sample_count == expected_sample_count,
+        "record_count": len(records) == expected_sample_count,
         "unique_nonempty_question_ids": (
             len(question_ids) == len(set(question_ids)) and all(question_ids)
         ),
@@ -138,6 +168,16 @@ def audit_mem0_protocol_run(
         "request_accounting": requests == logical_calls + retry_attempts,
         "initial_invalid_accounting": initial_invalid == retry_attempts,
         "retry_accounting": retry_successes + unrecovered == retry_attempts,
+        "partial_recovery_accounting": 0 <= partial_recoveries <= retry_successes,
+        "partial_recovery_reason_accounting": (
+            sum(partial_recovery_reasons.values()) == partial_recoveries
+            and all(count >= 0 for count in partial_recovery_reasons.values())
+        ),
+        "partial_recovery_character_accounting": (
+            partial_recovered_items >= 0
+            and partial_discarded_characters >= 0
+            and 0 <= max_partial_discarded_characters <= partial_discarded_characters
+        ),
         "schema_failure_accounting": (
             initial_invalid_schema <= initial_invalid
             and unrecovered_invalid_schema <= unrecovered
@@ -149,6 +189,9 @@ def audit_mem0_protocol_run(
             sum(unrecovered_invalid_reasons.values()) == unrecovered
         ),
         "initial_invalid_rate": initial_invalid_rate <= max_initial_invalid_rate,
+        "partial_recovery_rate": (
+            partial_recovery_rate <= max_partial_recovery_rate
+        ),
         "unrecovered_failure_rate": (
             unrecovered_failure_rate <= max_unrecovered_failure_rate
         ),
@@ -185,6 +228,7 @@ def audit_mem0_protocol_run(
             JsonValue,
             {
                 "records": len(records),
+                "manifest_sample_count": manifest_sample_count,
                 "logical_calls": logical_calls,
                 "json_mode_calls": json_mode_calls,
                 "physical_requests": requests,
@@ -192,6 +236,7 @@ def audit_mem0_protocol_run(
                 "initial_invalid_rate": initial_invalid_rate,
                 "retry_attempts": retry_attempts,
                 "retry_successes": retry_successes,
+                "complete_retry_successes": retry_successes - partial_recoveries,
                 "unrecovered_invalid_json": unrecovered,
                 "initial_invalid_schema": initial_invalid_schema,
                 "unrecovered_invalid_schema": unrecovered_invalid_schema,
@@ -199,6 +244,14 @@ def audit_mem0_protocol_run(
                 "normalized_responses": normalized_responses,
                 "normalized_items": normalized_items,
                 "ignored_null_items": ignored_null_items,
+                "partial_recoveries": partial_recoveries,
+                "partial_recovery_rate": partial_recovery_rate,
+                "partial_recovered_items": partial_recovered_items,
+                "partial_discarded_characters": partial_discarded_characters,
+                "max_partial_discarded_characters": (
+                    max_partial_discarded_characters
+                ),
+                "partial_recovery_reason_counts": partial_recovery_reasons,
                 "initial_invalid_reason_counts": initial_invalid_reasons,
                 "unrecovered_invalid_reason_counts": unrecovered_invalid_reasons,
                 "initial_invalid_max_response_characters": (
@@ -222,8 +275,10 @@ def audit_mem0_protocol_run(
             {
                 "max_unrecovered_failure_rate": max_unrecovered_failure_rate,
                 "max_initial_invalid_rate": max_initial_invalid_rate,
+                "max_partial_recovery_rate": max_partial_recovery_rate,
                 "require_bm25": require_bm25,
                 "require_spacy": require_spacy,
+                "sample_count": expected_sample_count,
                 "llm_max_tokens": expected_llm_max_tokens,
                 "llm_retry_max_tokens": expected_llm_retry_max_tokens,
                 "llm_context_window": expected_llm_context_window,

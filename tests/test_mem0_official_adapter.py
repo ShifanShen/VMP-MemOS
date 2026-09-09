@@ -179,9 +179,148 @@ def test_mem0_llm_adapter_retries_truncated_json_with_larger_budget() -> None:
     assert adapter.unrecovered_invalid_json_count == 0
 
 
+def test_mem0_llm_adapter_salvages_only_complete_items_after_retry() -> None:
+    retry = (
+        '{"memory":[{"text":"first fact"},{"text":"second fact"},'
+        '{"text":"unfinished'
+    )
+    delegate = SequencedMem0Llm(
+        [
+            '{"memory":[{"text":"first fact"}',
+            retry,
+        ]
+    )
+    adapter = _Mem0LlmResponseAdapter(delegate, retry_max_tokens=16384)
+
+    response = adapter.generate_response(
+        messages=[],
+        response_format={"type": "json_object"},
+    )
+
+    assert response == (
+        '{"memory": [{"text": "first fact"}, {"text": "second fact"}]}'
+    )
+    assert adapter.retry_success_count == 1
+    assert adapter.partial_recovery_count == 1
+    assert adapter.partial_recovered_item_count == 2
+    discarded_suffix = ',{"text":"unfinished'
+    assert adapter.partial_discarded_character_count == len(discarded_suffix)
+    assert adapter.max_partial_discarded_characters == len(discarded_suffix)
+    assert adapter.partial_recovery_reason_counts == {
+        "unterminated_json_object": 1,
+    }
+    assert adapter.unrecovered_invalid_json_count == 0
+
+
+def test_mem0_llm_adapter_salvages_complete_string_and_ignores_null() -> None:
+    delegate = SequencedMem0Llm(
+        [
+            '{"memory":[',
+            '{"memory":["first fact",null,{"text":"unfinished',
+        ]
+    )
+    adapter = _Mem0LlmResponseAdapter(delegate, retry_max_tokens=16384)
+
+    response = adapter.generate_response(
+        messages=[],
+        response_format={"type": "json_object"},
+    )
+
+    assert response == '{"memory": [{"text": "first fact"}]}'
+    assert adapter.partial_recovery_count == 1
+    assert adapter.partial_recovered_item_count == 1
+    assert adapter.normalized_item_count == 1
+    assert adapter.ignored_null_item_count == 1
+
+
+def test_mem0_llm_adapter_rejects_retry_with_no_complete_prefix_item() -> None:
+    delegate = SequencedMem0Llm(
+        [
+            '{"memory":[',
+            '{"memory":[{"text":"unfinished',
+        ]
+    )
+    adapter = _Mem0LlmResponseAdapter(delegate, retry_max_tokens=16384)
+
+    with pytest.raises(Mem0LlmProtocolError, match="invalid JSON/schema"):
+        adapter.generate_response(
+            messages=[],
+            response_format={"type": "json_object"},
+        )
+
+    assert adapter.partial_recovery_count == 0
+    assert adapter.unrecovered_invalid_json_count == 1
+
+
+def test_mem0_llm_adapter_salvages_complete_empty_array() -> None:
+    delegate = SequencedMem0Llm(
+        [
+            '{"memory":[',
+            '{"memory":[]',
+        ]
+    )
+    adapter = _Mem0LlmResponseAdapter(delegate, retry_max_tokens=16384)
+
+    response = adapter.generate_response(
+        messages=[],
+        response_format={"type": "json_object"},
+    )
+
+    assert response == '{"memory": []}'
+    assert adapter.partial_recovery_count == 1
+    assert adapter.partial_recovered_item_count == 0
+    assert adapter.partial_discarded_character_count == 0
+
+
+def test_mem0_llm_adapter_prefix_parser_respects_json_string_delimiters() -> None:
+    delegate = SequencedMem0Llm(
+        [
+            '{"memory":[',
+            '{"memory":[{"text":"literal ] }, comma, and \\"quote\\""},'
+            '{"text":"unfinished',
+        ]
+    )
+    adapter = _Mem0LlmResponseAdapter(delegate, retry_max_tokens=16384)
+
+    response = adapter.generate_response(
+        messages=[],
+        response_format={"type": "json_object"},
+    )
+
+    assert response == (
+        '{"memory": [{"text": "literal ] }, comma, and \\"quote\\""}]}'
+    )
+    assert adapter.partial_recovered_item_count == 1
+
+
+@pytest.mark.parametrize(
+    "retry",
+    [
+        '{"memory":[{"text":"complete"} {"text":"unfinished',
+        '{"memory":[7,{"text":"unfinished',
+        '{"memory":[{"text":"complete"},INVALID',
+        '{"memory":[{"text":"complete"},],',
+        '{"memory":[null,{"text":"unfinished',
+        '{"memory":[],"memory":[{"text":"unfinished',
+        '{"note":"memory","memory":[{"text":"complete"},',
+    ],
+)
+def test_mem0_llm_adapter_rejects_unsafe_prefix_shapes(retry: str) -> None:
+    delegate = SequencedMem0Llm(['{"memory":[', retry])
+    adapter = _Mem0LlmResponseAdapter(delegate, retry_max_tokens=16384)
+
+    with pytest.raises(Mem0LlmProtocolError):
+        adapter.generate_response(
+            messages=[],
+            response_format={"type": "json_object"},
+        )
+
+    assert adapter.partial_recovery_count == 0
+
+
 def test_mem0_llm_adapter_rejects_unrecoverable_json() -> None:
     delegate = SequencedMem0Llm(
-        ['{"memory":[', '{"memory":[{"text":"still truncated"}']
+        ['{"memory":[', '{"memory":[{"text":"still truncated']
     )
     adapter = _Mem0LlmResponseAdapter(delegate, retry_max_tokens=16384)
 
@@ -200,7 +339,7 @@ def test_mem0_llm_adapter_rejects_unrecoverable_json() -> None:
     }
     assert adapter.initial_invalid_max_response_characters == len('{"memory":[')
     assert adapter.unrecovered_invalid_max_response_characters == len(
-        '{"memory":[{"text":"still truncated"}'
+        '{"memory":[{"text":"still truncated'
     )
 
 

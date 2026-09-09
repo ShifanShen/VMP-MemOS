@@ -51,7 +51,7 @@ def test_mem0_becomes_eligible_only_with_matching_smoke(tmp_path, monkeypatch) -
                 "official_llm_temperature": 0.0,
                 "adapter_stats": {
                     "mem0_llm_compatibility_version": (
-                        "mem0_v2010_json_transport_v6"
+                        "mem0_v2010_json_transport_v7"
                     )
                 },
             }

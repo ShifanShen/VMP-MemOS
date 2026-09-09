@@ -27,7 +27,7 @@ def test_official_pipeline_is_staged_and_resumable() -> None:
     assert 'if [[ "${RETRIEVAL_RESUME}" == "1" && -d "${CANDIDATE_RUN}" ]]' in script
     assert "Each completed question is durably checkpointed" in script
     assert "audit_mem0_protocol.py" in script
-    assert 'OFFICIAL_RUN_VERSION="v6"' in script
+    assert 'OFFICIAL_RUN_VERSION="v7"' in script
     assert 'OFFICIAL_RUN_VERSION="v5"' in script
     assert (
         "lme_test_${FRAMEWORK}_official_${OFFICIAL_RUN_VERSION}_candidates_seed42"
@@ -35,6 +35,21 @@ def test_official_pipeline_is_staged_and_resumable() -> None:
     )
     assert 'PINNED_OFFICIAL_LLM_RETRY_MAX_TOKENS="16384"' in script
     assert "Refusing VMP_OFFICIAL_LLM_RETRY_MAX_TOKENS" in script
+    assert (
+        'MEM0_MAX_PARTIAL_RECOVERY_RATE="${MEM0_MAX_PARTIAL_RECOVERY_RATE:-0.01}"'
+        in script
+    )
+    assert (
+        '--max-partial-recovery-rate "${MEM0_MAX_PARTIAL_RECOVERY_RATE}"'
+        in script
+    )
+    assert 'mem0_protocol_v7.json' in script
+    assert 'PINNED_DEV_PROTOCOL_LIMIT="20"' in script
+    assert "Refusing VMP_MEM0_DEV_PROTOCOL_LIMIT" in script
+    assert "Refusing DEV_PROTOCOL_LIMIT" in script
+    assert '--expected-sample-count "${expected_count}"' in script
+    assert 'local expected_count="${3:-20}"' in script
+    assert '"${CANDIDATE_RUN}/mem0_protocol_audit.json" 400' in script
 
 
 def test_official_pipeline_freezes_the_shared_v64_protocol() -> None:
@@ -73,12 +88,13 @@ def test_official_config_matches_pinned_optional_dependencies() -> None:
     assert config["shared_models"]["context_window"] == 32768
     assert config["mem0_protocol_gate"]["dev_samples"] == 20
     assert config["mem0_protocol_gate"]["compatibility_version"] == (
-        "mem0_v2010_json_transport_v6"
+        "mem0_v2010_json_transport_v7"
     )
     assert (
         config["mem0_protocol_gate"]["max_initial_invalid_response_rate"]
         == 0.02
     )
     assert config["mem0_protocol_gate"]["max_unrecovered_failure_rate"] == 0.0
+    assert config["mem0_protocol_gate"]["max_partial_recovery_rate"] == 0.01
     assert config["mem0_protocol_gate"]["require_native_bm25"] is True
     assert config["test_labels_visible_to_memory_or_reader"] is False

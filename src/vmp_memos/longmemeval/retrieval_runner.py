@@ -421,8 +421,9 @@ def _run_method(
                     "Mem0 protocol %d/%d: question_id=%s logical_calls=%d "
                     "requests=%d invalid_json=%d retries=%d recovered=%d "
                     "unrecovered=%d invalid_schema=%d normalized=%d "
-                    "ignored_null=%d request_exceptions=%d memories=%d "
-                    "bm25=%s spacy_lemma=%s",
+                    "ignored_null=%d partial_recoveries=%d partial_items=%d "
+                    "partial_discarded_chars=%d request_exceptions=%d "
+                    "memories=%d bm25=%s spacy_lemma=%s",
                     sample_index,
                     sample_count,
                     sample.question_id,
@@ -453,6 +454,23 @@ def _run_method(
                     int(
                         _json_number(
                             adapter_stats.get("mem0_llm_ignored_null_items")
+                        )
+                    ),
+                    int(
+                        _json_number(
+                            adapter_stats.get("mem0_llm_partial_recoveries")
+                        )
+                    ),
+                    int(
+                        _json_number(
+                            adapter_stats.get("mem0_llm_partial_recovered_items")
+                        )
+                    ),
+                    int(
+                        _json_number(
+                            adapter_stats.get(
+                                "mem0_llm_partial_discarded_characters"
+                            )
                         )
                     ),
                     int(
